@@ -1040,19 +1040,32 @@ class CatchupScheduler:
         goes, and every missing root is alerted once (contract_data_partial): the engine prices it by
         its rule (the vendor's bar of the held contract, else the held contract's last close carried),
         with a WARN. The missing roots are the row's names; when it names fewer than it misses
-        (expected - loaded, a failed pull every root), every root whose newest contract bar is before
-        the row's bar date, and a missing root the table cannot name counts as stale."""
+        (expected - loaded), the roots whose newest contract bar is before the row's bar date, the
+        stalest first; on a failed pull, every root the table knows. A missing root the table cannot name
+        counts as stale; a failed pull with no root known at all holds."""
         named = list(part.missing)
-        missing_n = part.expected if part.status == "failed" else part.expected - part.loaded
-        unnamed = max(missing_n - len(named), 0)
-        if not named and unnamed == 0:
-            return None
         since = part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS)
-        if unnamed > 0:
-            found = sorted(r for r, d in self._store.every_contract_root_last_bar(since).items()
-                           if d < part.bar_date and r not in named)[:unnamed]
-            named += found
-            unnamed -= len(found)
+        if part.status == "failed":
+            # A failed pull (R4B audit A, S1): every root the table knows is missing, whatever the row's
+            # expected says; a root it should have and the table cannot name counts as stale.
+            named += sorted(r for r in self._store.every_contract_root_last_bar(since) if r not in named)
+            unnamed = max(part.expected - len(named), 0)
+            if not named and unnamed == 0:
+                return Step(ALERT, target, "data_stale",
+                            f"{part.dataset} {part.bar_date} is failed ({part.loaded} of {part.expected}) and "
+                            f"the table has no contract bar since {since}: no root can be judged. The books of "
+                            f"{target} are not built")
+        else:
+            unnamed = max(part.expected - part.loaded - len(named), 0)
+            if not named and unnamed == 0:
+                return None
+            if unnamed > 0:
+                # The roots the row misses without naming them: the stalest first (R4B audit A, S2), so a
+                # root with no bar that day for an ordinary reason cannot push out one that is stale.
+                every = self._store.every_contract_root_last_bar(since)
+                found = sorted((d, r) for r, d in every.items() if d < part.bar_date and r not in named)[:unnamed]
+                named += [r for _, r in found]
+                unnamed -= len(found)
         last = self._store.last_contract_bar_dates(named, since) if named else {}
         stale_days = self._catchup.contract_data_ready_stale_days
         if stale_days is None:

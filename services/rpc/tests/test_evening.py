@@ -1120,3 +1120,67 @@ def test_the_continuous_rows_rule_is_unchanged(env):
     env.make(portfolios=(DESK,)).run_pass()
     assert calls(env) == [("model", DESK, "2026-10-12")]
     assert alerts(env) == []
+
+
+# -- R4B fix round 1 (audit A S1, S2, p01) --------------------------------------------------------------
+
+def _monday_failed_zero_expected(env, bars):
+    """A failed per-contract row that records expected = 0 (migration 028 allows it)."""
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(DataReady(CONTRACTS, SUN, 0, 0, (), "failed", "run-1", at(MON, 4, 36).astimezone(UTC)))
+    env.days.contract_bars = bars
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,)).run_pass())
+
+
+def test_a_failed_row_with_expected_zero_counts_every_root_the_table_knows(env):
+    """S1: expected = 0 on a failed row no longer runs in silence: every root the table knows is missing;
+    nine days old, more than N past X: held."""
+    out = _monday_failed_zero_expected(env, {r: dt.date(2026, 10, 2) for r in ROOTS36})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "36 root(s) have had no contract bar for more than 4 day(s)" in out[DESK].message
+
+
+def test_a_failed_row_with_expected_zero_and_fresh_bars_runs_with_the_alert(env):
+    out = _monday_failed_zero_expected(env, {r: FRI for r in ROOTS36})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_failed_row_with_nothing_known_holds(env):
+    out = _monday_failed_zero_expected(env, {})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "no root can be judged" in out[DESK].message
+
+
+def test_unnamed_missing_roots_are_taken_stalest_first(env):
+    """S2: 33 of 36, no names; ZC, ZN and ZS nine days stale, 6A and 6B with Friday's bar: the three
+    unnamed roots are ZC, ZN and ZS (not 6A, 6B, ZC alphabetically), more than N past X: held."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({"6A": FRI, "6B": FRI, "ZC": dt.date(2026, 10, 2), "ZN": dt.date(2026, 10, 2), "ZS": dt.date(2026, 10, 2)})
+    out = _monday_contract(env, "partial", (), 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "ZC (last bar 2026-10-02), ZN (last bar 2026-10-02), ZS (last bar 2026-10-02)" in out[DESK].message
+    assert "6A" not in out[DESK].message
+
+
+def test_x_days_old_is_not_stale_and_one_more_is(env):
+    """p01, ruling 21's "more than X days": three roots last seen exactly 4 days before the run's last bar
+    date (10-07 against 10-11) run; 5 days (10-06) hold."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({r: dt.date(2026, 10, 7) for r in ("GC", "ZN", "CL")})
+    _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+
+
+def test_one_more_day_than_x_is_stale(env):
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({r: dt.date(2026, 10, 6) for r in ("GC", "ZN", "CL")})
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
