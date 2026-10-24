@@ -3,6 +3,8 @@
 // trading day of the month before delivery). For GCQ6: D* = Fri 2026-07-31, the window opens Fri
 // 07-24, the last actionable bar (LAB) is Wed 07-29 (its run is Thu 07-30).
 #include <gtest/gtest.h>
+#include <set>
+#include <functional>
 
 #include <map>
 
@@ -56,7 +58,13 @@ public:
         in.cal = cal_.get();
         in.cycle = roll_cycle(root_).value();
         in.log_from = log_from_;
+        in.log_once = log_once_;
         return apply_roll_rule(in);
+    }
+    /// Asked before a warning is logged (RuleInputs::log_once).
+    World& log_once(std::function<bool(const std::string&)> f) {
+        log_once_ = std::move(f);
+        return *this;
     }
     /// Warnings dated before `date` are kept, not logged (RuleInputs::log_from).
     World& log_from(const std::string& date) {
@@ -72,6 +80,7 @@ private:
     std::unique_ptr<ContractBook> book_;
     std::unique_ptr<TradingCalendar> cal_;
     Day log_from_{};
+    std::function<bool(const std::string&)> log_once_;
 };
 
 const std::vector<Spec> kAug2026 = {{"GCQ6", "q", "2026-08-27"},
@@ -640,6 +649,44 @@ TEST(ContractRollRule, WarningsBeforeLogFromAreKeptNotLogged) {
         ASSERT_EQ(r.value().report.warnings.size(), 1u) << "the skipped front of 07-29";
         EXPECT_EQ(r.value().report.warnings_not_logged, std::string(from) == "2026-07-30" ? 1 : 0);
     }
+}
+
+// Rolls step 4 (R4a open question 4): a warning on or after log_from is logged only when log_once says so
+// (the bar source logs each message once per run, however many loads read its bar); log_once is not asked
+// for a warning before log_from. Every warning stays in the report either way.
+TEST(ContractRollRule, AWarningIsLoggedOnlyWhenLogOnceAdmitsIt) {
+    std::set<std::string> logged;
+    std::vector<std::string> asked;
+    const auto once = [&](const std::string& m) {
+        asked.push_back(m);
+        return logged.insert(m).second;
+    };
+    for (int load = 0; load < 2; ++load) {
+        World w(kAug2026);
+        for (const auto& dt : kDates) {
+            w.print("GCQ6", dt, 80000).print("GCU6", dt, 30000).print("GCG7", dt, 400);
+            if (dt != "2026-07-29") w.print("GCZ6", dt, 9000);
+            w.vendor(dt, "GCQ6");
+        }
+        w.log_from("2026-07-01").log_once(once);
+        auto r = w.run();
+        ASSERT_TRUE(r.is_ok()) << r.error()->what();
+        ASSERT_EQ(r.value().report.warnings.size(), 1u) << "kept in the report on every load";
+        EXPECT_EQ(r.value().report.warnings_not_logged, load) << "the second load does not log it again";
+    }
+    ASSERT_EQ(asked.size(), 2u);
+    EXPECT_EQ(asked[0], asked[1]);
+    // Before log_from, log_once is not asked.
+    asked.clear();
+    World w(kAug2026);
+    for (const auto& dt : kDates) {
+        w.print("GCQ6", dt, 80000).print("GCU6", dt, 30000).print("GCG7", dt, 400);
+        if (dt != "2026-07-29") w.print("GCZ6", dt, 9000);
+        w.vendor(dt, "GCQ6");
+    }
+    w.log_from("2026-07-30").log_once(once);
+    ASSERT_TRUE(w.run().is_ok());
+    EXPECT_TRUE(asked.empty());
 }
 
 // Rolls step 4 (R3 audit A note 1; ruling 4): the held contract's rows end on 07-29 (its bars of 07-30 and

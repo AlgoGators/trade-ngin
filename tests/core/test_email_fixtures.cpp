@@ -1068,6 +1068,113 @@ TEST_F(EmailFixture, TheSymbolsReferenceHasNoFrontMonthColumnAndTheReportNoRollo
     EXPECT_EQ(base_body().find("Rollover"), std::string::npos);
 }
 
+// R4b (per_contract_rolls on): the Front Month column comes back, showing the contract held, and the
+// Contract Months column reads the root's cycle; a root with no outlook keeps the metadata's months and
+// an empty Front Month cell. With the switch off (no roll view, or an empty one) the table is today's.
+TEST_F(EmailFixture, WithTheSwitchOnTheSymbolsReferenceShowsTheContractHeldAndTheCycle) {
+    auto db = std::make_shared<SymbolsDatabase>(std::vector<std::string>{
+        metadata_json("HO", "Heating Oil", "All Months"), metadata_json("ZS", "Soybeans", "FHKNQUX")});
+    const std::unordered_map<std::string, Position> held = {{"HO.v.0", row("HO.v.0", 1.0, 2.5)},
+                                                             {"ZS.v.0", row("ZS.v.0", 1.0, 1000.0)}};
+    ReportRolls rolls;
+    rolls.per_contract_rolls = true;
+    ReportRollOutlook zs;
+    zs.root = "ZS";
+    zs.held = "ZSX6";
+    zs.cycle = "FHKNX";
+    zs.rule_rolls = true;
+    rolls.outlook["ZS"] = zs;
+    const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10", &rolls);
+    EXPECT_NE(table.find("<th>Contract Months</th><th>Front Month</th></tr>"), std::string::npos) << table;
+    EXPECT_NE(table.find("<td>Soybeans</td>\n<td>Jan Mar May Jul Nov</td>\n<td>ZSX6</td>\n</tr>"), std::string::npos)
+        << table;
+    EXPECT_NE(table.find("<td>Heating Oil</td>\n<td>All Months</td>\n<td></td>\n</tr>"), std::string::npos) << table;
+    const std::string off = sender_.format_symbols_table_for_positions(held, db, "2026-04-10");
+    EXPECT_EQ(off, sender_.format_symbols_table_for_positions(held, db, "2026-04-10", nullptr));
+    const ReportRolls empty;
+    EXPECT_EQ(off, sender_.format_symbols_table_for_positions(held, db, "2026-04-10", &empty));
+    EXPECT_EQ(off.find("Front Month"), std::string::npos);
+}
+
+// R4b (per_contract_rolls on, ruling 18): the CONSERVATIVE body with MBT's roll a per-contract roll
+// carrying its split prints one plain roll line under the roll legs; ZT's contract inside its window
+// gets the Rollover Warning box; KE's settled row, a per-contract roll bar, carries the roll footnote
+// with its new words; the footer's data sentence becomes the roll sentence. The switch-off body is the
+// stored fixture (EmailFixture.Conservative...), so none of this is printed there.
+TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAndTheFooter) {
+    const std::unordered_map<std::string, Position> sleeve = {
+        {"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0)},
+        {"QMBT.v.0", row("QMBT.v.0", 1.0, 77740.0)}};
+    const StrategyPositionsMap book = {{"TREND_FOLLOWING", sleeve}};
+    ExecutionReport rc = roll_leg("QMBT.v.0", true, Side::SELL, 77960.0, 2.45, "42185193");
+    rc.roll_bar_move = 1.0 * (77960.0 - 78500.0) * 0.1;
+    rc.roll_gap_points = 79070.0 - 77960.0;
+    rc.roll_gap_value = (79070.0 - 77960.0) * 1.0 * 0.1;
+    // QMES's roll is on the vendor's series (no split, the micros): its line names the cost only.
+    const StrategyExecutionsMap executions = {
+        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708"),
+                             roll_leg("QMES.v.0", true, Side::SELL, 7217.25, 1.30, "42140878"),
+                             roll_leg("QMES.v.0", false, Side::BUY, 7262.50, 1.32, "42003800")}}};
+    const StrategyPositionsMap settled = {
+        {"TREND_FOLLOWING",
+         {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0, 425.0)}}}};
+    const std::unordered_map<std::string, double> t1 = {{"QZT.v.0", 103.73828125}, {"QKE.v.0", 677.0}};
+    const std::unordered_map<std::string, double> t2 = {{"QZT.v.0", 103.71484375}, {"QKE.v.0", 668.5}};
+    EmailReportContext context = with_book(context_of("2026-04-27", 171, 311.0574), "2025-10-05");
+    context.settled_zero_kinds.per_contract_roll.insert("QKE.v.0");
+    context.rolls.per_contract_rolls = true;
+    context.rolls.names["ROLL_QMBT.v.0_RC"] = ReportRollNames{"Micro Bitcoin Futures", "April", "May", 1};
+    context.rolls.names["ROLL_QMES.v.0_RC"] = ReportRollNames{"Micro E-mini S&P500 Index", "September", "December", 2};
+    ReportRollOutlook zt;
+    zt.root = "QZT";
+    zt.held = "QZTM6";
+    zt.cycle = "HMUZ";
+    zt.rule_rolls = true;
+    zt.in_window = true;
+    zt.roll_by = "2026-05-28";
+    zt.deadline = "2026-05-29";
+    zt.first_notice = true;
+    zt.target = "QZTU6";
+    context.rolls.outlook["QZT"] = zt;
+    const std::string body = sender_.generate_trading_report_body(
+        book, sleeve, std::nullopt, futures_metrics(), executions, "2026-04-28", "CONSERVATIVE_PORTFOLIO", true,
+        {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
+        over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), context);
+    EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro Bitcoin Futures, April to May: market "
+                        "move booked -$54; contract price difference 1110.0 ($111, not profit or loss); roll cost "
+                        "$4.90.</p>"),
+              std::string::npos)
+        << body;
+    EXPECT_LT(body.find("<th>Roll Leg</th>"), body.find("Micro Bitcoin Futures, April to May")) << "under the legs";
+    EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro E-mini S&P500 Index, September to December: "
+                        "roll cost $2.62 (market move and contract price difference shown once the full-size contracts "
+                        "are loaded).</p>"),
+              std::string::npos)
+        << "a roll of the vendor's series gets its cost-only line (R4B fix round 1)";
+    EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "
+                        "<strong>QZTU6</strong> by 05-28, first notice 05-29</li>"),
+              std::string::npos)
+        << body;
+    EXPECT_NE(body.find(kReportRollBarNote), std::string::npos) << body;
+    EXPECT_NE(body.find(std::string("futures assets. ") + kReportRollsFooter), std::string::npos) << body;
+    EXPECT_EQ(body.find("We currently only provide data for the front-month contract"), std::string::npos);
+    EXPECT_EQ(body.find("P&amp;L is not booked on the roll."), std::string::npos)
+        << "no row booked 0 on a roll: the old footnote is not printed";
+    // The same body with the switch off: none of it.
+    EmailReportContext off = context;
+    off.rolls = ReportRolls{};
+    off.settled_zero_kinds.per_contract_roll.clear();
+    const std::string off_body = sender_.generate_trading_report_body(
+        book, sleeve, std::nullopt, futures_metrics(), executions, "2026-04-28", "CONSERVATIVE_PORTFOLIO", true,
+        {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
+        over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), off);
+    for (const char* absent : {"Micro Bitcoin Futures, April", "Rollover Notice", "rolled to the next one before",
+                               "The old contract's move that day is booked", "shown once the full-size"}) {
+        EXPECT_EQ(off_body.find(absent), std::string::npos) << absent;
+    }
+    EXPECT_NE(off_body.find("We currently only provide data for the front-month contract"), std::string::npos);
+}
+
 // N6: the note about a contract with no metadata sits after the table, not inside it.
 TEST_F(EmailFixture, TheNoteAboutMissingMetadataIsOutsideTheTable) {
     auto db = std::make_shared<SymbolsDatabase>(

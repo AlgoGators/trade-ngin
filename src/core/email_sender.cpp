@@ -52,6 +52,16 @@ thread_local std::set<int> g_note_flushed;       // kinds whose line was already
 thread_local std::string g_netting_note;         // the text of kind 5, set by the executions tables
 thread_local std::string g_single_title;   // an equity book's one strategy: its name, as a futures sleeve has
 thread_local bool g_single_sleeve = false;       // one strategy: its summary line would repeat the book block
+// Rolls step 4 (R4b): the report's roll view while a report body is built (null outside one, and empty
+// with per_contract_rolls off): the roll lines, the Front Month column. Set by RollsScope.
+thread_local const ReportRolls* g_rolls = nullptr;
+struct RollsScope {
+    explicit RollsScope(const ReportRolls& rolls) { g_rolls = &rolls; }
+    ~RollsScope() { g_rolls = nullptr; }
+    RollsScope(const RollsScope&) = delete;
+    RollsScope& operator=(const RollsScope&) = delete;
+};
+bool rolls_on() { return g_rolls && g_rolls->per_contract_rolls; }
 std::string note_sup(int kind) {
     auto it = g_note_number.find(kind);
     if (it == g_note_number.end())
@@ -64,7 +74,7 @@ std::string notes_html() {
         "", "No price received that day. P&amp;L is logged as 0 and updates on later days.",
         "Contract rolled that day. P&amp;L is not booked on the roll.",
         "Price rejected: too little trading volume that day. P&amp;L is booked with the next accepted price.",
-        "No price bar for this contract that day. Its last known price is shown.", ""};
+        "No price bar for this contract that day. Its last known price is shown.", "", kReportRollBarNote};
     std::map<int, int> by_number;
     for (const auto& [kind, number] : g_note_number)
         if (!g_note_flushed.count(kind)) by_number[number] = kind;
@@ -616,6 +626,7 @@ std::string EmailSender::generate_trading_report_body(
     const EmailReportContext& context) {
     (void)risk_metrics;
     reset_notes();
+    const RollsScope rolls_scope(context.rolls);
     {
         // An equity book is one strategy: its name and kind as a futures sleeve has them (HD 10-14).
         std::string name = chart_strategy_id;
@@ -1019,13 +1030,18 @@ std::string EmailSender::generate_trading_report_body(
     } else if (db) {
         html << "<h2>Symbols Reference</h2>\n";
         try {
-            html << format_symbols_table_for_positions(positions, db, yesterday_date_str);
+            html << format_symbols_table_for_positions(positions, db, yesterday_date_str, &context.rolls);
         } catch (const std::exception& e) {
             html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
         }
     } else {
         html << "<h2>Symbols Reference</h2>\n";
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
+    }
+
+    // Rollover Warning (R4b, per_contract_rolls on): the held contracts inside their roll window.
+    if (context.rolls.per_contract_rolls && !context.equities) {
+        html << report_rollover_warning_html(context.rolls);
     }
 
 
@@ -1054,9 +1070,12 @@ static std::string report_footer_note_html(const EmailReportContext& context) {
     // HD 10-13: the one note of the email, after the numbered footnotes.
     std::string html = notes_html();
     html += "<strong>Note:</strong> This strategy is based on daily OHLCV data for ";
-    html += context.equities ? "equity assets." : "futures assets. We currently only provide data "
-                                                  "for the front-month contract and are working "
-                                                  "on integrating roll data.";
+    html += context.equities ? "equity assets."
+            : context.rolls.per_contract_rolls
+                ? std::string("futures assets. ") + kReportRollsFooter
+                : "futures assets. We currently only provide data "
+                  "for the front-month contract and are working "
+                  "on integrating roll data.";
     if (!context.live_start_date.empty()) {
         html += "<br><br>\nAll values reflect a trading start date of " +
                 report_long_date(context.live_start_date) + ".";
@@ -1140,6 +1159,29 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
     }
     if (legs > 0) {
         html << "</table>\n";
+    }
+    if (legs > 0 && rolls_on()) {
+        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg: the split, or for a
+        // roll of the vendor's series (no split, the micros) the cost only (R4B fix round 1).
+        for (const auto& closing : executions) {
+            const bool is_closing = closing.exec_id.size() >= 3 &&
+                                    closing.exec_id.compare(closing.exec_id.size() - 3, 3, "_RC") == 0;
+            if (closing.execution_type != ExecutionType::ROLL || (!is_closing && !closing.roll_bar_move)) continue;
+            double cost = closing.total_transaction_costs.as_double();
+            const std::string opening_id =
+                is_closing ? closing.exec_id.substr(0, closing.exec_id.size() - 3) + "_RO" : std::string();
+            for (const auto& opening : executions) {
+                if (opening.execution_type == ExecutionType::ROLL && !opening_id.empty() &&
+                    opening.exec_id == opening_id && opening.symbol == closing.symbol) {
+                    cost += opening.total_transaction_costs.as_double();
+                    break;
+                }
+            }
+            const auto names = g_rolls->names.find(closing.exec_id);
+            const std::string line = report_roll_line(
+                names == g_rolls->names.end() ? ReportRollNames{} : names->second, closing.symbol, closing, cost);
+            if (!line.empty()) html << "<p style=\"margin: 4px 0; font-size: 13px;\">" << line << "</p>\n";
+        }
     }
     return html.str();
 }
@@ -1649,7 +1691,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
              << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
                                 realized_pnl, zero_kinds) == 2 ? note_sup(2) : std::string())
              << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
-                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string());
+                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string())
+             << (settled_roll_bar_note(equities, symbol, qty, zero_kinds) ? note_sup(kSettledNoteRollBar)
+                                                                           : std::string());
         html << "</td>";
 
         html << "</tr>\n";
@@ -1890,7 +1934,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
              << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
                                 realized_pnl, zero_kinds) == 2 ? note_sup(2) : std::string())
              << (settled_zero_note(equities, symbol, qty, known_price(entry_price), known_price(exit_price),
-                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string());
+                                realized_pnl, zero_kinds) == 3 ? note_sup(3) : std::string())
+             << (settled_roll_bar_note(equities, symbol, qty, zero_kinds) ? note_sup(kSettledNoteRollBar)
+                                                                           : std::string());
             html << "</td>";
 
             html << "</tr>\n";
@@ -2136,7 +2182,9 @@ std::string EmailSender::format_strategy_metrics(
 }
 std::string EmailSender::format_symbols_table_for_positions(
     const std::unordered_map<std::string, Position>& positions,
-    std::shared_ptr<DatabaseInterface> db, const std::string& date) {
+    std::shared_ptr<DatabaseInterface> db, const std::string& date, const ReportRolls* rolls) {
+    // R4b: with per_contract_rolls on, the Front Month column (the contract held) and the cycle's months.
+    const bool with_rolls = rolls && rolls->per_contract_rolls;
     std::ostringstream html;
 
     // 1) Collect normalized base symbols from non-zero positions only
@@ -2275,7 +2323,8 @@ std::string EmailSender::format_symbols_table_for_positions(
                 "</div>\n";
         html << "<table>\n";
         html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
-                "<th>Name</th><th>Contract Months</th></tr>\n";
+                "<th>Name</th><th>Contract Months</th>"
+             << (with_rolls ? "<th>Front Month</th>" : "") << "</tr>\n";
 
         // Track matched symbols to detect gaps
         std::set<std::string> matched;
@@ -2316,7 +2365,13 @@ std::string EmailSender::format_symbols_table_for_positions(
             html << "<td>" << db_sym << "</td>\n";
             html << "<td>" << ib_sym << "</td>\n";
             html << "<td>" << name << "</td>\n";
-            html << "<td>" << months << "</td>\n";
+            if (with_rolls) {
+                // R4b: the root's cycle, and the contract the book holds.
+                html << "<td>" << report_contract_months(*rolls, db_sym, months) << "</td>\n";
+                html << "<td>" << report_front_month(*rolls, db_sym) << "</td>\n";
+            } else {
+                html << "<td>" << months << "</td>\n";
+            }
             html << "</tr>\n";
         }
 
@@ -3122,6 +3177,7 @@ std::string EmailSender::generate_trading_report_body(
     const EmailReportContext& context) {
     (void)risk_metrics;
     reset_notes();
+    const RollsScope rolls_scope(context.rolls);
     std::ostringstream html;
 
     // Parse the date to check day of week
@@ -3486,12 +3542,17 @@ std::string EmailSender::generate_trading_report_body(
         try {
             // Every contract any sleeve holds, not only those the book holds net (N4).
             const auto held_by_sleeves = held_by_any_sleeve(positions, strategy_positions);
-            html << format_symbols_table_for_positions(held_by_sleeves, db, yesterday_date_str);
+            html << format_symbols_table_for_positions(held_by_sleeves, db, yesterday_date_str, &context.rolls);
         } catch (const std::exception& e) {
             html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
         }
     } else {
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
+    }
+
+    // Rollover Warning (R4b, per_contract_rolls on): the held contracts inside their roll window.
+    if (context.rolls.per_contract_rolls && !context.equities) {
+        html << report_rollover_warning_html(context.rolls);
     }
 
     // Footer note

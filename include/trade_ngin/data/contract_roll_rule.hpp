@@ -1,6 +1,7 @@
 // include/trade_ngin/data/contract_roll_rule.hpp
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -236,6 +237,9 @@ struct RuleInputs {
     /// Warnings dated before this day are kept in RuleReport::warnings but not logged (the bar
     /// source runs the rule from the series start on every load and logs its own window's only).
     Day log_from{};
+    /// Rolls step 4 (R4a open question 4): asked before a warning is logged; false keeps it in
+    /// RuleReport::warnings, not logged (the bar source logs each message once per run). Empty: log.
+    std::function<bool(const std::string&)> log_once;
 };
 
 /**

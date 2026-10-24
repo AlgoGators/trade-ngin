@@ -38,6 +38,8 @@ void PerContractSource::enable(FuturesCalendar calendar, SwitchBar switch_bar) {
     switch_bar_ = switch_bar;
     enabled_ = true;
     micros_warned_ = false;
+    log_floor_ = Day{};
+    logged_.clear();
 }
 
 void PerContractSource::disable() {
@@ -46,6 +48,23 @@ void PerContractSource::disable() {
     switch_bar_ = SwitchBar::HELD;
     enabled_ = false;
     micros_warned_ = false;
+    log_floor_ = Day{};
+    logged_.clear();
+}
+
+void PerContractSource::set_log_floor(Day day) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    log_floor_ = day;
+}
+
+Day PerContractSource::log_floor() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return log_floor_;
+}
+
+bool PerContractSource::first_log(const std::string& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return logged_.insert(message).second;
 }
 
 SwitchBar PerContractSource::switch_bar() const {
@@ -117,7 +136,8 @@ std::string micros_warning_line() {
 
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                               const std::map<Day, std::string>& window,
-                                              SwitchBar switch_bar) {
+                                              SwitchBar switch_bar, Day log_from,
+                                              const std::function<bool(const std::string&)>& log_once) {
     using Bars = std::vector<SourceBar>;
     Bars out;
     out.reserve(window.size());
@@ -223,11 +243,13 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                         from.close = previous_close * (d.close / *d.fallback_new_previous_close);
                     }
                     from.instrument_id = previous_id;
-                    WARN("PER_CONTRACT_ROLLS fallback roll " + symbol + " " + ymd(d.date) + " " +
-                         (d.old ? d.old->raw_symbol : std::string("?")) + "->" +
-                         d.held.raw_symbol + " (" + to_string(d.fallback) +
-                         "): the old contract has no bar; its close on the roll bar is read as " +
-                         std::to_string(from.close));
+                    const std::string line =
+                        "PER_CONTRACT_ROLLS fallback roll " + symbol + " " + ymd(d.date) + " " +
+                        (d.old ? d.old->raw_symbol : std::string("?")) + "->" + d.held.raw_symbol +
+                        " (" + to_string(d.fallback) +
+                        "): the old contract has no bar; its close on the roll bar is read as " +
+                        std::to_string(from.close);
+                    if (d.date >= log_from && (!log_once || log_once(line))) WARN(line);
                 }
                 b.roll_from = from;
             } else if (d.left_close) {
@@ -489,13 +511,19 @@ Result<std::vector<SourceBar>> per_contract_bars(
     }
     drop_before_series_start(root, window, start.value());
     if (window.empty()) return Bars{};
-    // The rule runs from the series start; only the window's own warnings are logged.
+    // The rule runs from the series start; only the window's own warnings are logged, from the
+    // run's log floor on (a live run: its T-1, the bar it consumes for the first time), each once
+    // per run however many loads read the bar (R4a open question 4).
+    const Day log_from = std::max(window.begin()->first, PerContractSource::instance().log_floor());
+    const auto log_once = [](const std::string& message) {
+        return PerContractSource::instance().first_log(message);
+    };
     auto series = build_held_series(txn, root, start.value(), window.rbegin()->first, calendars,
-                                    window.begin()->first);
+                                    log_from, log_once);
     if (series.is_error()) {
         return make_error<Bars>(series.error()->code(), series.error()->what(), "contract_rolls");
     }
-    return bars_of_series(series.value().series(), window, switch_bar);
+    return bars_of_series(series.value().series(), window, switch_bar, log_from, log_once);
 }
 
 }  // namespace trade_ngin::contract_rolls

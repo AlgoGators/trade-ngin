@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -96,6 +97,14 @@ public:
     bool first_micros_warning();
     /// Ruling 19's setting given to enable(); HELD when off.
     SwitchBar switch_bar() const;
+    /// Rolls step 4 (R4a open question 4): the first bar date whose rule warnings (the fallbacks) a
+    /// load logs. A live run sets its T-1, the bar it consumes for the first time (runs go on
+    /// consecutive days); Day{} (the default, and after enable()) logs a load's whole window.
+    void set_log_floor(Day day);
+    Day log_floor() const;
+    /// True the first time `message` is asked after enable() (each fallback is logged once per run,
+    /// however many loads read its bar).
+    bool first_log(const std::string& message);
 
 private:
     PerContractSource() = default;
@@ -104,6 +113,8 @@ private:
     bool micros_warned_{false};
     std::optional<FuturesCalendar> calendar_;
     SwitchBar switch_bar_{SwitchBar::HELD};
+    Day log_floor_{};
+    std::set<std::string> logged_;
 };
 
 /**
@@ -155,7 +166,9 @@ struct SourceBar {
  */
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                               const std::map<Day, std::string>& window,
-                                              SwitchBar switch_bar = SwitchBar::HELD);
+                                              SwitchBar switch_bar = SwitchBar::HELD,
+                                              Day log_from = Day{},
+                                              const std::function<bool(const std::string&)>& log_once = {});
 
 /// The loader's split of the symbols asked for: the roots the rule serves and the micros' `.v.0`
 /// symbols, left on the vendor's series (reads_vendor_series), both in the order asked.

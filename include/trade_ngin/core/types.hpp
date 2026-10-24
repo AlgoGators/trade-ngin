@@ -538,6 +538,14 @@ struct ExecutionReport {
     /// initialiser of the older fields stays as it is.
     ExecutionType execution_type{ExecutionType::STRATEGY};
     std::string instrument_id;
+    /// Rolls step 4 (ruling 18, migration 040): the roll's split, on a per-contract roll's CLOSING
+    /// leg only (roll_series::attach_roll_split): the held contract's move booked on the roll bar
+    /// (dollars, P&L already in the day's P&L), the new close minus the old close on that bar
+    /// (points), and that gap x quantity x multiplier (dollars, never P&L). nullopt (stored NULL,
+    /// and not named by the writers' statements) on every other row and with the switch off.
+    std::optional<double> roll_bar_move;
+    std::optional<double> roll_gap_points;
+    std::optional<double> roll_gap_value;
 };
 
 /// One stored positions row's realised P&L, as PostgresDatabase::get_stored_realised_rows reads it

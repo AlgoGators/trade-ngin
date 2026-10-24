@@ -368,3 +368,64 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
                               const Timestamp&, double, Closes, Closes, PointValue, Symbols,
                               const LiveSizingCalendar&>));
 }
+
+// Rolls step 4 (ruling 18, migration 040): each runner attaches a per-contract roll's split to the legs
+// it just made, from the roll's points and the contract's multiplier (the one the P&L reads), before the
+// legs are logged and inserted, so the stored closing leg carries it; a roll with no points (the vendor's
+// series) attaches nothing.
+TEST(LiveRollWriteOrder, EachRunnerAttachesTheRollSplitToTheLegsItMakes) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "legs = roll_series::make_roll_legs(",
+                                          "roll_legs.insert(roll_legs.end(), legs.begin(), legs.end());");
+        ASSERT_FALSE(block.empty()) << runner;
+        const auto gate = block.find("if (r.roll_bar_points) {");
+        ASSERT_NE(gate, npos) << runner;
+        const auto pv = block.find("const double point_value = pnl_manager->get_point_value(r.symbol);", gate);
+        ASSERT_NE(pv, npos) << runner;
+        const auto attach = block.find("roll_series::attach_roll_split(legs, q, *r.roll_bar_points, point_value);", pv);
+        ASSERT_NE(attach, npos) << runner;
+        EXPECT_LT(attach, block.find("for (const auto& leg : legs) {")) << runner << ": before the legs are logged";
+        EXPECT_NE(block.find("INFO(\"ROLL_SPLIT \" + strategy_name", attach), npos) << runner;
+    }
+}
+
+// R4a open question 4: with the source on, each runner sets the rule's log floor to its T-1 (the bar a
+// run consumes for the first time; runs go on consecutive days) right after configuring the source.
+TEST(LiveRollWriteOrder, EachRunnerLogsTheRulesFallbacksFromItsT1) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const auto configured = src.find("contract_rolls::configure_per_contract_source(");
+        ASSERT_NE(configured, npos) << runner;
+        const auto floor = src.find("const std::string log_floor = core::format_utc_date(now - std::chrono::hours(24));",
+                                    configured);
+        ASSERT_NE(floor, npos) << runner;
+        EXPECT_NE(src.find("PerContractSource::instance().set_log_floor(contract_rolls::parse_ymd(log_floor));", floor),
+                  npos)
+            << runner;
+        EXPECT_LT(floor, src.find("auto symbols_result = db->get_symbols(")) << runner << ": before any bar is loaded";
+    }
+}
+
+// R4b: with the source on, each runner hands the report the roll footnote's symbols and the roll view,
+// asked through report_roll_query (executed by test_report_roll_query.cpp) with the run's roll status.
+// A source guard: it reads the runners' text.
+TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;",
+                                          "if (one_pass_day.stores_detail()) {");
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("if (contract_rolls::PerContractSource::instance().enabled()) {"), npos) << runner;
+        EXPECT_NE(block.find("report_context.settled_zero_kinds.per_contract_roll =\n"
+                             "                            t1_settlement.per_contract_roll_symbols;"), npos) << runner;
+        EXPECT_NE(block.find("report_context.rolls = db->report_roll_view("), npos) << runner;
+        EXPECT_NE(block.find("report_roll_query(yesterday_date_for_email, positions, strategy_positions_map,"), npos)
+            << runner;
+        EXPECT_NE(block.find("all_strategy_executions, roll_status),"), npos) << runner;
+        EXPECT_NE(block.find("report_tick_size);"), npos) << runner;
+    }
+}

@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/roll_split_sql.hpp"
 #include "trade_ngin/data/day_execution_replace.hpp"
 #include <algorithm>
 #include <optional>
@@ -386,22 +387,27 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
         // Phase 5 §5c: UTC date-string contract via format_utc_date.
         const std::string exec_date = trade_ngin::core::format_utc_date(exec.fill_time);
 
-        // The 4 cost breakdown fields and the K3 netting adjustment (migration 013).
+        // The 4 cost breakdown fields and the K3 netting adjustment (migration 013). Migration
+        // 040: a row carrying a roll split (a per-contract roll's closing leg) names its three
+        // columns; every other row is the statement before 040.
+        const bool split = roll_split_sql::has_split(exec);
         std::string query = "INSERT INTO " + table_name +
                             " (exec_id, order_id, symbol, side, quantity, price, "
                             "execution_time, commissions_fees, implicit_price_impact, "
                             "slippage_market_impact, total_transaction_costs, is_partial, "
                             "strategy_id, strategy_name, date, portfolio_id, "
-                            "netting_adjustment, execution_type, instrument_id, portfolio_type) "
+                            "netting_adjustment, execution_type, instrument_id, portfolio_type" +
+                            roll_split_sql::columns(split) +
+                            ") "
                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
-                            "$15, $16, $17, $18, $19, $20)";
+                            "$15, $16, $17, $18, $19, $20" +
+                            roll_split_sql::placeholders(split, 21) + ")";
 
         std::cout << "DEBUG: About to execute SQL query" << std::endl;
         std::cout << "DEBUG: Query: " << query << std::endl;
 
         // Updated exec to include all 4 cost fields
-        txn.exec(
-            query, pqxx::params{
+        pqxx::params params{
             exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
             static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
             format_timestamp(exec.fill_time),
@@ -418,7 +424,9 @@ Result<void> PostgresDatabase::insert_executions_in(pqxx::work& txn,
             std::string(to_string(exec.execution_type)),   // $18 - migration 015 (T-ROLLX)
             exec.instrument_id.empty() ? std::optional<std::string>{}
                                        : std::optional<std::string>{exec.instrument_id},  // $19
-            book});  // $20 - the book (migration 021)
+            book};  // $20 - the book (migration 021)
+        if (split) roll_split_sql::append(params, exec);  // $21 to $23 - migration 040
+        txn.exec(query, params);
 
         std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
     }
@@ -487,6 +495,26 @@ Result<void> PostgresDatabase::replace_roll_day_executions(
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to replace the day's executions: " + std::string(e.what()),
                                 "PostgresDatabase");
+    }
+}
+
+ReportRolls PostgresDatabase::report_roll_view(const contract_rolls::ReportRollQuery& query,
+                                               const std::function<double(const std::string&)>& tick_of) {
+    if (!contract_rolls::PerContractSource::instance().enabled()) return ReportRolls{};
+    ReportRolls none;  // the switch on, nothing read: the roll sentences, no line, box or cell
+    none.per_contract_rolls = true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (validate_connection().is_error()) {
+        WARN("report_roll_view: no database connection: the report prints no roll view");
+        return none;
+    }
+    try {
+        pqxx::read_transaction txn(*connection_);
+        return contract_rolls::report_roll_view(
+            txn, query, contract_rolls::PerContractSource::instance().calendar(), tick_of);
+    } catch (const std::exception& e) {
+        WARN(std::string("report_roll_view: ") + e.what() + ": the report prints no roll view");
+        return none;
     }
 }
 
@@ -2530,18 +2558,24 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             }
         }
 
+        // Migration 040: a run that carries a roll split (per_contract_rolls on, a roll legged)
+        // names its three columns on every row (NULL on all but the closing legs); any other run's
+        // statements are the ones before 040.
+        const bool split = roll_split_sql::any_split(executions);
+        const std::string split_columns = roll_split_sql::columns(split);
+
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
             // Bind every value: Postgres caps a statement at 65535 parameters,
             // so insert in chunks of whole rows.
-            constexpr std::size_t kColumns = 18;  // T-ROLLX: + execution_type, instrument_id
-            constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
+            const std::size_t kColumns = split ? 21 : 18;  // T-ROLLX: + execution_type, instrument_id
+            const std::size_t kMaxRowsPerStatement = 65535 / kColumns;
             const std::string prefix =
                 "INSERT INTO " + table_name +
                 " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, "
                 "side, quantity, price, commissions_fees, implicit_price_impact, "
                 "slippage_market_impact, total_transaction_costs, is_partial, "
-                "netting_adjustment, execution_type, instrument_id) VALUES ";
+                "netting_adjustment, execution_type, instrument_id" + split_columns + ") VALUES ";
 
             for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
                 const std::size_t end =
@@ -2579,6 +2613,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     batch.append(std::string(to_string(exec.execution_type)));  // 015 (T-ROLLX)
                     batch.append(exec.instrument_id.empty() ? std::optional<std::string>{}
                                                             : std::optional<std::string>{exec.instrument_id});
+                    if (split) roll_split_sql::append(batch, exec);  // 040
                 }
                 txn.exec(query, batch);
             }
@@ -2590,12 +2625,11 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, "
                     "symbol, side, quantity, price, commissions_fees, implicit_price_impact, "
                     "slippage_market_impact, total_transaction_costs, is_partial, "
-                    "netting_adjustment, execution_type, instrument_id) "
+                    "netting_adjustment, execution_type, instrument_id" + split_columns + ") "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
-                    "$16, $17, $18)";
+                    "$16, $17, $18" + roll_split_sql::placeholders(split, 19) + ")";
 
-                txn.exec(
-                    query, pqxx::params{
+                pqxx::params params{
                     run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
                     format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
                     static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
@@ -2606,7 +2640,9 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     static_cast<double>(exec.netting_adjustment),
                     std::string(to_string(exec.execution_type)),  // 015 (T-ROLLX)
                     exec.instrument_id.empty() ? std::optional<std::string>{}
-                                               : std::optional<std::string>{exec.instrument_id}});
+                                               : std::optional<std::string>{exec.instrument_id}};
+                if (split) roll_split_sql::append(params, exec);  // 040
+                txn.exec(query, params);
             }
         }
 
