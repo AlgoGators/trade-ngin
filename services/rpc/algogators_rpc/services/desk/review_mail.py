@@ -53,7 +53,7 @@ class Review:
     held_date: Optional[dt.date]  # the last published day before the target
     held: Dict[str, Line]         # its book (qt on a desk portfolio)
     desk_edits_kept: bool
-    data_status: str              # complete | partial
+    data_status: str              # complete | partial | failed
     missing: Tuple[str, ...] = ()
     missing_last_bar: Mapping[str, dt.date] = field(default_factory=dict)
     supersedes: Optional[str] = None   # when the earlier e-mail of the day went out
@@ -122,9 +122,10 @@ def build(review: Review) -> Tuple[str, str]:
         for sym in review.missing:
             last = review.missing_last_bar.get(sym)
             items.append(f"<li>{e(sym)}: last bar {e(str(last)) if last else 'none'}</li>")
-        notes.append(f"<p>data-ngin reported {len(review.missing)} symbol(s) missing for "
+        notes.append(f"<p>{len(review.missing)} symbol(s) are missing for "
                      f"{e(str(review.bar_date))} (status {e(review.data_status)}); each is "
-                     "within the engine's staleness tolerance and is held at its last price:</p>"
+                     "carried at its last price (a per-contract root is priced from the vendor's "
+                     "bar when there is one):</p>"
                      f"<ul>{''.join(items)}</ul>")
     else:
         notes.append(f"<p>Data for {e(str(review.bar_date))}: {e(review.data_status)}, no "
