@@ -34,6 +34,7 @@
 #include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/live/email_delivery.hpp"
+#include "trade_ngin/live/python_mail.hpp"
 #include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_settings.hpp"
@@ -5722,10 +5723,39 @@ int main(int argc, char* argv[]) {
                                      "command row, if any)");
                                 return std::nullopt;
                             }
-                            auto send_result = email_sender->send_email(mail_subject, mail_body,
-                                                                        true, attachments);
-                            if (send_result.is_error()) {
-                                return std::string(send_result.error()->what());
+                            if (live::python_mail_selected()) {
+                                // QT_MAIL_BACKEND=python: scripts/send_book_email.py builds and
+                                // sends the message from the files handed to it.
+                                const EmailSenderConfig& smtp = email_sender->config();
+                                live::PythonMailRequest req;
+                                req.smtp_host = smtp.smtp_host;
+                                req.smtp_port = smtp.smtp_port;
+                                req.username = smtp.username;
+                                req.password = smtp.password;
+                                req.from_email = smtp.from_email;
+                                req.use_tls = smtp.use_tls;
+                                req.to = smtp.to_emails;
+                                if (const char* cc = std::getenv("QT_MAIL_CC")) {
+                                    req.cc = live::split_addresses(cc);
+                                }
+                                req.subject = mail_subject;
+                                req.body_html = mail_body;
+                                req.inline_images.push_back(
+                                    {"algogators_logo", "", "assets/Algo.png"});
+                                for (auto& [cid, b64] : email_sender->chart_images()) {
+                                    req.inline_images.push_back({cid, std::move(b64), ""});
+                                }
+                                req.attachment_paths = attachments;
+                                if (auto why = live::send_via_python(
+                                        req, live::python_mail_settings_from_env())) {
+                                    return why;
+                                }
+                            } else {
+                                auto send_result = email_sender->send_email(
+                                    mail_subject, mail_body, true, attachments);
+                                if (send_result.is_error()) {
+                                    return std::string(send_result.error()->what());
+                                }
                             }
                             qt_emailed = true;
                             if (qt_sends) {

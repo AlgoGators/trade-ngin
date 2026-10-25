@@ -145,7 +145,7 @@ WORKDIR /app
 COPY live_portfolio.cron /etc/cron.d/live_portfolio
 RUN chmod 0644 /etc/cron.d/live_portfolio && \
     crontab /etc/cron.d/live_portfolio && \
-    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh         /app/scripts/qt_model_run.sh /app/scripts/qt_catchup.sh
+    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh         /app/scripts/qt_model_run.sh /app/scripts/qt_catchup.sh /app/scripts/send_book_email.py
 
 # The container's only job is running cron. If the cron daemon dies, the container
 # can sit there looking alive while nothing is scheduled -- externally
