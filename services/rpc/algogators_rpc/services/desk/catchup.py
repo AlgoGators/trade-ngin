@@ -56,7 +56,7 @@ Monday, a holiday is skipped). Normally T is today, and today's model run is the
 
     today's model run (not before QT_CATCHUP_TODAY_NOT_BEFORE) waits for a usable row for the
     previous trading day: before QT_DATA_READY_ALERT_AT (06:00) it waits quietly (the pull may
-    still be running), from then on it alerts; a failed or stale row alerts at once
+    still be running), from then on it alerts; a row the rule below holds alerts at once
     one rule for every row (HD 2026-10-24, ruling 21, an AND condition): the run is held, with the
     data_stale alert and nothing built, only when more than N symbols have each had no bar for
     more than X days as of T - 1, a failed pull included (every symbol the table knows is then
@@ -214,7 +214,7 @@ class MissingRule:
     last_bars: Callable[[Sequence[str], dt.date], Dict[str, dt.date]]
     every_last_bar: Callable[[dt.date], Dict[str, dt.date]]
     reason: str                 # the alert of a run that goes with symbols missing
-    carried: str                # what that run does with them, for the alert
+    carried: str                # how that run carries them, for the alert (said before the run)
 
 
 class DayStore(Protocol):
@@ -1055,14 +1055,15 @@ class CatchupScheduler:
                 tolerance if stale_days is None else stale_days,
                 self._store.last_contract_bar_dates, self._store.every_contract_root_last_bar,
                 "contract_data_partial",
-                "the run reads those roots' vendor bar, or carries their last close, with a WARN "
-                "in its log")
+                "those roots carried: it reads their vendor bar, or carries their last close, with "
+                "a WARN in its log")
         return MissingRule(
             "symbol", "bar", self._catchup.data_ready_max_missing, "QT_DATA_READY_MAX_MISSING",
             tolerance, self._store.last_bar_dates, self._store.every_symbol_last_bar,
             "data_partial",
-            "the run holds each at its last price with no order, and the engine still refuses "
-            "today's run when the book holds one past live.data_staleness_tolerance_days")
+            "each carried at its last price, with no order; if the book holds one past "
+            "live.data_staleness_tolerance_days on today's run, the engine refuses the run (a "
+            "separate alert)")
 
     def _missing_verdict(self, part: DataReady, target: dt.date, as_of: dt.date,
                          rule: MissingRule, missing: Dict[str, Optional[dt.date]]
@@ -1121,14 +1122,15 @@ class CatchupScheduler:
         missing.update((s, last.get(s)) for s in named)
         return None, (rule.reason,
                       f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
-                      f"{part.expected}); missing: {', '.join(described)}. The books of {target} "
-                      f"are built: {rule.carried}")
+                      f"{part.expected}); missing: {', '.join(described)}. The run of {target} "
+                      f"goes ahead with {rule.carried}")
 
     def _morning_gate(self, info: PortfolioInfo, today: dt.date) -> Optional[Step]:
         """None when today's model run may go: data for the previous trading day is ready and
         usable. Not there yet: a wait until QT_DATA_READY_ALERT_AT (06:00; data-ngin's 04:30
-        pull may still be running), an alert from then on. A failed or stale row is final: an
-        alert at once. The next pass looks again either way."""
+        pull may still be running), an alert from then on. A row the data rule holds (more than N
+        symbols past X, _data_verdict) is final: an alert at once. The next pass looks again either
+        way."""
         prev = self.calendar.previous_trading_day(today)
         datasets = self._datasets(info.dir)
         rows = {d: self._store.latest_data_ready(d) for d in datasets}

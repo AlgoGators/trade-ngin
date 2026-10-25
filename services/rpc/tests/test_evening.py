@@ -1029,6 +1029,8 @@ def test_one_or_two_unnamed_missing_roots_raise_the_partial_alert(env):
     assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
     (_, message), = [(t, m) for t, s, m in env.sent if t == ["pres@algogators.com"]]
     assert "GC (last bar 2026-10-09)" in message and "ZN (last bar 2026-10-09)" in message
+    assert ("The run of 2026-10-12 goes ahead with those roots carried: it reads their vendor bar, or "
+            "carries their last close, with a WARN in its log</pre>") in message          # Q1 A S2
 
 
 def test_three_missing_roots_within_the_days_run_with_an_alert(env):
@@ -1239,7 +1241,7 @@ def test_up_to_n_symbols_past_x_run_with_the_alert(env, n):
     (message,) = president_messages(env)
     for s in missing:
         assert f"{s} (last bar " in message
-    assert "The books of 2026-10-12 are built" in message
+    assert "The run of 2026-10-12 goes ahead with each carried at its last price" in message
 
 
 def test_n_plus_one_symbols_past_x_hold_the_run(env):
@@ -1333,7 +1335,7 @@ def test_the_alert_names_every_missing_symbol_the_stalest_first(env):
     _monday_continuous(env, "partial", ("ES", "ZN", "GC", "CL"), 32, bars=bars, data_ready_max_missing=3)
     (message,) = president_messages(env)
     assert ("missing: CL (last bar none), ZN (last bar 2026-10-02), GC (last bar 2026-10-05), "
-            "ES (last bar 2026-10-09). The books of 2026-10-12 are built") in message
+            "ES (last bar 2026-10-09). The run of 2026-10-12 goes ahead with each carried") in message
 
 
 def test_the_hold_names_the_stale_symbols_the_stalest_first(env):
