@@ -42,13 +42,10 @@ struct ReportRollOutlook {
     std::string held;
     std::string held_symbol;     ///< "6JZ5": the same contract's own code (contract_ohlcv_1d.raw_symbol)
     std::string cycle;           ///< "HMUZ": the root's cycle (contract_rolls::roll_cycle_table)
-    /// False for a root the rule does not roll (the micros stay on the vendor's series until their
-    /// full-size contracts' bars are loaded): its warning line names the last trading day only.
-    bool rule_rolls{false};
     /// The settled day is inside the held contract's window (from the fifth CME trading day before its
     /// deadline). False while the rule has rolled and the book still holds the old contract.
     bool in_window{false};
-    std::string roll_by;         ///< YYYY-MM-DD: the run date of the last actionable bar (empty: micros)
+    std::string roll_by;         ///< YYYY-MM-DD: the run date of the last actionable bar
     std::string deadline;        ///< YYYY-MM-DD: the deadline (first notice or last trading day)
     bool first_notice{false};    ///< the deadline is the first notice day
     std::string target;          ///< "JPYH6": the cycle's front month after the held contract (IB format)
@@ -147,21 +144,15 @@ inline std::string report_cents(double value) {
  *
  * `closing` is the roll's closing leg (its split, migration 040), `roll_cost` both legs' costs. A
  * roll whose names were not found reads its symbol and no months. The difference prints unsigned. A
- * leg with no split (a roll of the vendor's series) gets the roll cost only, with the reason.
+ * leg with no split gets no line (R6: with the switch on every root rolls by the rule and every
+ * closing leg stores its split, the micros' included; the leg itself is in the roll legs table).
  */
 inline std::string report_roll_line(const ReportRollNames& names, const std::string& symbol,
                                     const ExecutionReport& closing, double roll_cost) {
     std::string text = names.name.empty() ? symbol : names.name;
     if (!names.from_month.empty() && !names.to_month.empty())
         text += ", " + names.from_month + " to " + names.to_month;
-    if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) {
-        // A roll of the vendor's series (the micros until their full-size contracts are loaded): no two
-        // closes on one bar, so no move or difference to show (lead, R4b fix round 1); plain words for the
-        // reader (R4b audit B recheck R-1).
-        return text + ": roll cost " + report_cents(roll_cost) +
-               " (the market move and the price difference between the two contracts are not shown for this "
-               "contract yet).";
-    }
+    if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) return std::string();
     // The difference is not profit or loss: printed without a sign (lead, R4b fix round 1); stored signed.
     char points[64];
     std::snprintf(points, sizeof(points), "%.*f", names.gap_places, std::abs(*closing.roll_gap_points));
@@ -180,8 +171,8 @@ inline std::string report_month_day(const std::string& ymd) {
 /**
  * @brief The Rollover Warning box (the 2026-10-13 design: the red box, "Currently holding X -> Switch
  *        to Y"), one line per held root whose window is open, in root order, with the latest run date
- *        of the roll and the deadline: "by 07-30, first notice 07-31". A micro (the vendor's series)
- *        names its last trading day only. Empty when no held contract is inside its window.
+ *        of the roll and the deadline: "by 07-30, first notice 07-31", the micros' too. Empty when no
+ *        held contract is inside its window.
  */
 inline std::string report_rollover_warning_html(const ReportRolls& rolls) {
     std::vector<const ReportRollOutlook*> due;
@@ -199,14 +190,6 @@ inline std::string report_rollover_warning_html(const ReportRolls& rolls) {
         "<ul style=\"color: #991b1b; margin: 5px 0 0 20px; padding: 0;\">\n";
     for (const auto* o : due) {
         const std::string label = o->label.empty() ? o->root : o->label;
-        if (!o->rule_rolls) {
-            // The micros: they roll when the vendor's series does; the line names the last trading day, in
-            // plain words for the reader (R4b audit B recheck R-1).
-            html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
-                    "</strong>, moves to the next contract when trading does, before the contract ends on " +
-                    report_month_day(o->deadline) + "</li>\n";
-            continue;
-        }
         html += "<li><strong>" + label + ":</strong> Currently holding <strong>" + o->held +
                 "</strong> \xE2\x86\x92 Switch to <strong>" + (o->target.empty() ? std::string("the next contract") : o->target) +
                 "</strong> by " + report_month_day(o->roll_by) + ", " +
