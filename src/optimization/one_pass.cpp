@@ -430,6 +430,14 @@ DayResult rebalance(const DayInputs& in) {
         for (std::size_t a = 0; a < k; ++a) part_returns[d][a] = in.returns[d][out.participants[a]];
     }
     out.window = overlay::gate_window(part_returns, in.ordinals);
+    if (in.overlay_carver) {
+        Vector part_sigma(k, 0.0);
+        for (std::size_t a = 0; a < k; ++a) {
+            const std::size_t i = out.participants[a];
+            part_sigma[a] = i < in.sizing_sigma.size() ? in.sizing_sigma[i] : 0.0;
+        }
+        overlay::carver_covariance(out.window, part_returns, in.ordinals, part_sigma);
+    }
     Vector sigma_jump(k, 0.0);
     const double jump_factor = out.window.blind() ? 0.0 : std::sqrt(out.window.bars_per_year);
     for (std::size_t a = 0; a < k; ++a) {

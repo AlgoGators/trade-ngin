@@ -61,6 +61,9 @@ struct PortfolioConfig : public ConfigBase {
     double per_name_cap{2.0};
     double sign_close_band{2.0};
     double b_sigma_floor{0.05};
+    // The overlay's covariance (risk.json's carver module overlay_covariance): false is "sample",
+    // true is "carver" (overlay::carver_covariance).
+    bool overlay_carver{false};
     int trim_max{5};
     // LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run
     // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
@@ -147,6 +150,9 @@ struct PortfolioConfig : public ConfigBase {
                 risk["R_shock_max"] = carver->r_shock_max;
             }
             risk["per_name_cap"] = per_name_cap;
+            // Recorded only when it is not "sample", so a sample book stores the object it stored
+            // before the rule became a key.
+            if (overlay_carver) risk["overlay_covariance"] = "carver";
             risk["trim_max"] = trim_max;
             j["sizing_mode"] = sizing_mode;
             nlohmann::json pairs = nlohmann::json::array();

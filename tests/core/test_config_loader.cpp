@@ -699,6 +699,7 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
         EXPECT_EQ(carver->r_shock_max, 4.0) << b << ": module.R_shock_max";
         EXPECT_EQ(carver->per_name_cap, 2.0) << b << ": module.per_name_cap";
         EXPECT_EQ(carver->trim_max, 5) << b << ": module.trim_max";
+        EXPECT_EQ(carver->overlay_covariance, "sample") << b << ": module.overlay_covariance";
         EXPECT_EQ(e.max_leverage, AppConfig().max_leverage) << b << ": max_leverage is retired";
         EXPECT_EQ(e.var_limit, RiskConfig().var_limit) << b << ": var_limit is retired";
         EXPECT_EQ(e.jump_risk_limit, RiskConfig().jump_risk_limit) << b;
@@ -798,7 +799,8 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
         const auto& module = none_book ? risk.at("risk_reporting") : risk.at("modules").at(0);
         if (b.overlay) {
             for (const char* field : {"R_max", "R_jump_max", "R_shock_max", "per_name_cap",
-                                      "trim_max", "max_gross_leverage", "max_net_leverage",
+                                      "trim_max", "overlay_covariance", "max_gross_leverage",
+                                      "max_net_leverage",
                                       "confidence_level", "lookback_period"}) {
                 EXPECT_TRUE(module.contains(field))
                     << b.dir << ": risk.json does not write " << field << " literally";
@@ -1166,6 +1168,7 @@ nlohmann::json overlay_risk() {
     risk["modules"][0]["R_shock_max"] = 4.0;
     risk["modules"][0]["per_name_cap"] = 2;
     risk["modules"][0]["trim_max"] = 5;
+    risk["modules"][0]["overlay_covariance"] = "sample";
     return risk;
 }
 
@@ -1360,7 +1363,7 @@ TEST_F(ConfigLoaderTest, TheOnePassKeysAreRequiredOnAFuturesBook) {
             EXPECT_NE(std::string(r.error()->what()).find(key), std::string::npos);
         }
     }
-    for (const char* key : {"per_name_cap", "trim_max"}) {
+    for (const char* key : {"per_name_cap", "trim_max", "overlay_covariance"}) {
         nlohmann::json risk = overlay_risk();
         risk["modules"][0].erase(key);
         EXPECT_NE(load_error(risk).find(std::string(key) + " is required"), std::string::npos) << key;
@@ -1374,6 +1377,25 @@ TEST_F(ConfigLoaderTest, TheOnePassKeysAreRequiredOnAFuturesBook) {
         nlohmann::json risk = overlay_risk();
         risk["modules"][0]["trim_max"] = bad;
         EXPECT_NE(load_error(risk).find("trim_max"), std::string::npos) << bad.dump();
+    }
+    for (const nlohmann::json& bad :
+         {nlohmann::json(""), nlohmann::json("Carver"), nlohmann::json(1), nlohmann::json(true)}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0]["overlay_covariance"] = bad;
+        EXPECT_NE(load_error(risk).find("overlay_covariance"), std::string::npos) << bad.dump();
+    }
+    for (const char* rule : {"sample", "carver"}) {
+        nlohmann::json risk = overlay_risk();
+        risk["modules"][0]["overlay_covariance"] = rule;
+        write_full_set("base", loop_defaults(), loop_portfolio(), risk);
+        auto loaded = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(loaded.is_ok()) << rule;
+        const auto* module =
+            std::get_if<CarverModuleConfig>(&loaded.value().risk_schema.portfolio.at(0).params);
+        ASSERT_NE(module, nullptr);
+        EXPECT_EQ(module->overlay_covariance, rule);
+        EXPECT_EQ(loaded.value().risk_schema.portfolio.at(0).to_json().value("overlay_covariance", ""),
+                  rule);
     }
 }
 

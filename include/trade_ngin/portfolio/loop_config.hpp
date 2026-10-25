@@ -25,6 +25,7 @@ inline void apply_loop_config(const AppConfig& app, PortfolioConfig& portfolio) 
         if (carver == nullptr || !carver->overlay_limits()) continue;
         portfolio.per_name_cap = carver->per_name_cap;
         portfolio.trim_max = carver->trim_max;
+        portfolio.overlay_carver = carver->overlay_covariance == "carver";
     }
 }
 

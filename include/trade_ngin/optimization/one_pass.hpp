@@ -173,6 +173,11 @@ struct DayInputs {
     Matrix returns;
     Vector ordinals;
     Vector jump_sigma_daily;
+    /// risk.json's carver module overlay_covariance "carver": the overlay's covariance and shock
+    /// sigmas are built from `sizing_sigma` (per symbol, the annualised standard deviation the
+    /// sleeve sizes on) and weekly correlations (overlay::carver_covariance); false is "sample".
+    bool overlay_carver{false};
+    Vector sizing_sigma;
 
     // the optimiser's covariance: each symbol's last 756 consumed closes and adjusted levels
     Matrix opt_closes;

@@ -92,6 +92,15 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("cost_penalty_scalar").get<double>(), 100.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("sign_close_band").get<double>(), 2.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("b_sigma_floor").get<double>(), 0.05);
+    // overlay_covariance: "sample" is not recorded (the object a sample book stored before the
+    // key), "carver" is.
+    EXPECT_FALSE(j.at("risk_config").contains("overlay_covariance"));
+    AppConfig carver_app = loaded.value();
+    for (auto& module : carver_app.risk_schema.portfolio) {
+        if (auto* c = std::get_if<CarverModuleConfig>(&module.params)) c->overlay_covariance = "carver";
+    }
+    const nlohmann::json carver = runner_config(carver_app, "TREND_FOLLOWING", 0.20).to_json();
+    EXPECT_EQ(carver.at("risk_config").at("overlay_covariance").get<std::string>(), "carver");
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);
