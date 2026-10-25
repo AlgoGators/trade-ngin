@@ -112,4 +112,38 @@ Result<std::vector<std::string>> PostgresMarketDataSource::get_symbols(AssetClas
     return db_->get_symbols(asset_class);
 }
 
+Result<std::vector<std::pair<std::string, std::string>>>
+PostgresMarketDataSource::get_contract_sectors() {
+    using Pairs = std::vector<std::pair<std::string, std::string>>;
+    if (auto connected = ensure_connection(); connected.is_error()) {
+        return make_error<Pairs>(connected.error()->code(), connected.error()->what(),
+                                 "PostgresMarketDataSource");
+    }
+    auto metadata_result = db_->get_contract_metadata();
+    if (metadata_result.is_error()) {
+        return make_error<Pairs>(metadata_result.error()->code(), metadata_result.error()->what(),
+                                 "PostgresMarketDataSource");
+    }
+    const auto metadata = metadata_result.value();
+    const int sector_idx = metadata->schema()->GetFieldIndex("Sector");
+    const int symbol_idx = metadata->schema()->GetFieldIndex("Databento Symbol");
+    if (sector_idx == -1 || symbol_idx == -1) {
+        return make_error<Pairs>(ErrorCode::INVALID_DATA,
+                                 "Sector or Databento Symbol column not found in metadata schema",
+                                 "PostgresMarketDataSource");
+    }
+    Pairs out;
+    const auto sector_col = metadata->column(sector_idx);
+    const auto symbol_col = metadata->column(symbol_idx);
+    for (int chunk = 0; chunk < sector_col->num_chunks(); ++chunk) {
+        const auto sectors = std::static_pointer_cast<arrow::StringArray>(sector_col->chunk(chunk));
+        const auto symbols = std::static_pointer_cast<arrow::StringArray>(symbol_col->chunk(chunk));
+        for (int64_t i = 0; i < sectors->length(); ++i) {
+            if (sectors->IsNull(i) || symbols->IsNull(i)) continue;
+            out.emplace_back(symbols->GetString(i), sectors->GetString(i));
+        }
+    }
+    return Result<Pairs>(std::move(out));
+}
+
 }  // namespace trade_ngin

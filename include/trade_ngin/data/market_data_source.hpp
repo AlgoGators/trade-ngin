@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "trade_ngin/core/error.hpp"
@@ -45,6 +46,22 @@ public:
      * @return Available symbols, or an error
      */
     virtual Result<std::vector<std::string>> get_symbols(AssetClass asset_class) = 0;
+
+    /**
+     * @brief The sector of each futures contract: (contract, sector) pairs in the order the
+     *        contract metadata lists them
+     *
+     * The trend sleeve weights a contract by its sector (every sector the same, every contract of
+     * a sector the same, none over half its sector), from the database's contract metadata. A
+     * source gives the same two columns here and the sleeve runs the same code on them. A source
+     * that does not say returns an error, and the sleeve runs as it does on a database whose
+     * metadata holds no sector: no contract has a stored weight.
+     */
+    virtual Result<std::vector<std::pair<std::string, std::string>>> get_contract_sectors() {
+        return make_error<std::vector<std::pair<std::string, std::string>>>(
+            ErrorCode::NOT_INITIALIZED, "this market data source does not provide contract sectors",
+            "MarketDataSource");
+    }
 };
 
 /**
@@ -72,6 +89,8 @@ public:
                                        AssetClass asset_class, DataFrequency freq) override;
 
     Result<std::vector<std::string>> get_symbols(AssetClass asset_class) override;
+
+    Result<std::vector<std::pair<std::string, std::string>>> get_contract_sectors() override;
 
     /**
      * @brief Access the underlying database connection

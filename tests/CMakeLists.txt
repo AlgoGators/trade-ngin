@@ -141,6 +141,7 @@ set(TEST_SOURCES
     backtest/test_trade_statistics_roll_legs.cpp
     backtest/test_backtest_data_loader.cpp
     backtest/test_market_data_source.cpp
+    backtest/test_wrapper_parity.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
     backtest/test_bt_equity_validation_config.cpp

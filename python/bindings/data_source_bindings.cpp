@@ -71,6 +71,32 @@ public:
                 "PyMarketDataSource");
         }
     }
+
+    Result<std::vector<std::pair<std::string, std::string>>> get_contract_sectors() override {
+        using Pairs = std::vector<std::pair<std::string, std::string>>;
+        py::gil_scoped_acquire gil;
+
+        py::function override = py::get_override(this, "get_contract_sectors");
+        if (!override) {
+            // not overridden: the base class's answer (no sectors)
+            return MarketDataSource::get_contract_sectors();
+        }
+
+        try {
+            py::object result = override();
+            return Result<Pairs>(result.cast<Pairs>());
+        } catch (const py::error_already_set& e) {
+            return make_error<Pairs>(
+                ErrorCode::MARKET_DATA_ERROR,
+                std::string("Python get_contract_sectors() raised: ") + e.what(),
+                "PyMarketDataSource");
+        } catch (const py::cast_error&) {
+            return make_error<Pairs>(
+                ErrorCode::INVALID_DATA,
+                "Python get_contract_sectors() must return a list of (symbol, sector) tuples",
+                "PyMarketDataSource");
+        }
+    }
 };
 
 void bind_data_source(py::module_& m) {
@@ -79,7 +105,9 @@ void bind_data_source(py::module_& m) {
         "Base class for custom market data providers. Subclass it and override:\n"
         "  load_bars(symbols, start_date, end_date, asset_class, freq) -> list[Bar]\n"
         "  get_symbols(asset_class) -> list[str]\n"
-        "Both overrides return plain lists, not Result objects.")
+        "and, to size the engine's trend-following sleeve as a database run does,\n"
+        "  get_contract_sectors() -> list[(symbol, sector)], in the contract metadata's order\n"
+        "The overrides return plain lists, not Result objects.")
         .def(py::init<>());
 
     py::class_<PostgresMarketDataSource, MarketDataSource,

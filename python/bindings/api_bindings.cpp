@@ -80,6 +80,7 @@ void bind_backtest_api(py::module_& m) {
         .def_readwrite("no_risk_ruled_by", &BacktestRunConfig::no_risk_ruled_by)
         .def_readwrite("no_risk_ruled_on", &BacktestRunConfig::no_risk_ruled_on)
         .def_readwrite("strategies", &BacktestRunConfig::strategies)
+        .def_readwrite("config_base_path", &BacktestRunConfig::config_base_path)
         .def_readwrite("portfolio_id", &BacktestRunConfig::portfolio_id)
         .def_readwrite("store_results", &BacktestRunConfig::store_results)
         .def_readwrite("export_csv", &BacktestRunConfig::export_csv)
@@ -147,47 +148,14 @@ void bind_backtest_api(py::module_& m) {
                     });
             },
             py::arg("strategy_id"), py::arg("strategy"))
-        .def("register_trend_following_strategy",  // Ideally we wouldn't need to do this separately
-                                                   // but this is the quickest and best solution
-                                                   // right now IMO
-             [](BacktestRunner& self) {
-                 self.register_strategy(
-                     "TREND_FOLLOWING",  // TODO Eventually allow multiple registrations with
-                                         // different configs and names
-                     [](const StrategyContext& ctx,
-                        const nlohmann::json& strategy_def) -> std::shared_ptr<BaseStrategy> {
-                         TrendFollowingConfig trend_config;
-                         // LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and
-                         // vol_lookback_short are required (strategy/sleeve_config.hpp), with no
-                         // in-code default, so a Python run reads them the way the engine's own
-                         // runners do.
-                         if (auto keys =
-                                 read_required_sleeve_keys("TREND_FOLLOWING", strategy_def,
-                                                           trend_config);
-                             keys.is_error()) {
-                             throw std::runtime_error(std::string(keys.error()->what()));
-                         }
-                         if (strategy_def.contains("config")) {
-                             const auto& cfg = strategy_def["config"];
-                             if (cfg.contains("ema_windows")) {
-                                 trend_config.ema_windows.clear();
-                                 for (const auto& window : cfg["ema_windows"]) {
-                                     trend_config.ema_windows.push_back(
-                                         {window[0].get<int>(), window[1].get<int>()});
-                                 }
-                             }
-                             trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                         }
-                         // The forecast diversification multiplier table, as the shipped config has it
-                         if (trend_config.fdm.empty()) {
-                             trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08}, {4, 1.13},
-                                                 {5, 1.19}, {6, 1.26}};
-                         }
-
-                         // Construct the strategy with context and config
-                         return std::make_shared<TrendFollowingStrategy>(
-                             "TREND_FOLLOWING", ctx.base_strategy_config, trend_config, ctx.db,
-                             ctx.registry);
-                     });
-             });
+        .def(
+            "register_trend_following_strategy",
+            [](BacktestRunner& self, const std::string& strategy_id, bool fast) {
+                // The engine's own sleeve, built as bt_portfolio builds it; the Python strategies
+                // above are the user's own code.
+                self.register_strategy(strategy_id, make_trend_following_factory(strategy_id, fast));
+            },
+            py::arg("strategy_id") = "TREND_FOLLOWING", py::arg("fast") = false,
+            "Register the engine's trend-following sleeve under strategy_id. fast=True starts "
+            "from the FAST sleeve's configuration.");
 }
