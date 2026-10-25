@@ -25,7 +25,8 @@
 #      backward stray and an ignored backward switch (both identical to the reference chain), a run killed
 #      while it writes and run again, a run whose ROLL legs fail to store, replayed (both identical to the
 #      reference chain), and a crossover day's per-contract rows arriving late with the vendor's bars in,
-#      then the dates re-run in order (identical to the reference chain).
+#      then the dates re-run in order (identical to the reference chain). R6: the chain run on through the
+#      micros' June roll (2026-06-17), so a held micro roll is priced and stored like every root's.
 #
 # THE FEED HOLE. Production mode must refuse a run whose HELD symbol has had no bar past
 # live.data_staleness_tolerance_days (4). The 2026-10-21 copy of the data has no such hole in the window, so
@@ -169,9 +170,12 @@ check "EQUITY the refused run stored nothing, the run-metadata row included" 'sa
 # ---- 5. the per-contract shapes (GATE_SWITCH=on only; rolls step 4, ROLLS_STEP1_PLAN section 7) ------------
 if [ "$SW" = on ]; then
   export RANGE_START=2026-04-24 RANGE_END=2026-05-03
-  [ -z "${GATE_EVALUATE_ONLY:-}" ] && $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -c "\\copy (select root, instrument_id, date, close from futures_data.contract_ohlcv_1d where date between '2026-04-01' and '2026-05-03' order by 1, 2, 3) to '$OUT/proofs/contract_closes.csv' with (format csv, header)"
-  [ -z "${GATE_EVALUATE_ONLY:-}" ] && $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -c "\\copy (select symbol, (ts_event at time zone 'UTC')::date as date, instrument_id from futures_data.ohlcv_1d_raw where ts_event between '2026-04-01' and '2026-05-04' order by 1, 2) to '$OUT/proofs/vendor_ids.csv' with (format csv, header)"
+  [ -z "${GATE_EVALUATE_ONLY:-}" ] && $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -c "\\copy (select root, instrument_id, date, close from futures_data.contract_ohlcv_1d where date between '2026-04-01' and '2026-06-17' order by 1, 2, 3) to '$OUT/proofs/contract_closes.csv' with (format csv, header)"
+  [ -z "${GATE_EVALUATE_ONLY:-}" ] && $PSQL -h 127.0.0.1 -p 5433 -U postgres -d "$DB" -q -c "\\copy (select symbol, (ts_event at time zone 'UTC')::date as date, instrument_id from futures_data.ohlcv_1d_raw where ts_event between '2026-04-01' and '2026-06-18' order by 1, 2) to '$OUT/proofs/vendor_ids.csv' with (format csv, header)"
   check "SWITCH ON a held roll: every ROLL pair of the past-date chain is priced at its two contracts' own closes of its roll bar (the contract table): a vendor switch the next bar confirmed at the switch bar's, every other roll at its own bar's; each roll stored once" 'python3 "$HERE/roll_legs_check.py" "$C3/snap/trading_executions.csv" "$OUT/proofs/contract_closes.csv" "$OUT/proofs/vendor_ids.csv" > "$OUT/proofs/held_roll_legs.txt" 2>&1'
+  # R6: the chain run on through the micros' June roll; the book of S0 holds MES and MYM.
+  RANGE_END=2026-06-17 MODE=M3 PF=conservative run $ARM_C chain micro;  CM=$(dir "" $ARM_C chain M3 micro)
+  check "SWITCH ON a held micro roll (the chain run on to 2026-06-17, the micros' June roll): every ROLL pair is priced at its two contracts' own closes of its roll bar and stored once, a micro's among them" 'python3 "$HERE/roll_legs_check.py" "$CM/snap/trading_executions.csv" "$OUT/proofs/contract_closes.csv" "$OUT/proofs/vendor_ids.csv" MES,MNQ,MYM,M2K > "$OUT/proofs/held_roll_legs_micro.txt" 2>&1'
   # ZS rolls ZSK6 (42009683) -> ZSN6 (194904) on 2026-04-23; afterwards the vendor naming ZSK6 is a switch back.
   STRAY_SHOW="SELECT string_agg(ts_event::date||'='||instrument_id, ' ' ORDER BY ts_event) FROM futures_data.ohlcv_1d_raw WHERE symbol = 'ZS.v.0' AND ts_event BETWEEN '2026-04-29' AND '2026-05-02'"
   PREP_SQL="UPDATE futures_data.ohlcv_1d_raw SET instrument_id = '42009683' WHERE symbol = 'ZS.v.0' AND ts_event = '2026-04-30 00:00:00+00' AND instrument_id = '194904'" \
