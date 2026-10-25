@@ -125,7 +125,7 @@ def engine_argv(settings: CommandSettings, mode: str, portfolio_id: str, portfol
     lock = os.path.join(settings.lock_dir, f"{portfolio_id}.lock")
     return [settings.flock, lock, settings.engine_binary, f"--{mode}",
             "--portfolio-config", portfolio_dir, "--date", date, "--audit-id", str(audit_id)] + (
-                ["--send-now"] if send_now and not settings.book_email_handoff else [])
+                ["--send-now"] if send_now else [])
 
 
 @dataclass

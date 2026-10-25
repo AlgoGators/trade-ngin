@@ -818,64 +818,9 @@ def test_with_smtp_helper_kept_for_other_tests(env):
     assert cu.recipients(str(env.config), "missing") == []
 
 
-# -- QT_BOOK_EMAIL_HANDOFF: AlgoLens sends the book e-mail ------------------------------------------
-
-def handoff(env):
-    return env.make(portfolios=(DESK,),
-                    settings_=dataclasses.replace(env.settings, book_email_handoff=True))
-
-
-def test_handoff_never_runs_a_send_and_waits_for_algolens(env):
-    model_done(env, FRI)
-    approve(env, DESK_PID, FRI, at(FRI, 8))
-    sched = handoff(env)
-    for hh, mm in ((9, 30), (9, 40), (10, 0), (10, 29)):
-        env.clock.t = at(FRI, hh, mm)
-        out = dict(sched.run_pass())
-        assert out[DESK].action == UP_TO_DATE and out[DESK].reason == "awaiting_algolens"
-    assert env.engine.calls == [] and env.engine.mails == [] and alerts(env) == []
-
-
-def test_handoff_alerts_when_algolens_has_not_sent_after_an_hour(env):
-    model_done(env, FRI)
-    approve(env, DESK_PID, FRI, at(FRI, 8))
-    env.clock.t = at(FRI, 10, 31)
-    out = dict(handoff(env).run_pass())
-    assert out[DESK].action == ALERT and out[DESK].reason == "algolens_not_sent"
-    assert env.engine.calls == []
-
-
-def test_handoff_is_up_to_date_once_algolens_records_sent_at(env):
-    model_done(env, FRI)
-    approve(env, DESK_PID, FRI, at(FRI, 8))
-    env.days.sent[(DESK_PID, FRI)] = at(FRI, 9, 31)
-    env.clock.t = at(FRI, 11, 0)
-    out = dict(handoff(env).run_pass())
-    assert out[DESK].action == UP_TO_DATE and out[DESK].reason != "algolens_not_sent"
-    assert env.engine.calls == [] and alerts(env) == []
-
-
-def test_handoff_fallback_publishes_without_send_now(env):
-    model_done(env, FRI)
-    env.clock.t = at(FRI, 10, 0)
-    handoff(env).run_pass()
-    assert calls(env) == [("--fallback", DESK, "2026-10-09", False)]
-    assert env.engine.mails == []
-
-
-def test_handoff_off_still_sends_with_the_engine(env):
+def test_the_engine_sends_the_book_e_mail_at_0930(env):
     model_done(env, FRI)
     approve(env, DESK_PID, FRI, at(FRI, 8))
     env.clock.t = at(FRI, 9, 30)
     env.make(portfolios=(DESK,)).run_pass()
     assert env.engine.mails == [(DESK_PID, FRI)]
-
-
-def test_handoff_grace_runs_from_the_approval_when_it_is_after_0930(env):
-    model_done(env, FRI)
-    env.days.published[(DESK_PID, FRI)] = (at(FRI, 10, 0), "fallback", "fallback")
-    sched = handoff(env)
-    env.clock.t = at(FRI, 10, 45)
-    assert dict(sched.run_pass())[DESK].reason == "awaiting_algolens"
-    env.clock.t = at(FRI, 11, 1)
-    assert dict(sched.run_pass())[DESK].reason == "algolens_not_sent"

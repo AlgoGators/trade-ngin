@@ -132,8 +132,6 @@ SCHEDULER_LOCK = "qt-catchup.lock"
 MAX_DAYS_PER_PASS = 62
 # D-40: how many past days a published day that was never e-mailed is alerted on.
 MISSED_SEND_ALERT_DAYS = 3
-# With QT_BOOK_EMAIL_HANDOFF, how long after 09:30 AlgoLens may take before the engine alerts.
-HANDOFF_GRACE = dt.timedelta(minutes=60)
 # How far back the last bar of a symbol data-ngin reported missing is looked for.
 MISSING_LOOKBACK_DAYS = 60
 # Dominick 2026-10-18: on Sunday from 18:00 New York, the next trading day's book not approved
@@ -884,31 +882,13 @@ class CatchupScheduler:
             if self._store.email_held(pid, today):
                 return Step(UP_TO_DATE, today, "not_sent",
                             "approved without the e-mail (D-66): the desk sends it with Send")
-            if self._settings.book_email_handoff:
-                return self._handoff_wait(today, now_local, published)
             why = self._not_sendable(info)
             if why:
                 return Step(UP_TO_DATE, today, "not_sent", why)
             return self._blocked(pid, today, SEND) or Step(SEND, today)
         return Step(UP_TO_DATE, today)
 
-    def _handoff_wait(self, today: dt.date, now_local: dt.datetime,
-                      published: dt.datetime) -> Step:
-        """QT_BOOK_EMAIL_HANDOFF: AlgoLens sends the book e-mail and records sent_at, so the
-        engine only waits for it, and alerts when it has not within HANDOFF_GRACE of 09:30 or of
-        the approval, whichever is later (a 10:00 fallback gets the full hour)."""
-        since = max(cutoff.send_time(today), published.astimezone(now_local.tzinfo))
-        if now_local < since + HANDOFF_GRACE:
-            return Step(UP_TO_DATE, today, "awaiting_algolens",
-                        "AlgoLens sends the daily e-mail and records sent_at")
-        return Step(ALERT, today, "algolens_not_sent",
-                    f"{today} is published but AlgoLens has not recorded its daily e-mail as sent "
-                    f"{int(HANDOFF_GRACE.total_seconds() // 60)} minutes after it was due: check the "
-                    "algolens-report-worker and reports.report_queue")
-
     def _not_sendable(self, info: PortfolioInfo) -> str:
-        if self._settings.book_email_handoff:
-            return "QT_BOOK_EMAIL_HANDOFF=1: AlgoLens sends the daily e-mail"
         if self._settings.email_disabled:
             return "QT_EMAIL_DISABLED=1: the daily e-mail is not sent"
         if not recipients(self._settings.config_dir, info.dir):
@@ -1205,7 +1185,7 @@ class CatchupScheduler:
         data-driven run's non-trading day ahead of the target (kind FALLBACK_NONTRADING) is
         published the same way, not e-mailed here (its own 09:30 send does) and not alerted."""
         pid = info.portfolio_id
-        send = kind == FALLBACK_TODAY and not self._settings.book_email_handoff
+        send = kind == FALLBACK_TODAY
         requested_by = {FALLBACK_TODAY: cutoff.FALLBACK_10AM,
                         FALLBACK_NONTRADING: cutoff.FALLBACK_NONTRADING}.get(
                             kind, cutoff.FALLBACK_CATCHUP)

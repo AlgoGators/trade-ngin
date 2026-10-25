@@ -620,12 +620,6 @@ class Dispatcher:
                          f"{row.portfolio_id} {row.date} was already e-mailed at "
                          f"{sent.isoformat()}")
             return
-        if self._settings.book_email_handoff:
-            # AlgoLens sends the book e-mail; this row is the desk's release of a held day,
-            # which AlgoLens reads (a done 'send' row with result.handoff) before it sends.
-            self._finish(row, DONE, {"handoff": True},
-                         f"{row.date}: AlgoLens sends the e-mail now that the desk released it")
-            return
         res = self._jobs.run_send_now(row.portfolio_id, portfolio_dir, row.date.isoformat())
         sent = self._store.sent_at(row.portfolio_id, row.date)
         if sent is not None:
