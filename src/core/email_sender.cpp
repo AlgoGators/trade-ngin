@@ -1161,8 +1161,8 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         html << "</table>\n";
     }
     if (legs > 0 && rolls_on()) {
-        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg: the split, or for a
-        // roll of the vendor's series (no split, the micros) the cost only (R4B fix round 1).
+        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg's split (R6: every
+        // root's, the micros' included; a leg with no split prints no line).
         for (const auto& closing : executions) {
             const bool is_closing = closing.exec_id.size() >= 3 &&
                                     closing.exec_id.compare(closing.exec_id.size() - 3, 3, "_RC") == 0;

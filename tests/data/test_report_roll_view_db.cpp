@@ -62,7 +62,6 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     ASSERT_EQ(view.outlook.count("SI"), 1u);
     const auto& si = view.outlook.at("SI");
     EXPECT_EQ(si.held, "SIZ5");
-    EXPECT_TRUE(si.rule_rolls);
     EXPECT_TRUE(si.in_window) << "the window opens 11-20";
     EXPECT_EQ(si.deadline, "2025-11-28");
     EXPECT_TRUE(si.first_notice);
@@ -70,7 +69,17 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     EXPECT_EQ(si.target, "SIH6");
     EXPECT_EQ(si.cycle, "HKNUZ");
     ASSERT_EQ(view.outlook.count("MES"), 1u);
-    EXPECT_FALSE(view.outlook.at("MES").rule_rolls) << "the micros stay on the vendor's series";
+    // R6: MES is the rule's too; before the 2026-02-22 change it holds ESZ5, printed as the micro's month.
+    const auto& mes = view.outlook.at("MES");
+    if (mes.held_symbol == "ESZ5") {
+        EXPECT_EQ(mes.held, "MESZ5");
+        EXPECT_EQ(mes.target, "MESH6");
+        EXPECT_EQ(mes.deadline, "2025-12-19");
+        EXPECT_EQ(mes.roll_by, "2025-12-18");
+        EXPECT_FALSE(mes.in_window) << "the window opens 12-12";
+    } else {
+        ADD_FAILURE() << "MES holds " << mes.held_symbol << " on 2025-11-21 (ES contract bars not loaded?)";
+    }
     ReportRollQuery early = q;
     early.date = "2025-11-19";
     early.held_symbols = {"SI.v.0"};

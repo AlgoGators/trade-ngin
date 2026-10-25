@@ -1082,7 +1082,6 @@ TEST_F(EmailFixture, WithTheSwitchOnTheSymbolsReferenceShowsTheContractHeldAndTh
     zs.root = "ZS";
     zs.held = "ZSX6";
     zs.cycle = "FHKNX";
-    zs.rule_rolls = true;
     rolls.outlook["ZS"] = zs;
     const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10", &rolls);
     EXPECT_NE(table.find("<th>Contract Months</th><th>Front Month</th></tr>"), std::string::npos) << table;
@@ -1110,11 +1109,17 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
     rc.roll_bar_move = 1.0 * (77960.0 - 78500.0) * 0.1;
     rc.roll_gap_points = 79070.0 - 77960.0;
     rc.roll_gap_value = (79070.0 - 77960.0) * 1.0 * 0.1;
-    // QMES's roll is on the vendor's series (no split, the micros): its line names the cost only.
+    // R6: QMES rolls by the rule like every root, its closing leg carrying its split; a leg with no split
+    // (QM2K's here) prints no line.
+    ExecutionReport mes = roll_leg("QMES.v.0", true, Side::SELL, 7217.25, 1.30, "42140878");
+    mes.roll_bar_move = 1.0 * (7217.25 - 7200.00) * 5.0;
+    mes.roll_gap_points = 7262.50 - 7217.25;
+    mes.roll_gap_value = (7262.50 - 7217.25) * 1.0 * 5.0;
     const StrategyExecutionsMap executions = {
-        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708"),
-                             roll_leg("QMES.v.0", true, Side::SELL, 7217.25, 1.30, "42140878"),
-                             roll_leg("QMES.v.0", false, Side::BUY, 7262.50, 1.32, "42003800")}}};
+        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708"), mes,
+                             roll_leg("QMES.v.0", false, Side::BUY, 7262.50, 1.32, "42003800"),
+                             roll_leg("QM2K.v.0", true, Side::SELL, 2806.7, 1.10, "42005017"),
+                             roll_leg("QM2K.v.0", false, Side::BUY, 2830.1, 1.10, "42002147")}}};
     const StrategyPositionsMap settled = {
         {"TREND_FOLLOWING",
          {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0, 425.0)}}}};
@@ -1125,11 +1130,11 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
     context.rolls.per_contract_rolls = true;
     context.rolls.names["ROLL_QMBT.v.0_RC"] = ReportRollNames{"Micro Bitcoin Futures", "April", "May", 1};
     context.rolls.names["ROLL_QMES.v.0_RC"] = ReportRollNames{"Micro E-mini S&P500 Index", "September", "December", 2};
+    context.rolls.names["ROLL_QM2K.v.0_RC"] = ReportRollNames{"Micro E-Mini Russell-2000 Index", "September", "December", 1};
     ReportRollOutlook zt;
     zt.root = "QZT";
     zt.held = "QZTM6";
     zt.cycle = "HMUZ";
-    zt.rule_rolls = true;
     zt.in_window = true;
     zt.roll_by = "2026-05-28";
     zt.deadline = "2026-05-29";
@@ -1147,10 +1152,12 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
         << body;
     EXPECT_LT(body.find("<th>Roll Leg</th>"), body.find("Micro Bitcoin Futures, April to May")) << "under the legs";
     EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro E-mini S&P500 Index, September to December: "
-                        "roll cost $2.62 (the market move and the price difference between the two contracts are not "
-                        "shown for this contract yet).</p>"),
+                        "market move booked $86; contract price difference 45.25 ($226, not profit or loss); roll "
+                        "cost $2.62.</p>"),
               std::string::npos)
-        << "a roll of the vendor's series gets its cost-only line (R4B fix round 1)";
+        << "a micro's roll gets the full line (R6)";
+    EXPECT_EQ(body.find("Micro E-Mini Russell-2000 Index, September"), std::string::npos) << "no split: no line";
+    EXPECT_EQ(body.find("not shown for this contract yet"), std::string::npos) << "the cost-only line is gone";
     EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "
                         "<strong>QZTU6</strong> by 05-28, first notice 05-29</li>"),
               std::string::npos)
