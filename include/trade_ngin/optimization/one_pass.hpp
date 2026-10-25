@@ -228,6 +228,12 @@ struct DayResult {
     Vector trimmed;         ///< contracts the trim removed, per symbol
     bool trim_capped{false};
     overlay::Readings stored_readings;  ///< the overlay's readings of the stored book
+    /// For the record only (nothing reads them to decide): the capped target with the held rows,
+    /// and the stored book, read on the carver covariance (overlay::carver_covariance) whatever the
+    /// book's overlay_covariance, so books on either rule compare. Equal to `readings` and
+    /// `stored_readings` on a carver book.
+    overlay::Readings carver_readings;
+    overlay::Readings carver_stored_readings;
     std::vector<std::pair<std::string, double>> over_limit;      ///< terms still over after the trim
     double over_limit_excess_units{0.0};  ///< the largest excess in units of the largest non-zero stored u
     std::vector<std::string> by_hold_terms;  ///< terms the held rows keep over; "CAP" for a held row beyond the cap

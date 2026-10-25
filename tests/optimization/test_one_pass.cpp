@@ -405,3 +405,36 @@ TEST(OnePass, TheTrimAndHoldMarksNameTheirTermsAndRows) {
     EXPECT_EQ(by_hold.rfind("RISK_OVER_LIMIT_BY_HOLD terms=[", 0), 0u) << by_hold;
     EXPECT_NE(by_hold.find("CAP] symbols=[AAA BBB CCC DDD]"), std::string::npos) << by_hold;
 }
+
+// The record's carver readings: the capped target (with the held rows) and the stored book read on
+// the carver covariance whatever the book's own rule. On a carver book they are its own readings;
+// on a sample book they are what the carver book reads on the same target, and its own readings
+// are the sample covariance's.
+TEST(OnePass, TheCarverReadingsAreRecordedOnEitherRule) {
+    DayInputs in = four_symbols();
+    unsigned state = 99u;
+    for (int w = 0; w < 30; ++w) {
+        for (int d = 0; d < 5; ++d) {
+            in.ordinals.push_back(21004.0 + 7.0 * w + d);
+            Vector row(4, 0.0);
+            for (auto& x : row) {
+                state = state * 1103515245u + 12345u;
+                x = 0.02 * (static_cast<double>(state % 1000u) / 1000.0 - 0.5);
+            }
+            in.returns.push_back(row);
+        }
+    }
+    in.sizing_sigma = {0.10, 0.20, 0.15, 0.30};
+    in.jump_sigma_daily = {0.01, 0.02, 0.015, 0.03};
+    const DayResult sample = rebalance(in);
+    in.overlay_carver = true;
+    const DayResult carver = rebalance(in);
+    ASSERT_TRUE(sample.refusal.empty() && carver.refusal.empty());
+    ASSERT_FALSE(sample.window.blind());
+    EXPECT_EQ(carver.carver_readings.risk, carver.readings.risk);
+    EXPECT_EQ(carver.carver_stored_readings.risk, carver.stored_readings.risk);
+    EXPECT_EQ(sample.carver_readings.risk, carver.readings.risk);
+    EXPECT_EQ(sample.carver_readings.shock, carver.readings.shock);
+    EXPECT_GT(std::abs(sample.readings.risk - carver.readings.risk), 1e-6)
+        << "the sample covariance of these returns is not the sleeve's sigmas";
+}
