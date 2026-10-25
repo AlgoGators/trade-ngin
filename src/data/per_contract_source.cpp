@@ -37,7 +37,6 @@ void PerContractSource::enable(FuturesCalendar calendar, SwitchBar switch_bar) {
     calendar_ = std::move(calendar);
     switch_bar_ = switch_bar;
     enabled_ = true;
-    micros_warned_ = false;
     log_floor_ = Day{};
     logged_.clear();
 }
@@ -47,7 +46,6 @@ void PerContractSource::disable() {
     calendar_.reset();
     switch_bar_ = SwitchBar::HELD;
     enabled_ = false;
-    micros_warned_ = false;
     log_floor_ = Day{};
     logged_.clear();
 }
@@ -82,13 +80,6 @@ FuturesCalendar PerContractSource::calendar() const {
     return calendar_ ? *calendar_ : FuturesCalendar{};
 }
 
-bool PerContractSource::first_micros_warning() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const bool first = !micros_warned_;
-    micros_warned_ = true;
-    return first;
-}
-
 Result<void> configure_per_contract_source(bool per_contract_rolls, const std::string& switch_bar) {
     if (!per_contract_rolls) {
         PerContractSource::instance().disable();
@@ -121,17 +112,6 @@ Result<void> configure_per_contract_source(bool per_contract_rolls, const std::s
                                        : "the held contract's own bar") +
         ")");
     return Result<void>();
-}
-
-bool reads_vendor_series(const std::string& root) {
-    return micro_alias(root).has_value();
-}
-
-std::string micros_warning_line() {
-    return "PER_CONTRACT_ROLLS micros on the vendor's series: MES, MNQ, MYM and M2K read their "
-           "`.v.0` bars and today's handling of the 2026-02-22 change (instrument_id_relabels), "
-           "because their history before that date is the ES, NQ, YM and RTY contracts, which are "
-           "not loaded in contract_ohlcv_1d (waiting on data)";
 }
 
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
@@ -290,25 +270,20 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
     return out;
 }
 
-Result<SourceSymbols> split_source_symbols(const std::vector<std::string>& symbols) {
-    SourceSymbols out;
+Result<std::vector<std::string>> source_roots(const std::vector<std::string>& symbols) {
+    std::vector<std::string> roots;
     const std::string suffix = ".v.0";
     for (const auto& symbol : symbols) {
         if (symbol.size() <= suffix.size() ||
             symbol.compare(symbol.size() - suffix.size(), suffix.size(), suffix) != 0) {
-            return make_error<SourceSymbols>(ErrorCode::INVALID_ARGUMENT,
-                                             "per_contract_rolls: " + symbol +
-                                                 " is not a continuous futures symbol (<root>.v.0)",
-                                             "PostgresDatabase");
+            return make_error<std::vector<std::string>>(
+                ErrorCode::INVALID_ARGUMENT,
+                "per_contract_rolls: " + symbol + " is not a continuous futures symbol (<root>.v.0)",
+                "PostgresDatabase");
         }
-        const std::string root = symbol.substr(0, symbol.size() - suffix.size());
-        if (reads_vendor_series(root)) {
-            out.vendor_symbols.push_back(symbol);
-        } else {
-            out.roots.push_back(root);
-        }
+        roots.push_back(symbol.substr(0, symbol.size() - suffix.size()));
     }
-    return out;
+    return roots;
 }
 
 void sort_source_bars(std::vector<SourceBar>& bars) {

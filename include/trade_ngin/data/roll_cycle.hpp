@@ -24,7 +24,8 @@ namespace trade_ngin::contract_rolls {
  * rule's target and the email's rollover warning (step 4) both read this table.
  *
  * Months are the month codes F G H J K M N Q U V X Z. ES, NQ, YM and RTY (the micros' contracts
- * before the vendor's 2026-02-22 change) are not loaded yet; their cycle is the micros' own.
+ * before the vendor's 2026-02-22 change) have no row: a micro's series reads them on the micro's own
+ * cycle.
  */
 inline const std::map<std::string, std::string>& roll_cycle_table() {
     static const std::map<std::string, std::string> table = {

@@ -1,7 +1,8 @@
 // The micros' alias (ROLLS_STEP1_PLAN 10b point 5): before the vendor's 2026-02-22 change, MES.v.0 is
 // the ES contract, so the series reads ES contracts (and rolls among them by the rule); from the change,
 // MES's own. The change is one roll between two contracts of the same expiry, on the first trading-day
-// bar on or after 02-22 (a Sunday) where both print. ES is not loaded anywhere yet: fixtures only.
+// bar on or after 02-22 (a Sunday) where both print. Fixtures here; the
+// database tests (ContractRollsApiDbTest, PerContractSourceDbTest) read the loaded ES contracts.
 #include <gtest/gtest.h>
 
 #include "contract_rolls_test_util.hpp"
