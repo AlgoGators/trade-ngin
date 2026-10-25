@@ -115,7 +115,7 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple)
 
@@ -215,6 +215,13 @@ class MissingRule:
     every_last_bar: Callable[[dt.date], Dict[str, dt.date]]
     reason: str                 # the alert of a run that goes with symbols missing
     carried: str                # how that run carries them, for the alert (said before the run)
+
+
+@dataclass
+class MissingSymbols:
+    """What the morning data rule counted missing on a run that goes (the review e-mail's list)."""
+    last_bar: Dict[str, Optional[dt.date]] = field(default_factory=dict)   # the stalest first
+    unnamed: int = 0            # missing, named neither by the row nor by the table
 
 
 class DayStore(Protocol):
@@ -1013,9 +1020,9 @@ class CatchupScheduler:
         return combine_ready(rows)
 
     def _data_verdict(self, info: PortfolioInfo, ready: DataReady,
-                      target: dt.date) -> Tuple[Optional[Step], Dict[str, Optional[dt.date]]]:
-        """(None, every missing symbol's last bar date, the stalest first) when the row can build
-        `target`'s books, else (the alert, {}). One rule for every dataset (HD 2026-10-24, plan 11c
+                      target: dt.date) -> Tuple[Optional[Step], MissingSymbols]:
+        """(None, every symbol the rule counted missing) when the row can build `target`'s books,
+        else (the alert, nothing). One rule for every dataset (HD 2026-10-24, plan 11c
         ruling 21, an AND condition; _missing_verdict): the run is held, with the data_stale alert,
         only when MORE than N symbols of a row have EACH had no bar for more than X days as of the
         run's last bar date (target - 1, the engine's end_date), a failed pull included. Otherwise
@@ -1028,16 +1035,16 @@ class CatchupScheduler:
             if part.status not in ("complete", "partial", "failed"):
                 return Step(ALERT, target, "data_failed",
                             f"ops.data_ready {part.dataset} {part.bar_date} has status "
-                            f"{part.status!r}: the books of {target} are not built"), {}
+                            f"{part.status!r}: the books of {target} are not built"), MissingSymbols()
         tolerance = staleness_tolerance_days(self._settings.config_dir, info.dir)
         as_of = target - dt.timedelta(days=1)
-        missing: Dict[str, Optional[dt.date]] = {}
+        missing = MissingSymbols()
         partial: List[Tuple[str, str]] = []
         for part in parts:
             held, alert = self._missing_verdict(part, target, as_of, self._rule(part, tolerance),
                                                 missing)
             if held is not None:
-                return held, {}
+                return held, MissingSymbols()
             if alert is not None:
                 partial.append(alert)
         for reason, message in partial:   # only once no row holds the run
@@ -1066,7 +1073,7 @@ class CatchupScheduler:
             "separate alert)")
 
     def _missing_verdict(self, part: DataReady, target: dt.date, as_of: dt.date,
-                         rule: MissingRule, missing: Dict[str, Optional[dt.date]]
+                         rule: MissingRule, missing: MissingSymbols
                          ) -> Tuple[Optional[Step], Optional[Tuple[str, str]]]:
         """One row under the morning data rule (HD 2026-10-24, plan 11c ruling 21, an AND
         condition): (the data_stale alert, None) when MORE than N symbols have EACH had no bar for
@@ -1119,7 +1126,8 @@ class CatchupScheduler:
                         f"than {rule.stale_days} day(s) as of {as_of}, more than "
                         f"{rule.max_missing_name}={rule.max_missing}: {', '.join(stale)}. The books "
                         f"of {target} are not built"), None
-        missing.update((s, last.get(s)) for s in named)
+        missing.last_bar.update((s, last.get(s)) for s in named)
+        missing.unnamed += unnamed
         return None, (rule.reason,
                       f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
                       f"{part.expected}); missing: {', '.join(described)}. The run of {target} "
@@ -1231,12 +1239,13 @@ class CatchupScheduler:
             return None
         held_date = self._store.last_published_before(pid, target)
         held = self._store.day_books(pid, held_date).get(info.book, {}) if held_date else {}
-        _, last_bars = self._data_verdict(info, ready, target)
+        _, counted = self._data_verdict(info, ready, target)
         review = review_mail.Review(
             portfolio_id=pid, target=target, bar_date=ready.bar_date, built_at=built,
             books=self._store.day_books(pid, target), held_date=held_date, held=held,
             desk_edits_kept=self._store.desk_edited(pid, target), data_status=ready.status,
-            missing=tuple(last_bars), missing_last_bar=last_bars,
+            missing=tuple(counted.last_bar), missing_last_bar=counted.last_bar,
+            unnamed_missing=counted.unnamed,
             supersedes=self.reviews.earlier(pid, target), desk_url=self._catchup.desk_url)
         subject, body = review_mail.build(review)
         to = list(self._catchup.review_recipients)

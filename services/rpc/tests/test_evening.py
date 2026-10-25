@@ -1443,3 +1443,20 @@ def test_the_review_email_lists_a_failed_pulls_carried_symbols(env):
     assert "2 symbol(s) are missing for 2026-10-12 (status failed)" in body
     assert "ES: last bar 2026-10-09" in body and "ZN: last bar 2026-10-09" in body
     assert "carried at its last price" in body
+
+
+def test_the_review_email_counts_the_symbols_nobody_names(env):
+    """Q1 fix round 1 (audit A S3): a partial row of 34 of 36 naming none, the table holding nothing older
+    than the row's date: two unnamed symbols, counted stale, not more than N, the run goes. The review
+    e-mail counts both (before: "no symbol missing" while the alert said two were)."""
+    published_day(env, MON)
+    env.days.bars = {s: MON for s in ROOTS36}
+    env.days.ready.append(ready(MON, at(MON, 20, 10), "partial", (), loaded=34))
+    env.clock.t = at(MON, 20, 30)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert ("model", DESK, "2026-10-13") in calls(env)
+    (_, body), = reviews(env)
+    assert "2 symbol(s) are missing for 2026-10-12 (status partial)" in body
+    assert "<li>2 more the data does not name, with no bar in the table</li>" in body
+    assert "no symbol missing" not in body
+    assert "2 symbol(s) not named, with no bar in the table" in president_messages(env)[0]
