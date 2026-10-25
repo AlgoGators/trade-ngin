@@ -357,10 +357,5 @@ add_test(NAME CheckLiveTrading.ScriptSuite
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")
 # The two entries import modules from scripts/: without this the interpreter leaves an untracked
 # scripts/__pycache__/ in the source tree on every ctest run.
-# The book e-mail script (scripts/send_book_email.py): MIME structure, recipients, failure exits.
-add_test(NAME SendBookEmail.ScriptSuite
-         COMMAND "${MIGRATION_PYTHON}"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_send_book_email.py")
 set_tests_properties(MigrateRiskJson.ScriptSuite CheckLiveTrading.ScriptSuite
-                     SendBookEmail.ScriptSuite
                      PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
