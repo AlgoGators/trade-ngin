@@ -444,7 +444,7 @@ def test_a_saturday_ready_row_builds_monday_once_sunday_is_out(env):
     for when in (at(FRI, 20, 30), at(SAT, 10, 1)):
         env.clock.t = when
         sched.run_pass()
-    env.days.ready.append(ready(SAT, at(SAT, 20, 5), loaded=2))
+    env.days.ready.append(ready(SAT, at(SAT, 20, 5), loaded=2, expected=2))
     env.clock.t = at(SAT, 20, 30)
     env.engine.calls.clear()
     sched.run_pass()
@@ -1119,19 +1119,18 @@ def test_the_stale_days_setting_is_x(env):
 
 
 def test_a_partial_continuous_row_within_the_tolerance_runs_with_the_alert(env):
-    """Switch off: a "partial, 0 of 36" continuous row naming three symbols, each last bar within the
-    tolerance, runs (Q1: now with the data_partial alert naming them; the other 33 are reported, not
-    judged)."""
+    """Switch off: a "partial, 33 of 36" continuous row naming three symbols, each last bar within the
+    tolerance, runs (Q1: now with the data_partial alert naming them)."""
     weekend_done(env)
     names = ("ES", "ZN", "GC")
     env.days.bars = {s: FRI for s in names}
-    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", names, loaded=0))
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", names, loaded=33))
     env.clock.t = at(MON, 4, 40)
     env.make(portfolios=(DESK,)).run_pass()
     assert calls(env) == [("model", DESK, "2026-10-12")]
     assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
     (_, message), = [(t, m) for t, s, m in env.sent if t == ["pres@algogators.com"]]
-    assert "33 more symbol(s) the row does not name" in message
+    assert "ES (last bar 2026-10-09)" in message and "ZN (last bar 2026-10-09)" in message
 
 
 # -- R4B fix round 1 (audit A S1, S2, p01) --------------------------------------------------------------
@@ -1346,16 +1345,38 @@ def test_the_hold_names_the_stale_symbols_the_stalest_first(env):
         "2026-10-12 are not built")
 
 
-def test_unnamed_continuous_symbols_are_reported_not_judged(env):
-    """A partial row that misses more than it names (30 of 36, naming ES): the other five are not judged
-    (migration 028: missing names the symbols; judging more could hold a run the old rule let go), even
-    with three symbols nine days old in the table; the alert says how many."""
-    bars = _stale(3, fresh=("ES",))
-    _monday_continuous(env, "partial", ("ES",), 30, bars=bars)
+def test_an_under_named_continuous_row_judges_the_unnamed_symbols_and_can_hold(env):
+    """Q1 fix round 1 (audit A S1, ruling 21 to the letter): a partial row that misses more than it names
+    (32 of 36, naming ES) breaks migration 028; the three it does not name are taken from the table, the
+    stalest first (GC, ZN, CL, nine days old), and judged: three past X, more than N: held. The rule before
+    ruling 21 ignored unnamed symbols and ran: the one kind of row on which Q1 adds a hold."""
+    out = _monday_continuous(env, "partial", ("ES",), 32, bars=_stale(3, fresh=("ES",)))
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert ("3 symbol(s) have had no bar for more than 4 day(s) as of 2026-10-11, more than "
+            "QT_DATA_READY_MAX_MISSING=2: CL (last bar 2026-10-02), GC (last bar 2026-10-02), "
+            "ZN (last bar 2026-10-02)") in out[DESK].message
+
+
+def test_an_under_named_continuous_row_with_fresh_unnamed_symbols_runs_naming_them(env):
+    """33 of 36, naming ES: the two unnamed are the table's stalest before the row's date (GC and ZN,
+    Friday's), within X: the run goes, the alert naming all three, the stalest first."""
+    bars = {s: SUN for s in ROOTS36}
+    bars.update(ES=dt.date(2026, 10, 10), GC=FRI, ZN=FRI)
+    _monday_continuous(env, "partial", ("ES",), 33, bars=bars)
     assert calls(env) == [("model", DESK, "2026-10-12")]
     (message,) = president_messages(env)
-    assert "ES (last bar 2026-10-09), 5 more symbol(s) the row does not name" in message
-    assert "GC" not in message
+    assert ("missing: GC (last bar 2026-10-09), ZN (last bar 2026-10-09), ES (last bar 2026-10-10)."
+            in message)
+
+
+def test_an_under_named_row_the_table_cannot_fill_counts_the_rest_as_stale(env):
+    """34 of 36 loaded, naming only ES: one more is missing, and no other symbol in the table is older than
+    the row's date, so the unnamed one counts as stale; one is not more than N: runs, the alert says so."""
+    _monday_continuous(env, "partial", ("ES",), 34, bars={s: SUN for s in ROOTS36} | {"ES": FRI})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    (message,) = president_messages(env)
+    assert "1 symbol(s) not named, with no bar in the table" in message
 
 
 def test_the_continuous_n_setting_moves_the_rule(env):

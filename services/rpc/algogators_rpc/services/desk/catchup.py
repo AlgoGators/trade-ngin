@@ -215,9 +215,6 @@ class MissingRule:
     every_last_bar: Callable[[dt.date], Dict[str, dt.date]]
     reason: str                 # the alert of a run that goes with symbols missing
     carried: str                # what that run does with them, for the alert
-    # A partial row that misses more than it names: True takes the rest from the table (the
-    # stalest first) and judges them; False judges the row's names only and reports the rest.
-    judge_unnamed: bool = True
 
 
 class DayStore(Protocol):
@@ -1065,10 +1062,7 @@ class CatchupScheduler:
             tolerance, self._store.last_bar_dates, self._store.every_symbol_last_bar,
             "data_partial",
             "the run holds each at its last price with no order, and the engine still refuses "
-            "today's run when the book holds one past live.data_staleness_tolerance_days",
-            # migration 028: a partial row's missing names its symbols; judging more than the
-            # names could hold a run the rule before ruling 21 let go
-            judge_unnamed=False)
+            "today's run when the book holds one past live.data_staleness_tolerance_days")
 
     def _missing_verdict(self, part: DataReady, target: dt.date, as_of: dt.date,
                          rule: MissingRule, missing: Dict[str, Optional[dt.date]]
@@ -1078,13 +1072,13 @@ class CatchupScheduler:
         more than X days as of the run's last bar date; else (None, the alert of a run that goes
         with symbols missing, or None when none is). The missing symbols are the row's names; when
         it names fewer than it misses (expected - loaded), the symbols whose newest bar is before
-        the row's bar date, the stalest first (the continuous row: only reported, not judged;
-        MissingRule.judge_unnamed); on a failed pull, every symbol the table knows. A missing symbol
-        the table cannot name counts as stale; a failed pull with no symbol known at all holds. The
-        run's missing symbols go into `missing`, the stalest first."""
+        the row's bar date, the stalest first (Q1 fix round 1: the continuous row too, though such a
+        row breaks migration 028, whose partial row names its symbols); on a failed pull, every
+        symbol the table knows. A missing symbol the table cannot name counts as stale; a failed
+        pull with no symbol known at all holds. The run's missing symbols go into `missing`, the
+        stalest first."""
         named = list(part.missing)
         since = part.bar_date - dt.timedelta(days=MISSING_LOOKBACK_DAYS)
-        not_judged = 0
         if part.status == "failed":
             # A failed pull (R4B audit A, S1): every symbol the table knows is missing, whatever the
             # row's expected says; a symbol it should have and the table cannot name counts as stale.
@@ -1099,8 +1093,6 @@ class CatchupScheduler:
             unnamed = max(part.expected - part.loaded - len(named), 0)
             if not named and unnamed == 0:
                 return None, None
-            if not rule.judge_unnamed:
-                not_judged, unnamed = unnamed, 0
             if unnamed > 0:
                 # The symbols the row misses without naming them: the stalest first (R4B audit A, S2),
                 # so one with no bar that day for an ordinary reason cannot push out one that is stale.
@@ -1119,8 +1111,6 @@ class CatchupScheduler:
         if unnamed > 0:
             described.append(f"{unnamed} {rule.noun}(s) not named, with no {rule.bar} in the table")
             stale.append(described[-1])
-        if not_judged > 0:
-            described.append(f"{not_judged} more {rule.noun}(s) the row does not name")
         if stale_n > rule.max_missing:
             return Step(ALERT, target, "data_stale",
                         f"{part.dataset} {part.bar_date} is {part.status} ({part.loaded} of "
