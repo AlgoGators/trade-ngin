@@ -231,6 +231,7 @@ protected:
         cc.csv_output_path = temp_csv_dir("stat_grid_" + std::to_string(n));
         csv_dir_ = cc.csv_output_path;
         cc.statistics_sessions_per_year = sessions_per_year;
+        cc.first_traded_date = first_traded_;
         coord_ = std::make_unique<BacktestCoordinator>(db_, &InstrumentRegistry::instance(), cc);
         EXPECT_TRUE(coord_->initialize().is_ok());
 
@@ -261,6 +262,7 @@ protected:
 
     // The run's bars and the sleeve's schedule; a test may replace either before run().
     std::vector<Row> rows_ = rows();
+    std::string first_traded_;  // backtest.first_traded_date, empty as shipped
     std::map<std::string, std::map<int, double>> targets_ = {
         {kHeld, {{0, 100.0}}}};  // held from the first cycle to the end
 
@@ -376,6 +378,30 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunFoldsItsSaturdayPointAndItsThinDate
     // Not the rows at 252 with the population deviation (the calculator before T-8b).
     const Hand rows_252 = hand(every_row, 252.0);
     EXPECT_GT(std::abs(r.volatility - rows_252.volatility * std::sqrt(20.0 / 21.0)), 1e-6);
+}
+
+// backtest.first_traded_date: the warm-up runs on to the first bar date on or after it (Monday
+// 2025-01-13, five rows after Monday 2025-01-06), so the book starts empty on that date: no fill
+// before it, a flat curve to it, and the run's warm-up is those five rows. A date that is not a
+// date is refused.
+TEST_F(BacktestStatisticsGridRun, AFirstTradedDateHoldsTheWarmUpToThatDate) {
+    first_traded_ = "2025-01-13";
+    auto result = run(AssetClass::FUTURES, kFuturesK);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+    const BacktestResults& r = result.value();
+    EXPECT_EQ(r.warmup_days, 5);
+    ASSERT_FALSE(r.executions.empty());
+    std::string first_fill = "9999";
+    for (const auto& e : r.executions) first_fill = std::min(first_fill, core::format_utc_date(e.fill_time));
+    EXPECT_EQ(first_fill, "2025-01-13");
+    for (const auto& [timestamp, level] : r.equity_curve) {
+        if (core::format_utc_date(timestamp) < "2025-01-13") EXPECT_EQ(level, 1'000'000.0);
+    }
+
+    first_traded_ = "2025-13-01";
+    auto refused = run(AssetClass::FUTURES, kFuturesK);
+    ASSERT_TRUE(refused.is_error());
+    EXPECT_NE(std::string(refused.error()->what()).find("first_traded_date"), std::string::npos);
 }
 
 // The same bars as an equity run: its grid is its own rows, at the K handed in.

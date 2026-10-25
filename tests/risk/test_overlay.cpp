@@ -217,3 +217,119 @@ TEST(Overlay, ThePercentileInterpolatesLinearly) {
     EXPECT_DOUBLE_EQ(percentile({5.0, 1.0, 4.0, 2.0, 3.0}, 99.0), 4.96);
     EXPECT_TRUE(std::isnan(percentile({}, 99.0)));
 }
+
+namespace {
+
+// Weekdays Monday to Friday from a Monday (day 21,004 since 1970-01-01), `weeks` weeks.
+std::vector<double> weekday_ordinals(int weeks) {
+    std::vector<double> o;
+    for (int w = 0; w < weeks; ++w) {
+        for (int d = 0; d < 5; ++d) o.push_back(21004.0 + 7.0 * w + d);
+    }
+    return o;
+}
+
+}  // namespace
+
+// The carver covariance: participant 1 is twice participant 0 and participant 2 its negative on
+// every day, so their weekly correlations are exactly +1 and -1; the covariance is sigma_i sigma_j
+// rho_ij on the sleeve's sigmas, every R_shock sigma is the sleeve's, and the risk reading of a
+// book is |x0 s0 + x1 s1 - x2 s2|.
+TEST(Overlay, TheCarverCovarianceIsTheSleevesSigmasOnWeeklyCorrelations) {
+    const auto o = weekday_ordinals(60);
+    std::vector<std::vector<double>> r(o.size(), std::vector<double>(3, 0.0));
+    unsigned state = 12345u;
+    for (std::size_t d = 0; d < o.size(); ++d) {
+        state = state * 1103515245u + 12345u;
+        const double x = static_cast<double>(state % 1000u) / 1000.0 - 0.5;
+        r[d] = {0.01 * x, 0.02 * x, -0.01 * x};
+    }
+    GateWindow g = gate_window(r, o);
+    ASSERT_EQ(g.mode, GateWindow::Mode::kComplete);
+    const GateWindow sample = g;
+    const std::vector<double> sigma = {0.20, 0.35, 0.10};
+    carver_covariance(g, r, o, sigma);
+    EXPECT_EQ(g.mode, sample.mode);
+    EXPECT_EQ(g.in_r, sample.in_r);
+    EXPECT_EQ(g.bars_per_year, sample.bars_per_year);
+    ASSERT_EQ(g.covariance.size(), 3u);
+    for (int a = 0; a < 3; ++a) {
+        expect_rel(g.covariance[a][a], sigma[a] * sigma[a]);
+        expect_rel(g.shock_sigma[a], sigma[a]);
+    }
+    expect_rel(g.covariance[0][1], 0.20 * 0.35);
+    expect_rel(g.covariance[0][2], -0.20 * 0.10);
+    expect_rel(g.covariance[1][2], -0.35 * 0.10);
+    EXPECT_NE(sample.covariance[0][0], g.covariance[0][0]) << "the sample variance is not the sleeve's";
+    const std::vector<double> x = {1.0, 0.5, 2.0};
+    const auto rd = readings(x, g, {0.3, 0.5, 0.2});
+    EXPECT_NEAR(rd.risk, std::abs(1.0 * 0.20 + 0.5 * 0.35 - 2.0 * 0.10), 1e-12);
+    EXPECT_NEAR(rd.shock, 1.0 * 0.20 + 0.5 * 0.35 + 2.0 * 0.10, 1e-12);
+    // R_jump reads the same correlations on the jump sigmas
+    EXPECT_NEAR(rd.jump, std::abs(1.0 * 0.3 + 0.5 * 0.5 - 2.0 * 0.2), 1e-12);
+}
+
+// The correlations are of WEEKLY returns: participant 1 moves with participant 0 on Monday and
+// against it by the same amount on Tuesday, so its daily returns correlate with participant 0's
+// but its weekly returns are those of the rest of the week, which are independent of it. The
+// weekly correlation is the exponentially weighted one (span 26, the newest week weighing 1),
+// computed here directly from the weekly sums.
+TEST(Overlay, TheCarverCorrelationIsOfWeeklySumsExponentiallyWeighted) {
+    const int weeks = 60;
+    const auto o = weekday_ordinals(weeks);
+    std::vector<std::vector<double>> r(o.size(), std::vector<double>(2, 0.0));
+    unsigned state = 777u;
+    auto next = [&] {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<double>(state % 10000u) / 10000.0 - 0.5;
+    };
+    for (int w = 0; w < weeks; ++w) {
+        const double m = next();
+        for (int d = 0; d < 5; ++d) {
+            const std::size_t row = static_cast<std::size_t>(5 * w + d);
+            r[row][0] = 0.01 * next();
+            r[row][1] = d == 0 ? 0.01 * m : d == 1 ? -0.01 * m : 0.005 * next();
+        }
+    }
+    std::vector<double> x(weeks, 0.0), y(weeks, 0.0);
+    for (int w = 0; w < weeks; ++w) {
+        for (int d = 0; d < 5; ++d) {
+            x[w] += r[5 * w + d][0];
+            y[w] += r[5 * w + d][1];
+        }
+    }
+    const double lambda = 2.0 / 27.0;
+    double sw = 0.0, mx = 0.0, my = 0.0;
+    std::vector<double> wt(weeks);
+    for (int w = 0; w < weeks; ++w) wt[w] = std::pow(1.0 - lambda, weeks - 1 - w);
+    for (int w = 0; w < weeks; ++w) {
+        sw += wt[w];
+        mx += wt[w] * x[w];
+        my += wt[w] * y[w];
+    }
+    mx /= sw;
+    my /= sw;
+    double sxy = 0.0, sxx = 0.0, syy = 0.0;
+    for (int w = 0; w < weeks; ++w) {
+        sxy += wt[w] * (x[w] - mx) * (y[w] - my);
+        sxx += wt[w] * (x[w] - mx) * (x[w] - mx);
+        syy += wt[w] * (y[w] - my) * (y[w] - my);
+    }
+    const double want = sxy / std::sqrt(sxx * syy);
+    GateWindow g = gate_window(r, o);
+    ASSERT_FALSE(g.blind());
+    carver_covariance(g, r, o, {0.2, 0.3});
+    EXPECT_NEAR(g.covariance[0][1] / (0.2 * 0.3), want, 1e-12);
+    EXPECT_LT(std::abs(want), 0.5);
+}
+
+// A blind window is left as it is: no covariance reading, and nothing to replace.
+TEST(Overlay, TheCarverCovarianceLeavesABlindWindowAlone) {
+    const auto o = weekday_ordinals(3);
+    std::vector<std::vector<double>> r(o.size(), std::vector<double>(2, 0.01));
+    GateWindow g = gate_window(r, o);
+    ASSERT_TRUE(g.blind());
+    carver_covariance(g, r, o, {0.2, 0.3});
+    EXPECT_TRUE(g.blind());
+    EXPECT_TRUE(g.covariance.empty());
+}

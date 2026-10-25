@@ -173,6 +173,11 @@ struct DayInputs {
     Matrix returns;
     Vector ordinals;
     Vector jump_sigma_daily;
+    /// risk.json's carver module overlay_covariance "carver": the overlay's covariance and shock
+    /// sigmas are built from `sizing_sigma` (per symbol, the annualised standard deviation the
+    /// sleeve sizes on) and weekly correlations (overlay::carver_covariance); false is "sample".
+    bool overlay_carver{false};
+    Vector sizing_sigma;
 
     // the optimiser's covariance: each symbol's last 756 consumed closes and adjusted levels
     Matrix opt_closes;
@@ -223,6 +228,12 @@ struct DayResult {
     Vector trimmed;         ///< contracts the trim removed, per symbol
     bool trim_capped{false};
     overlay::Readings stored_readings;  ///< the overlay's readings of the stored book
+    /// For the record only (nothing reads them to decide): the capped target with the held rows,
+    /// and the stored book, read on the carver covariance (overlay::carver_covariance) whatever the
+    /// book's overlay_covariance, so books on either rule compare. Equal to `readings` and
+    /// `stored_readings` on a carver book.
+    overlay::Readings carver_readings;
+    overlay::Readings carver_stored_readings;
     std::vector<std::pair<std::string, double>> over_limit;      ///< terms still over after the trim
     double over_limit_excess_units{0.0};  ///< the largest excess in units of the largest non-zero stored u
     std::vector<std::string> by_hold_terms;  ///< terms the held rows keep over; "CAP" for a held row beyond the cap

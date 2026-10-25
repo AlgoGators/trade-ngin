@@ -155,6 +155,7 @@ inline PortfolioConfig one_pass_config(const std::string& overlay_sleeve, double
     carver.r_shock_max = 4.0;
     carver.per_name_cap = 2.0;
     carver.trim_max = 5;
+    carver.overlay_covariance = "sample";
     pc.risk_modules = {module};
     return pc;
 }

@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <set>
+#include <chrono>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
@@ -377,6 +378,33 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     int calculated_warmup_days = calculate_warmup_days(portfolio->get_strategies());
     INFO("Calculated warmup days from strategies: " + std::to_string(calculated_warmup_days) +
          ", total available days: " + std::to_string(grouped_bars.size()));
+    if (!config_.first_traded_date.empty()) {
+        const std::string& fd = config_.first_traded_date;
+        int y = 0;
+        unsigned m = 0, d = 0;
+        char a = 0, b = 0;
+        std::istringstream in(fd);
+        in >> y >> a >> m >> b >> d;
+        const std::chrono::year_month_day ymd{std::chrono::year{y}, std::chrono::month{m},
+                                              std::chrono::day{d}};
+        if (fd.size() != 10 || a != '-' || b != '-' || !in || !ymd.ok()) {
+            return make_error<BacktestResults>(
+                ErrorCode::INVALID_ARGUMENT,
+                "backtest.first_traded_date is not a real YYYY-MM-DD date: '" + fd + "'",
+                "BacktestCoordinator");
+        }
+        const std::chrono::sys_days first{ymd};
+        int before = 0;
+        for (const auto& [timestamp, bars] : grouped_bars) {
+            if (std::chrono::floor<std::chrono::days>(timestamp) >= first) break;
+            ++before;
+        }
+        WARN("FIRST_TRADED_DATE " + fd + " (test-only): warm-up rows " +
+             std::to_string(std::max(before, calculated_warmup_days)) + " (the strategies' own " +
+             std::to_string(calculated_warmup_days) + ", rows before the date " +
+             std::to_string(before) + ")");
+        calculated_warmup_days = std::max(before, calculated_warmup_days);
+    }
 
     // Initialize CSV exporter
     // Each portfolio's run writes into its own directory under the configured path.

@@ -58,6 +58,22 @@ GateWindow gate_window(const std::vector<std::vector<double>>& returns,
                        const std::vector<double>& ordinals);
 
 /**
+ * THE CARVER COVARIANCE (risk.json's carver module overlay_covariance "carver"): on a window that
+ * is not blind, the covariance over the participants in R becomes sigma_i sigma_j rho_ij and every
+ * participant in R_shock shocks on its sigma_i, where sigma_i is the participant's own annualised
+ * standard deviation as its sleeve sizes it (`sigma`, per participant; 0 leaves it out of the
+ * risk) and rho_ij is the exponentially weighted correlation of the two participants' weekly
+ * returns, span kCarverCorrelationWeeks, over the weeks both have a return. A weekly return is
+ * the sum of the participant's daily returns in a week of Saturday to Friday (day numbers since
+ * 1970-01-01), over every row of `returns` (not only the window's 252). Which participants are in
+ * R and R_shock, the mode and the annualisation are the window's, unchanged. A pair with fewer
+ * than two common weeks, or no variance, has rho 0.
+ */
+inline constexpr double kCarverCorrelationWeeks = 26.0;
+void carver_covariance(GateWindow& window, const std::vector<std::vector<double>>& returns,
+                       const std::vector<double>& ordinals, const std::vector<double>& sigma);
+
+/**
  * THE READINGS on the participants' weights x_i = N_i M_i P_i FX_i / E (signed, on the sizing
  * capital): R = sqrt(x' Sigma x) and R_jump = sqrt(x' Sigma_jump x) over the participants in R,
  * Sigma_jump the window's correlations on each participant's own jump sigma (`sigma_jump`,

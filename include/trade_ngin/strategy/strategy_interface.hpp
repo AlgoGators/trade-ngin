@@ -93,6 +93,7 @@ public:
         double close{0.0};
         double multiplier{1.0};
         double jump_sigma_daily{0.0};
+        double sizing_sigma{0.0};  ///< the annualised standard deviation the position is sized on
         // For the one optimisation pass (LOOP_SPEC sections 3.2 and 5.1): the position before any
         // limit on the sleeve's own capital (N*), the sleeve's ruled forecast, whether the sleeve
         // signals the symbol, and the symbol's last 756 consumed bars for the optimiser's
