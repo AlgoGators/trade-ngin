@@ -37,7 +37,7 @@ chmod 600 "$CRON_ENV"
 # Only export what the job legitimately needs -- not the whole environment.
 while IFS='=' read -r -d '' name value; do
     case "$name" in
-        TRADING_* | DB_* | PG* | TZ | LD_LIBRARY_PATH)
+        TRADING_* | DB_* | PG* | QT_MAIL_* | TZ | LD_LIBRARY_PATH)
             printf 'export %s=%q\n' "$name" "$value" >> "$CRON_ENV"
             ;;
     esac

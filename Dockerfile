@@ -102,7 +102,7 @@ RUN PYTHON=/tmp/gen/bin/python OUT_DIR=/opt/rpc/app sh /src/services/rpc/gen.sh 
     cp -r /src/services/rpc/algogators_rpc /opt/rpc/app/ && \
     find /opt/rpc/app -name __pycache__ -prune -exec rm -rf {} + && \
     cd /opt/rpc/app && /opt/rpc/venv/bin/python -c \
-        "import algogators_rpc.server, algogators_rpc.services.desk.service, algogators_rpc.services.desk.catchup, psycopg, zoneinfo; zoneinfo.ZoneInfo('America/New_York')"
+        "import algogators_rpc.server, algogators_rpc.services.desk.service, algogators_rpc.services.desk.catchup, algogators_rpc.services.report.renderer, psycopg, zoneinfo; zoneinfo.ZoneInfo('America/New_York')"
 
 FROM ubuntu:24.04
 

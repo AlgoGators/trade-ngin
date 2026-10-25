@@ -227,6 +227,7 @@ set(TRADE_NGIN_SOURCES
     src/live/live_data_loader.cpp
     src/live/live_settings.cpp
     src/live/qt_desk.cpp
+    src/live/python_mail.cpp
     src/live/live_historical_metrics.cpp
     src/live/live_statistics_columns.cpp
     src/live/live_metrics_calculator.cpp

@@ -225,6 +225,7 @@ set(TEST_SOURCES
     live/test_live_runner_small_fixes.cpp
     live/test_email_body_file.cpp
     live/test_email_delivery.cpp
+    live/test_python_mail.cpp
     live/test_run_args.cpp
     live/test_equity_cash_available.cpp
     live/test_held_feed_ruling.cpp
