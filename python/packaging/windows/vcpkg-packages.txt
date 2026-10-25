@@ -1,0 +1,6 @@
+arrow
+libpqxx
+nlohmann-json
+eigen3
+nlopt
+curl
