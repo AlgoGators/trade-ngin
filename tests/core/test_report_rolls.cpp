@@ -283,6 +283,10 @@ TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
     ReportRollQuery none = q;
     none.rolls.clear();
     EXPECT_TRUE(report_roll_view(none, src, {}).names.empty());
+    ReportRollQuery early = q;
+    early.date = "2026-07-21";  // before the GC series' first date: its outlook cannot be read, no outlook
+    early.rolls.clear();
+    EXPECT_EQ(report_roll_view(early, src, {}).outlook.count("GC"), 0u);
     ReportRollQuery bad = q;
     bad.date = "24 July";
     const auto empty = report_roll_view(bad, src, {});
