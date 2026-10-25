@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 #include "trade_ngin/core/error.hpp"
@@ -38,8 +39,21 @@ struct SpreadConfig {
     double stop_z{4.0};                            // |z| at which the position is stopped out
     double capital_per_leg_pct{0.10};              // Notional per leg as a fraction of capital
     int min_holding_period{1};                     // Bars a position must be held before exiting
-    double initial_beta{1.0};                      // Hedge ratio used before the OLS window fills
+    double initial_beta{1.0};                      // What get_beta() reports before the first estimate;
+                                                   // it never affects trading
     size_t max_history{512};                       // Cap on retained per-leg history
+
+    // Bounds on the estimated hedge ratio. Unset: LOG_RATIO uses kDefaultMinBeta/kDefaultMaxBeta
+    // (beta is an elasticity); PRICE_DIFF has no default (beta is a ratio of price levels and
+    // depends on the pair), so both must be set. A bar whose estimate falls outside the bounds
+    // forms no spread value, so it has no z-score and opens nothing.
+    std::optional<double> min_beta;
+    std::optional<double> max_beta;
+    bool flatten_on_beta_breach{true};             // Exit an open position when beta leaves the bounds
+                                                   // (not a stop: it does not block re-entry)
+
+    static constexpr double kDefaultMinBeta = 0.1;
+    static constexpr double kDefaultMaxBeta = 10.0;
 };
 
 /**
@@ -49,6 +63,8 @@ struct SpreadState {
     // Transformed price series (log prices for LOG_RATIO, raw prices for PRICE_DIFF)
     std::vector<double> a_history;
     std::vector<double> b_history;
+    // The spread as it was seen on each day (built with that day's beta). A diagnostic only: the
+    // z-score is taken on a window re-formed with the current beta.
     std::vector<double> spread_history;
 
     // Most recent raw closes
@@ -62,6 +78,13 @@ struct SpreadState {
     double spread_std{0.0};
     double current_zscore{0.0};
     bool zscore_valid{false};
+
+    // Beta has been estimated at least once. Nothing trades before that: until then `beta` holds
+    // only the seed.
+    bool beta_estimated{false};
+    // Bars that formed a spread value from an estimated beta. A counter, not the history size:
+    // the histories are capped at max_history, so a size-based count stops growing.
+    size_t estimated_bars{0};
 
     // Position state: +1 = long spread (long A / short B), -1 = short spread, 0 = flat
     int direction{0};
@@ -188,10 +211,17 @@ private:
     std::optional<double> estimate_beta() const;
 
     /**
-     * @brief Rolling mean and standard deviation of the trailing zscore_period
-     *        spread observations (sample standard deviation).
+     * @brief Rolling mean and standard deviation of the trailing zscore_period spreads, each
+     *        re-formed as a - beta * b with the CURRENT beta (sample standard deviation).
      */
     std::optional<std::pair<double, double>> spread_statistics() const;
+
+    /// The beta bounds in force for this config (see SpreadConfig::min_beta).
+    std::pair<double, double> beta_bounds() const;
+
+    /// Flat both legs because beta left its bounds. Not a stop.
+    Result<void> flatten_for_beta_breach(Timestamp ts, double price_a, double price_b,
+                                         double beta);
 
     /**
      * @brief Decide the target spread direction for the current z-score.

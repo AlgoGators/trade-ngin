@@ -90,6 +90,34 @@ Result<void> SpreadStrategy::validate_config() const {
                                 "Z-score period must be at least 2", "SpreadStrategy");
     }
 
+    // The histories are capped at max_history, so a window longer than the cap could never fill,
+    // and z needs zscore_period estimated spreads whose window is re-formed from the leg histories.
+    const size_t beta_period = static_cast<size_t>(spread_config_.beta_period);
+    const size_t zscore_period = static_cast<size_t>(spread_config_.zscore_period);
+    if (beta_period > spread_config_.max_history || zscore_period > spread_config_.max_history ||
+        beta_period + zscore_period - 1 > spread_config_.max_history) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "beta_period, zscore_period and beta_period + zscore_period - 1 must each be at most "
+            "max_history",
+            "SpreadStrategy");
+    }
+
+    if (spread_config_.spread_type == SpreadType::PRICE_DIFF &&
+        (!spread_config_.min_beta.has_value() || !spread_config_.max_beta.has_value())) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "PRICE_DIFF needs min_beta and max_beta set explicitly: beta is a "
+                                "ratio of price levels and has no default bounds",
+                                "SpreadStrategy");
+    }
+    const auto [min_beta, max_beta] = beta_bounds();
+    if (!std::isfinite(min_beta) || !std::isfinite(max_beta) || min_beta <= 0.0 ||
+        max_beta <= min_beta) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "min_beta must be positive and less than max_beta",
+                                "SpreadStrategy");
+    }
+
     if (spread_config_.entry_z <= spread_config_.exit_z) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Entry z-score must be greater than exit z-score",
@@ -225,23 +253,33 @@ std::optional<double> SpreadStrategy::estimate_beta() const {
     return beta;
 }
 
+std::pair<double, double> SpreadStrategy::beta_bounds() const {
+    return {spread_config_.min_beta.value_or(SpreadConfig::kDefaultMinBeta),
+            spread_config_.max_beta.value_or(SpreadConfig::kDefaultMaxBeta)};
+}
+
 std::optional<std::pair<double, double>> SpreadStrategy::spread_statistics() const {
     const size_t period = static_cast<size_t>(spread_config_.zscore_period);
-    if (state_.spread_history.size() < period) {
+    if (state_.a_history.size() < period || state_.b_history.size() < period) {
         return std::nullopt;
     }
 
-    const size_t offset = state_.spread_history.size() - period;
+    // Every spread in the window is formed with today's beta. A stored spread was built with the
+    // beta of its own day, so mixing them would turn each move in beta into a move in the spread.
+    const size_t offset = state_.a_history.size() - period;
     const double n = static_cast<double>(period);
 
-    const double mean =
-        std::accumulate(state_.spread_history.begin() + static_cast<long>(offset),
-                        state_.spread_history.end(), 0.0) /
-        n;
+    std::vector<double> window;
+    window.reserve(period);
+    for (size_t i = offset; i < state_.a_history.size(); ++i) {
+        window.push_back(state_.a_history[i] - state_.beta * state_.b_history[i]);
+    }
+
+    const double mean = std::accumulate(window.begin(), window.end(), 0.0) / n;
 
     double sum_sq = 0.0;
-    for (size_t i = offset; i < state_.spread_history.size(); ++i) {
-        const double d = state_.spread_history[i] - mean;
+    for (const double v : window) {
+        const double d = v - mean;
         sum_sq += d * d;
     }
 
@@ -338,6 +376,23 @@ Result<void> SpreadStrategy::publish_positions(Timestamp ts, double price_a, dou
     return Result<void>();
 }
 
+Result<void> SpreadStrategy::flatten_for_beta_breach(Timestamp ts, double price_a,
+                                                      double price_b, double beta) {
+    WARN("Closing " + direction_name(state_.direction) + " on " + spread_config_.symbol_a + "/" +
+         spread_config_.symbol_b + ": exit reason beta_breach, beta=" + std::to_string(beta));
+
+    state_.direction = 0;
+    state_.quantity_a = 0.0;
+    state_.quantity_b = 0.0;
+    state_.entry_price_a = 0.0;
+    state_.entry_price_b = 0.0;
+    state_.entry_zscore = 0.0;
+    state_.holding_period = 0;
+    // Deliberately not a stop: stopped_out stays as it was, so the pair may re-enter once beta
+    // is back inside its bounds and z says so.
+    return publish_positions(ts, price_a, price_b);
+}
+
 Result<void> SpreadStrategy::on_data(const std::vector<Bar>& data) {
     if (get_state() != StrategyState::RUNNING) {
         return Result<void>();
@@ -370,10 +425,30 @@ Result<void> SpreadStrategy::on_data(const std::vector<Bar>& data) {
                 state_.b_history.erase(state_.b_history.begin());
             }
 
-            // Rolling OLS hedge ratio over data up to and including this bar.
+            // Rolling OLS hedge ratio over data up to and including this bar. A failed later
+            // estimate keeps the previous beta; before the first one there is no beta to use, so
+            // the seed value never forms a spread and nothing trades.
             if (auto beta = estimate_beta(); beta.has_value()) {
+                const auto [min_beta, max_beta] = beta_bounds();
+                if (*beta < min_beta || *beta > max_beta) {
+                    // Outside the bounds the spread is not formed: no z, no new position.
+                    state_.zscore_valid = false;
+                    if (state_.direction != 0 && spread_config_.flatten_on_beta_breach) {
+                        auto result = flatten_for_beta_breach(ts, price_a, price_b, *beta);
+                        if (result.is_error()) {
+                            return result;
+                        }
+                    }
+                    continue;
+                }
                 state_.beta = *beta;
+                state_.beta_estimated = true;
             }
+            if (!state_.beta_estimated) {
+                state_.zscore_valid = false;
+                continue;
+            }
+            state_.estimated_bars++;
 
             state_.current_spread = *xa - state_.beta * (*xb);
             state_.spread_history.push_back(state_.current_spread);
@@ -381,16 +456,28 @@ Result<void> SpreadStrategy::on_data(const std::vector<Bar>& data) {
                 state_.spread_history.erase(state_.spread_history.begin());
             }
 
+            // z needs zscore_period spreads that were built from an estimated beta.
+            if (state_.estimated_bars < static_cast<size_t>(spread_config_.zscore_period)) {
+                state_.zscore_valid = false;
+                continue;
+            }
+
             auto stats = spread_statistics();
             if (!stats.has_value()) {
                 state_.zscore_valid = false;
-                continue;  // Still warming up, or a degenerate spread window
+                continue;  // A degenerate spread window
             }
 
             state_.spread_mean = stats->first;
             state_.spread_std = stats->second;
             state_.current_zscore = (state_.current_spread - state_.spread_mean) / state_.spread_std;
             state_.zscore_valid = true;
+
+            // Clear the stop block once the spread is back inside the exit band. Once per bar,
+            // before the decision, so a batch delivery gives the same result as bar by bar.
+            if (state_.stopped_out && std::abs(state_.current_zscore) <= spread_config_.exit_z) {
+                state_.stopped_out = false;
+            }
 
             if (state_.direction != 0) {
                 state_.holding_period++;
@@ -454,12 +541,6 @@ Result<void> SpreadStrategy::on_data(const std::vector<Bar>& data) {
             if (result.is_error()) {
                 return result;
             }
-        }
-
-        // Clear the stop block once the spread is back inside the exit band.
-        if (state_.stopped_out && state_.zscore_valid &&
-            std::abs(state_.current_zscore) <= spread_config_.exit_z) {
-            state_.stopped_out = false;
         }
 
         auto metrics_result = update_metrics();
