@@ -7,6 +7,7 @@ from 04:30). 2026-10-09 is a Friday."""
 
 import dataclasses
 import datetime as dt
+import html
 import json
 from pathlib import Path
 
@@ -1241,7 +1242,9 @@ def test_up_to_n_symbols_past_x_run_with_the_alert(env, n):
     (message,) = president_messages(env)
     for s in missing:
         assert f"{s} (last bar " in message
-    assert "The run of 2026-10-12 goes ahead with each carried at its last price" in message
+    assert ("The run of 2026-10-12 goes ahead with each carried at its last price, with no order; if the "
+            "book holds one past live.data_staleness_tolerance_days on today's run, the engine refuses the "
+            "run (a separate alert)") in html.unescape(message)      # Q1 audit A recheck R2
 
 
 def test_n_plus_one_symbols_past_x_hold_the_run(env):
@@ -1460,3 +1463,19 @@ def test_the_review_email_counts_the_symbols_nobody_names(env):
     assert "<li>2 more the data does not name, with no bar in the table</li>" in body
     assert "no symbol missing" not in body
     assert "2 symbol(s) not named, with no bar in the table" in president_messages(env)[0]
+
+
+def test_the_review_email_sums_the_unnamed_symbols_of_both_rows(env):
+    """Q1 audit A recheck R1: switch on, both rows under-named within N (35 of 36 each, naming none, every
+    table symbol fresh): one unnamed symbol from each row, two in all. The review e-mail counts the sum."""
+    published_day(env, MON)
+    switch_on(env)
+    env.days.bars = {s: MON for s in ROOTS36}
+    env.days.contract_bars = {r: MON for r in ROOTS36}
+    env.days.ready.append(ready(MON, at(MON, 20, 10), "partial", (), loaded=35))
+    env.days.ready.append(contract_ready(MON, at(MON, 20, 11), "partial", (), loaded=35))
+    env.clock.t = at(MON, 20, 30)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert ("model", DESK, "2026-10-13") in calls(env)
+    (_, body), = reviews(env)
+    assert "<li>2 more the data does not name, with no bar in the table</li>" in body
