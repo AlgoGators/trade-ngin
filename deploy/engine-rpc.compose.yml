@@ -40,7 +40,11 @@ services:
     # the vendor's ~8 h delayed historical data has bar D and writes ops.data_ready; today's model
     # run waits for it. QT_EVENING_RUN (1; 0 = the 06:45-only schedule), QT_DATA_READY_DATASET
     # (futures_ohlcv_1d; a comma-separated list; with per_contract_rolls on the run also waits for
-    # futures_contract_ohlcv_1d), QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) and
+    # futures_contract_ohlcv_1d), QT_DATA_READY_MAX_MISSING (N, 2), the continuous row: the run is
+    # held with the data_stale alert only when more than N symbols have each had no bar for more than
+    # live.data_staleness_tolerance_days (X, 4 days), a failed pull included; otherwise it runs, each
+    # missing symbol alerted and held at its last price (the engine's FEED_HOLE guard still refuses
+    # today's run when the book holds one past X), QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) and
     # QT_CONTRACT_DATA_READY_STALE_DAYS (X, unset = live.data_staleness_tolerance_days, 4), the
     # per-contract row only: the run is held with the data_stale alert only when more than N roots
     # have each had no contract bar for more than X days; otherwise it runs, each missing root alerted,
