@@ -483,3 +483,15 @@ TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
     }
     EXPECT_EQ(checked, 3);
 }
+
+// backtest.first_traded_date is test-only like frozen_end_date: absent from a shipped config and
+// not serialised when empty; set, it round-trips.
+TEST(BacktestFirstTradedDate, AbsentByDefaultAndRoundTripsWhenSet) {
+    BacktestSpecificConfig cfg;
+    EXPECT_TRUE(cfg.first_traded_date.empty());
+    EXPECT_FALSE(cfg.to_json().contains("first_traded_date"));
+    cfg.first_traded_date = "2025-10-04";
+    BacktestSpecificConfig back;
+    back.from_json(cfg.to_json());
+    EXPECT_EQ(back.first_traded_date, "2025-10-04");
+}
