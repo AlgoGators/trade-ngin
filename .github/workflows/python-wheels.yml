@@ -73,7 +73,7 @@ jobs:
 
   windows-deps:
     name: Windows dependencies
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -92,7 +92,7 @@ jobs:
   windows:
     name: Windows wheel (Python ${{ matrix.python }})
     needs: windows-deps
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -173,7 +173,7 @@ jobs:
   test-windows:
     name: Test on Windows (Python ${{ matrix.python }})
     needs: [windows, examples]
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
