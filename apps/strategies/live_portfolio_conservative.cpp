@@ -1117,13 +1117,17 @@ int main(int argc, char* argv[]) {
             // (live/live_listing_guard.hpp) judges the symbol list as the database gives it and
             // the stored Day T-1 book: a refusal sits above the live_run_metadata upsert like the
             // other refusals, so a refused run leaves no row.
-            if (!app_config.instrument_id_relabels.empty()) {
-                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+            // R6: not read with per_contract_rolls on (the rule rolls each change, trigger alias).
+            const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);
+            if (!relabels.empty()) {
+                ListingDates::instance().set_relabels(relabels);
                 std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
-                for (const auto& r : app_config.instrument_id_relabels) {
+                for (const auto& r : relabels) {
                     line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
                 }
                 INFO(line);
+            } else if (!app_config.instrument_id_relabels.empty()) {
+                INFO(relabels_not_read_line(app_config.instrument_id_relabels));
             }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);

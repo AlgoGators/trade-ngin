@@ -174,13 +174,17 @@ int main() {
                     }),
                 symbols.end());
             // Declared vendor id relabellings (nothing happens without instrument_id_relabels).
-            if (!app_config.instrument_id_relabels.empty()) {
-                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+            // R6: not read with per_contract_rolls on (the rule rolls each change, trigger alias).
+            const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);
+            if (!relabels.empty()) {
+                ListingDates::instance().set_relabels(relabels);
                 std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
-                for (const auto& r : app_config.instrument_id_relabels) {
+                for (const auto& r : relabels) {
                     line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
                 }
                 WARN(line);
+            } else if (!app_config.instrument_id_relabels.empty()) {
+                INFO(relabels_not_read_line(app_config.instrument_id_relabels));
             }
             // Listing dates (nothing happens without portfolio.json's listing_dates):
             // a window that starts before a contract's listing date also runs the contract traded
@@ -595,9 +599,11 @@ int main() {
                 portfolio_config_json, app_config.backtest.lookback_years,
                 app_config.backtest.frozen_end_date, backtest_results.warmup_days,
                 backtest_results.statistics_sessions_per_year);
-            if (!app_config.instrument_id_relabels.empty()) {
+            // the relabels the run read (none with per_contract_rolls on, R6)
+            const auto read = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);
+            if (!read.empty()) {
                 auto relabels = nlohmann::json::array();
-                for (const auto& r : app_config.instrument_id_relabels) {
+                for (const auto& r : read) {
                     relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
                 }
                 portfolio_config_json["instrument_id_relabels"] = relabels;

@@ -126,7 +126,11 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
     for (const char* runner : kLiveRunners) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
-        const size_t relabels = src.find("ListingDates::instance().set_relabels(app_config.instrument_id_relabels);");
+        // R6: the relabels read are the switch's (none with per_contract_rolls on).
+        const size_t relabels = src.find(
+            "const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+            "            if (!relabels.empty()) {\n"
+            "                ListingDates::instance().set_relabels(relabels);");
         const size_t contracts = src.find("ListingDates::instance().set(app_config.listing_dates);");
         const size_t guard = src.find("live_listing_refusals(");
         const size_t es_filter = src.find("s == \"ES.v.0\"");
@@ -205,7 +209,11 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
         ASSERT_LT(from, to) << runner;
         const std::string hunk = src.substr(from, to - from);
         for (const char* needed :
-             {"ListingDates::instance().set_relabels(app_config.instrument_id_relabels);",
+             {"const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+              "            if (!relabels.empty()) {\n"
+              "                ListingDates::instance().set_relabels(relabels);",
+              "} else if (!app_config.instrument_id_relabels.empty()) {\n"
+              "                INFO(relabels_not_read_line(app_config.instrument_id_relabels));",
               "ListingDates::instance().set(app_config.listing_dates);",
               "ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);",
               "InstrumentRegistry::instance().set_full_size_remap(false);",
