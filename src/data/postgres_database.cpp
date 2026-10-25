@@ -1657,7 +1657,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     [[maybe_unused]] const int TIME_OF_EXPIRY_IDX = 20;  // Not needed in final table
 
     // Helper function to safely append string values
-    auto append_string = [](arrow::StringBuilder& builder, const pqxx::row& row, int index) {
+    auto append_string = [](arrow::StringBuilder& builder, const auto& row, int index) {
         try {
             if (index >= row.size() || row[index].is_null()) {
                 return builder.AppendNull();
@@ -1671,7 +1671,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     };
 
     // Helper function to safely convert and append double values
-    auto append_double = [](arrow::DoubleBuilder& builder, const pqxx::row& row, int index) {
+    auto append_double = [](arrow::DoubleBuilder& builder, const auto& row, int index) {
         try {
             if (index >= row.size() || row[index].is_null()) {
                 return builder.AppendNull();
