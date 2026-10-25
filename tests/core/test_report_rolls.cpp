@@ -12,8 +12,10 @@
 //   * the Front Month and Contract Months cells, the decimals of a tick, the month names.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../data/contract_rolls_test_util.hpp"
@@ -88,8 +90,8 @@ TEST(ReportRolls, TheRollLineWordsAShortABackwardatedGapAndUnknownNames) {
     no_split.roll_gap_value.reset();
     EXPECT_EQ(report_roll_line(ReportRollNames{"Micro E-Mini Russell-2000 Index", "September", "December", 1},
                                "M2K.v.0", no_split, 5.88),
-              "Micro E-Mini Russell-2000 Index, September to December: roll cost $5.88 (market move and contract "
-              "price difference shown once the full-size contracts are loaded).");
+              "Micro E-Mini Russell-2000 Index, September to December: roll cost $5.88 (the market move and the "
+              "price difference between the two contracts are not shown for this contract yet).");
 }
 
 TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
@@ -124,8 +126,8 @@ TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
         << box;
     EXPECT_LT(box.find("6L:"), box.find("SI:")) << "root order";
     EXPECT_EQ(box.find("GCZ5"), std::string::npos) << "outside its window";
-    EXPECT_NE(box.find("<li><strong>MES:</strong> Currently holding <strong>MESZ5</strong>, rolls with the vendor's "
-                       "series, last trading day 12-19</li>"),
+    EXPECT_NE(box.find("<li><strong>MES:</strong> Currently holding <strong>MESZ5</strong>, moves to the next "
+                       "contract when trading does, before the contract ends on 12-19</li>"),
               std::string::npos)
         << box;
     EXPECT_NE(box.find("<li><strong>JPY:</strong> Currently holding <strong>JPYZ5</strong> \xE2\x86\x92 Switch to "
@@ -342,8 +344,9 @@ TEST(ReportRolls, TheViewNamesTheContractTheBookHolds) {
     EXPECT_FALSE(o.rule_rolls);
     EXPECT_EQ(o.deadline, "2026-09-18");
     EXPECT_TRUE(o.in_window) << "five CME trading days before 09-18 is 09-11";
-    EXPECT_NE(report_rollover_warning_html(view).find("M2K:</strong> Currently holding <strong>M2KU6</strong>, rolls "
-                                                      "with the vendor's series, last trading day 09-18"),
+    EXPECT_NE(report_rollover_warning_html(view).find("M2K:</strong> Currently holding <strong>M2KU6</strong>, moves "
+                                                      "to the next contract when trading does, before the "
+                                                      "contract ends on 09-18"),
               std::string::npos);
     // Without the book's id the vendor's contract is the fallback.
     q.held_ids.clear();
@@ -357,6 +360,49 @@ TEST(ReportRolls, TheViewNamesTheContractTheBookHolds) {
     EXPECT_EQ(report_ib_contract("NG", "NG", "NGV26"), "NGV6");
     EXPECT_EQ(report_ib_contract("", "SI", "SIZ5"), "SIZ5");
     EXPECT_EQ(report_ib_contract("GC", "GC", "SIZ5"), "SIZ5") << "not the root's code: as it is";
+}
+
+// R4b audit A recheck R2: the micros' warning window, at its bounds. M2KU6's last trading day is Fri
+// 2026-09-18; the window opens on the fifth CME trading day before it (Fri 09-11) and closes on it. The
+// sixth trading day before (Thu 09-10) and the day after (Sat 09-19, the vendor's last bar still naming
+// September) show no line; 09-11 and 09-18 show it.
+TEST(ReportRolls, TheMicrosWindowOpensOnTheFifthTradingDayBeforeTheLastTradingDayAndClosesOnIt) {
+    const auto book = ContractBook::build({contract_rolls_test::bar("M2K", "M2KU6", "u", "2026-09-10", "2026-09-18", 2870, 900),
+                                           contract_rolls_test::bar("M2K", "M2KU6", "u", "2026-09-11", "2026-09-18", 2871, 900),
+                                           contract_rolls_test::bar("M2K", "M2KU6", "u", "2026-09-18", "2026-09-18", 2877, 100),
+                                           contract_rolls_test::bar("M2K", "M2KZ6", "z", "2026-09-18", "2026-12-18", 2900, 900)})
+                          .value();
+    ReportRollSources src;
+    src.vendor_grid = [](const std::string& root, Day, Day to) {
+        VendorBar v;
+        v.date = std::min(to, d("2026-09-18"));
+        v.symbol = root + ".v.0";
+        v.instrument_id = "u";
+        return std::vector<VendorBar>{v};
+    };
+    src.contracts_around = [&](const std::string&, Day) -> Result<ContractBook> { return book; };
+    src.calendar = [](const std::string& root) { return contract_rolls_test::shipped_calendars().for_root(root); };
+    src.names = [] { return std::map<std::string, ReportContractName>{{"M2K", {"Micro Russell 2000", "M2K"}}}; };
+    src.series = [](const std::string&, Day) -> Result<ContractRollSeries> {
+        return make_error<ContractRollSeries>(ErrorCode::DATA_NOT_FOUND, "not used", "test");
+    };
+    ReportRollQuery q;
+    q.held_symbols = {"M2K.v.0"};
+    q.held_ids = {{"M2K.v.0", "u"}};
+    const auto view_on = [&](const std::string& date) {
+        q.date = date;
+        return report_roll_view(q, src, {});
+    };
+    for (const auto& [date, open] : std::vector<std::pair<std::string, bool>>{
+             {"2026-09-10", false}, {"2026-09-11", true}, {"2026-09-18", true}, {"2026-09-19", false}}) {
+        const auto view = view_on(date);
+        const auto& o = view.outlook.at("M2K");
+        EXPECT_EQ(o.held, "M2KU6") << date;
+        EXPECT_EQ(o.deadline, "2026-09-18") << date;
+        EXPECT_EQ(o.in_window, open) << date;
+        EXPECT_EQ(report_rollover_warning_html(view).find("M2K:</strong> Currently holding") != std::string::npos, open)
+            << date;
+    }
 }
 
 // M-1, a ruled root: the rule has rolled GC on the settled bar (a vendor switch the next bar confirms) and
