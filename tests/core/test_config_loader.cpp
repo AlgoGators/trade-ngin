@@ -1856,17 +1856,18 @@ TEST_F(ConfigLoaderTest, AMalformedCarryBlockIsRefused) {
             "exactly one enabled TrendFollowingStrategy sleeve; this book enables 2");
 }
 
-// The shipped templates carry the block at weight 0: carry is off and the book is today's.
+// The shipped templates leave the block out: carry is off and the book is today's to the last stored
+// digit (the run-metadata settings snapshot holds the whole file, so a block at weight 0 would change it).
 TEST_F(ConfigLoaderTest, TheTemplatesShipWithCarryOff) {
     const auto tmpl = tracked_config_template();
     ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
     for (const char* book : {"conservative", "base"}) {
         auto loaded = ConfigLoader::load(tmpl, book);
         ASSERT_TRUE(loaded.is_ok()) << book << ": " << (loaded.is_error() ? loaded.error()->what() : "");
-        EXPECT_TRUE(loaded.value().carry.present) << book;
-        EXPECT_EQ(loaded.value().carry.weight, 0.0) << book;
+        EXPECT_FALSE(loaded.value().carry.present) << book;
         EXPECT_FALSE(loaded.value().carry.enabled()) << book;
-        EXPECT_EQ(loaded.value().carry.spans, (std::vector<int>{5, 20, 60, 120})) << book;
-        EXPECT_EQ(loaded.value().carry.scalar, 30.0) << book;
+        std::ifstream in(tmpl / "portfolios" / book / "portfolio.json");
+        ASSERT_TRUE(in.good()) << book;
+        EXPECT_FALSE(nlohmann::json::parse(in).contains("carry")) << book;
     }
 }
