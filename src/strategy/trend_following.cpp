@@ -1,18 +1,62 @@
 // src/strategy/trend_following.cpp
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/carry_estimator.hpp"
+#include "trade_ngin/strategy/carry_estimator_record.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator_record.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <numeric>
 #include <set>
 #include <unordered_set>
 
 namespace trade_ngin {
+
+namespace {
+
+std::string number(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return buf;
+}
+
+// Carry (trade-ngin #185, HD's Q5): the trend part and the carry part of one symbol's forecast on one
+// signal bar, in one log line; no table or column holds them.
+std::string carry_log_line(const std::string& sleeve, const std::string& symbol,
+                           const std::string& date, const InstrumentData& data, double trend_mean,
+                           int trend_rules, double carry_weight) {
+    const carry_estimator::Estimate& c = data.carry;
+    std::string line = "CARRY " + sleeve + " " + symbol + " " + date;
+    if (!data.carry_used) {
+        return line + " trend only: no carry quote in the window yet; trend=" + number(trend_mean) +
+               " (" + std::to_string(trend_rules) + " rules)";
+    }
+    const carry_estimator::Blend& b = data.blend;
+    std::string spans;
+    for (double s : c.scaled) spans += (spans.empty() ? "" : " ") + number(s);
+    line += " trend=" + number(data.trend_part_ruled) + " (" + std::to_string(b.trend_rules) +
+            " rules" + (data.trend_part_ruled != trend_mean ? ", slow rule from " + number(trend_mean) : "") +
+            ") carry=" + number(c.mean_scaled) + " (" + std::to_string(b.carry_rules) + " spans: " +
+            spans + ") F=" + number(b.fdm) + " x (" + number(1.0 - carry_weight) + " x " +
+            number(data.trend_part_ruled) + " + " + number(carry_weight) + " x " +
+            number(c.mean_scaled) + ") = " + number(b.forecast) + " (" + std::to_string(b.rules) +
+            " rules)";
+    if (c.quote) {
+        line += " quote=" + c.quote->held_symbol + "/" + c.quote->other_symbol +
+                " months=" + std::to_string(c.quote->months) + " closes=" + number(c.quote->held_close) +
+                "/" + number(c.quote->other_close);
+    }
+    line += " raw=" + number(c.raw_carry) + " annualised=" + number(c.annualised) +
+            " divisor=" + number(c.divisor) + " forecast=" + number(c.forecast) +
+            (c.quoted ? "" : " (no quote today: the last known raw carry stands)");
+    return line;
+}
+
+}  // namespace
 
 TrendFollowingStrategy::TrendFollowingStrategy(std::string id, StrategyConfig config,
                                                TrendFollowingConfig trend_config,
@@ -309,6 +353,7 @@ Result<void> TrendFollowingStrategy::seed_history(const std::vector<Bar>& bars) 
         instrument_data.seeded_timestamps.clear();
         instrument_data.seeded_instrument_ids.clear();
         instrument_data.seeded_roll_from.clear();
+        instrument_data.seeded_carry.clear();
         const size_t first = symbol_bars.size() > trend_config_.max_history_size
                                  ? symbol_bars.size() - trend_config_.max_history_size
                                  : 0;
@@ -317,12 +362,14 @@ Result<void> TrendFollowingStrategy::seed_history(const std::vector<Bar>& bars) 
             instrument_data.seeded_timestamps.push_back(symbol_bars[i]->timestamp);
             instrument_data.seeded_instrument_ids.push_back(symbol_bars[i]->instrument_id);
             instrument_data.seeded_roll_from.push_back(symbol_bars[i]->roll_from);
+            instrument_data.seeded_carry.push_back(symbol_bars[i]->carry);
         }
         // The seed is the history until bars are fed.
         instrument_data.price_history = instrument_data.seeded_prices;
         instrument_data.bar_timestamps = instrument_data.seeded_timestamps;
         instrument_data.bar_instrument_ids = instrument_data.seeded_instrument_ids;
         instrument_data.bar_roll_from = instrument_data.seeded_roll_from;
+        instrument_data.bar_carry = instrument_data.seeded_carry;
     }
     return Result<void>();
 }
@@ -393,6 +440,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 instrument_data.bar_timestamps.clear();
                 instrument_data.bar_instrument_ids.clear();
                 instrument_data.bar_roll_from.clear();
+                instrument_data.bar_carry.clear();
                 // The history seeded before the feed (seed_history) stays in front of it: the
                 // bars dated before the feed's first bar.
                 const Timestamp feed_start = symbol_bars.front().timestamp;
@@ -402,6 +450,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     instrument_data.bar_timestamps.push_back(instrument_data.seeded_timestamps[i]);
                     instrument_data.bar_instrument_ids.push_back(instrument_data.seeded_instrument_ids[i]);
                     instrument_data.bar_roll_from.push_back(instrument_data.seeded_roll_from[i]);
+                    instrument_data.bar_carry.push_back(instrument_data.seeded_carry[i]);
                 }
             }
 
@@ -411,6 +460,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 instrument_data.bar_timestamps.push_back(bar.timestamp);
                 instrument_data.bar_instrument_ids.push_back(bar.instrument_id);
                 instrument_data.bar_roll_from.push_back(bar.roll_from);
+                instrument_data.bar_carry.push_back(bar.carry);
 
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
@@ -418,6 +468,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     instrument_data.bar_timestamps.pop_front();
                     instrument_data.bar_instrument_ids.pop_front();
                     instrument_data.bar_roll_from.pop_front();
+                    instrument_data.bar_carry.pop_front();
                 }
             }
         }
@@ -547,9 +598,13 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     break;
                 }
             }
-            const trend_estimator::Estimate estimate =
-                trend_estimator::estimate(window, trend_config_.vol_lookback_short,
-                                          symbol_pairs, fdm);
+            // Carry on (trade-ngin #185): the forecast's volatility at every window bar, which the
+            // carry rules divide by. Off, nothing is asked for and nothing changes.
+            const bool carry_on = trend_config_.carry_weight > 0.0;
+            std::vector<double> forecast_sigma_bars;
+            const trend_estimator::Estimate estimate = trend_estimator::estimate(
+                window, trend_config_.vol_lookback_short, symbol_pairs, fdm, true,
+                carry_on ? &forecast_sigma_bars : nullptr);
             if (!estimate.valid) {
                 WARN("Using default volatility for " + symbol + " due to calculation issues");
             }
@@ -612,7 +667,62 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         trend_config_.equity_slow_pairs);
                 }
             }
-            const bool slow_rule_zeroed = ruled_forecast != estimate.combined;
+            bool slow_rule_zeroed = ruled_forecast != estimate.combined;
+            instrument_data.carry_used = false;
+            if (carry_on) {
+                // Carry (trade-ngin #185; Carver, strategy eleven): the carry rules on the same
+                // window and, when a raw carry is known, ONE forecast blended from the trend part
+                // and the carry part (carry_estimator.hpp). The equity slow rule acts on the trend
+                // part only (HD's Q1); a short the carry part makes is allowed and counted.
+                carry_estimator::Window carry_window;
+                const std::size_t n = forecast_sigma_bars.size();
+                const std::size_t from = prices.size() - n;
+                carry_window.quote.assign(instrument_data.bar_carry.begin() + static_cast<long>(from),
+                                          instrument_data.bar_carry.end());
+                carry_window.close.assign(window.close.begin() + static_cast<long>(from),
+                                          window.close.end());
+                carry_window.forecast_sigma = forecast_sigma_bars;
+                instrument_data.carry = carry_estimator::estimate(
+                    carry_window, trend_config_.carry_spans, trend_config_.carry_scalar);
+                instrument_data.blend = carry_estimator::Blend{};
+                instrument_data.trend_part_ruled = estimate.mean_scaled;
+                if (instrument_data.carry.active) {
+                    const std::string base_symbol =
+                        ListingDates::instance().pair_root(symbol.substr(0, symbol.find('.')));
+                    const bool ruled_symbol =
+                        std::find(trend_config_.equity_slow_symbols.begin(),
+                                  trend_config_.equity_slow_symbols.end(),
+                                  base_symbol) != trend_config_.equity_slow_symbols.end();
+                    const double trend_part =
+                        ruled_symbol ? trend_estimator::equity_slow_ruled(
+                                           estimate.mean_scaled, estimate.scaled, symbol_pairs,
+                                           trend_config_.equity_slow_pairs)
+                                     : estimate.mean_scaled;
+                    instrument_data.trend_part_ruled = trend_part;
+                    instrument_data.blend = carry_estimator::blend(
+                        trend_part, static_cast<int>(symbol_pairs.size()),
+                        instrument_data.carry.mean_scaled,
+                        static_cast<int>(trend_config_.carry_spans.size()),
+                        trend_config_.carry_weight);
+                    instrument_data.carry_used = true;
+                    ruled_forecast = instrument_data.blend.forecast;
+                    slow_rule_zeroed = trend_part != estimate.mean_scaled;
+                    instrument_data.current_scaled_forecast = ruled_forecast;
+                    if (ruled_symbol && ruled_forecast < 0.0 && !(trend_part < 0.0)) {
+                        ++carry_driven_shorts_[symbol];
+                    }
+                }
+                const std::string bar_date = core::format_utc_date(symbol_bars.back().timestamp);
+                INFO(carry_log_line(id_, symbol, bar_date, instrument_data, estimate.mean_scaled,
+                                    static_cast<int>(symbol_pairs.size()),
+                                    trend_config_.carry_weight));
+                if (tradeable) {
+                    append_carry_record(id_, bar_date, symbol, trend_config_.carry_spans,
+                                        instrument_data.carry, instrument_data.blend,
+                                        estimate.mean_scaled, instrument_data.trend_part_ruled,
+                                        instrument_data.carry_used);
+                }
+            }
             instrument_data.slow_rule_zeroed = slow_rule_zeroed;
             instrument_data.current_forecast = ruled_forecast;
 
