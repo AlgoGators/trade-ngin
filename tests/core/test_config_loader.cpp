@@ -1824,6 +1824,17 @@ TEST_F(ConfigLoaderTest, CarryAbsentIsOffAndTheBlockIsReadAsWritten) {
     EXPECT_TRUE(off.value().carry.present);
     EXPECT_FALSE(off.value().carry.enabled());
     EXPECT_EQ(off.value().carry.spans, (std::vector<int>{5, 20, 60, 120})) << "Carver's spans by default";
+    EXPECT_EQ(off.value().carry.scalar, 30.0) << "Carver's scalar by default";
+    // carry on with only the weight written: the spans and the scalar are Carver's (the README allows it)
+    write_full_set("base", nlohmann::json::object(), {{"strategies", one_trend_sleeve()}, {"carry", {{"weight", 0.4}}}});
+    auto weight_only = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(weight_only.is_ok()) << (weight_only.error() ? weight_only.error()->what() : "");
+    EXPECT_TRUE(weight_only.value().carry.enabled());
+    EXPECT_EQ(weight_only.value().carry.spans, (std::vector<int>{5, 20, 60, 120}));
+    EXPECT_EQ(weight_only.value().carry.scalar, 30.0);
+    EXPECT_EQ(CarryConfig{}.scalar, 30.0);
+    EXPECT_EQ(CarryConfig{}.spans, (std::vector<int>{5, 20, 60, 120}));
+    EXPECT_EQ(CarryConfig{}.weight, 0.0);
 }
 
 TEST_F(ConfigLoaderTest, AMalformedCarryBlockIsRefused) {

@@ -7,6 +7,7 @@
 
 #include "trade_ngin/strategy/carry_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::carry_estimator;
@@ -258,4 +259,16 @@ TEST(CarryBlend, TheBlendedForecastByHandAndItsCap) {
     EXPECT_EQ(blend(-20.0, 6, -20.0, 4, 0.4).forecast, -20.0);
     // Carry only: the carry average times table 52 for the carry spans.
     EXPECT_NEAR(blend(9.0, 6, 5.0, 4, 1.0).forecast, 1.23 * 5.0, 1e-12);
+}
+
+// The book's values, written out (fix round 1, audit A S2): the spans of strategy ten and the scalar 30,
+// the cap 20, pinned to literals rather than read back from the code that defines them.
+TEST(CarryEstimator, CarversSpansScalarAndCapAreTheBooks) {
+    EXPECT_EQ(default_spans(), (std::vector<int>{5, 20, 60, 120}));
+    EXPECT_EQ(kCarryScalar, 30.0);
+    EXPECT_EQ(kCarryCap, 20.0);
+    const TrendFollowingConfig sleeve;
+    EXPECT_EQ(sleeve.carry_spans, (std::vector<int>{5, 20, 60, 120}));
+    EXPECT_EQ(sleeve.carry_scalar, 30.0);
+    EXPECT_EQ(sleeve.carry_weight, 0.0) << "off unless the block turns it on";
 }
