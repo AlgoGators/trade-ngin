@@ -50,6 +50,8 @@ public:
     const HeldSeries& series() const { return series_; }
     const std::vector<HeldDay>& days() const { return series_.days; }
     const RuleReport& report() const { return series_.report; }
+    /// The contracts the series was built on (carry reads the held contract's neighbour there).
+    const ContractBook& book() const { return *book_; }
 
     /// The held contract's dates and target on `date` (the latest grid date on or before it).
     /// An error before the series' first date, or outside the calendar.

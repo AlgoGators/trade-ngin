@@ -94,6 +94,20 @@ public:
         for (const auto& b : bars.value()) out[b.date] = b;
         return out;
     }
+    /// bars_until with the carry quotes attached (carry on, trade-ngin #185).
+    std::map<Day, SourceBar> carry_bars_until(const std::string& last,
+                                              SwitchBar switch_bar = SwitchBar::HELD) {
+        const HeldSeries s = run_until(last);
+        std::map<Day, std::string> window;
+        for (const auto& day : s.days) window[day.date] = ymd(day.date) + " 00:00:00+00";
+        auto bars = bars_of_series(s, window, switch_bar);
+        EXPECT_TRUE(bars.is_ok()) << bars.error()->what();
+        std::vector<SourceBar> quoted = bars.value();
+        attach_carry_quotes(s, *book_, quoted);
+        std::map<Day, SourceBar> out;
+        for (const auto& b : quoted) out[b.date] = b;
+        return out;
+    }
 
 private:
     std::vector<ContractBar> rows_;
@@ -908,5 +922,131 @@ TEST_F(PerContractSourceDbTest, TheMicrosReadTheFullSizeContractsUntilTheChangeA
     for (size_t i = 0; i < listing.size(); ++i) {
         EXPECT_EQ(listing[i].close, vendor[i].close) << core::format_utc_date(listing[i].timestamp);
         EXPECT_EQ(listing[i].instrument_id, vendor[i].instrument_id);
+    }
+}
+
+// Carry (trade-ngin #185): every bar carries the quote of the contract the book holds on it, the pair
+// moving on the bar that confirms a roll. GC's cycle is G J M Q Z: U is never a neighbour.
+TEST(PerContractSourceCarry, ThePairMovesOnTheBarThatConfirmsTheRoll) {
+    for (SwitchBar setting : {SwitchBar::HELD, SwitchBar::VENDOR}) {
+        SCOPED_TRACE(to_string(setting));
+        auto bars = shapes_world().carry_bars_until("2026-08-05", setting);
+        ASSERT_EQ(bars.size(), kDates.size());
+        for (const auto& [day, b] : bars) {
+            const std::string dt = ymd(day);
+            SCOPED_TRACE(dt);
+            ASSERT_TRUE(b.carry.has_value());
+            if (dt <= "2026-07-20") {
+                // Q held and the front: the further cycle contract, December. On the confirmed
+                // switch bar 07-20 the old contract is still held (the next bar confirms), and
+                // the stray of 07-16 changes nothing; whichever bar the setting hands out.
+                EXPECT_EQ(b.carry->held_symbol, "GCQ6");
+                EXPECT_EQ(b.carry->held_close, close_of("GCQ6", dt));
+                EXPECT_EQ(b.carry->other_symbol, "GCZ6");
+                EXPECT_EQ(b.carry->other_close, close_of("GCZ6", dt));
+                EXPECT_EQ(b.carry->months, 4);
+            } else {
+                // From the confirming bar 07-21 Z is held and August, still alive, is nearer;
+                // the unconfirmed switch of 08-05 to G7 keeps Z.
+                EXPECT_EQ(b.carry->held_symbol, "GCZ6");
+                EXPECT_EQ(b.carry->held_close, close_of("GCZ6", dt));
+                EXPECT_EQ(b.carry->other_symbol, "GCQ6");
+                EXPECT_EQ(b.carry->other_close, close_of("GCQ6", dt));
+                EXPECT_EQ(b.carry->months, -4);
+            }
+        }
+    }
+}
+
+TEST(PerContractSourceCarry, ARollKnownOnItsBarMovesThePairOnThatBar) {
+    auto bars = crossover_world().carry_bars_until("2026-08-05");
+    ASSERT_TRUE(bars.at(d("2026-07-24")).carry.has_value());
+    EXPECT_EQ(bars.at(d("2026-07-24")).carry->held_symbol, "GCQ6");
+    EXPECT_EQ(bars.at(d("2026-07-24")).carry->months, 4);
+    const SourceBar& roll = bars.at(d("2026-07-27"));
+    ASSERT_TRUE(roll.carry.has_value());
+    EXPECT_EQ(roll.carry->held_symbol, "GCZ6");
+    EXPECT_EQ(roll.carry->held_close, close_of("GCZ6", "2026-07-27"));
+    EXPECT_EQ(roll.carry->other_symbol, "GCQ6");
+    EXPECT_EQ(roll.carry->months, -4);
+}
+
+TEST(PerContractSourceCarry, TheQuotesChangeNoOtherFieldOfABar) {
+    auto plain = shapes_world().bars_until("2026-08-05");
+    auto carry = shapes_world().carry_bars_until("2026-08-05");
+    ASSERT_EQ(plain.size(), carry.size());
+    for (const auto& [day, b] : plain) {
+        EXPECT_TRUE(same(b, carry.at(day))) << ymd(day);
+        EXPECT_FALSE(b.carry.has_value()) << ymd(day);
+    }
+}
+
+TEST(PerContractSourceCarry, AHeldContractWithNoRowOfItsOwnHasNoQuote) {
+    // Q has no row on 07-22: the source carries its close (bar source "carry"); no quote that day.
+    World w;
+    for (const auto& dt : kDates) {
+        if (dt != "2026-07-22") w.print("GCQ6", dt, 80000, close_of("GCQ6", dt));
+        w.print("GCZ6", dt, 9000, close_of("GCZ6", dt));
+        w.vendor(dt, "GCQ6");
+    }
+    auto bars = w.carry_bars_until("2026-07-23");
+    EXPECT_FALSE(bars.at(d("2026-07-22")).carry.has_value());
+    EXPECT_TRUE(bars.at(d("2026-07-21")).carry.has_value());
+    EXPECT_TRUE(bars.at(d("2026-07-23")).carry.has_value());
+}
+
+TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
+    auto carry = shapes_world().carry_bars_until("2026-08-05");
+    std::vector<SourceBar> rows;
+    for (const auto& [day, b] : carry) rows.push_back(b);
+    rows.back().carry.reset();  // a day with no quote
+    // Carry off: the twelve columns as before, and no bar carries a quote.
+    auto off = source_bars_to_arrow(rows);
+    ASSERT_TRUE(off.is_ok());
+    EXPECT_EQ(off.value()->num_columns(), 12);
+    auto off_bars = DataConversionUtils::arrow_table_to_bars(off.value());
+    ASSERT_TRUE(off_bars.is_ok());
+    for (const auto& b : off_bars.value()) EXPECT_FALSE(b.carry.has_value());
+    // Carry on: five more columns, the quote round-trips exactly, NULL stays absent.
+    auto on = source_bars_to_arrow(rows, true);
+    ASSERT_TRUE(on.is_ok());
+    EXPECT_EQ(on.value()->num_columns(), 17);
+    EXPECT_NE(on.value()->GetColumnByName("carry_months"), nullptr);
+    auto on_bars = DataConversionUtils::arrow_table_to_bars(on.value());
+    ASSERT_TRUE(on_bars.is_ok()) << on_bars.error()->what();
+    ASSERT_EQ(on_bars.value().size(), rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        EXPECT_EQ(on_bars.value()[i].carry, rows[i].carry) << i;
+        EXPECT_EQ(on_bars.value()[i].roll_from, off_bars.value()[i].roll_from) << i;
+        EXPECT_EQ(on_bars.value()[i].close, off_bars.value()[i].close) << i;
+    }
+    EXPECT_FALSE(on_bars.value().back().carry.has_value());
+    // A table with only part of the quote's columns is refused, never read as no quote.
+    auto partial = on.value()->RemoveColumn(on.value()->schema()->GetFieldIndex("carry_months"));
+    ASSERT_TRUE(partial.ok());
+    EXPECT_TRUE(DataConversionUtils::arrow_table_to_bars(*partial).is_error());
+}
+
+TEST(PerContractSourceCarry, CarryNeedsThePerContractSourceAndTheSwitchSetsTheQuotes) {
+    auto refused = configure_per_contract_source(false, "held", true);
+    ASSERT_TRUE(refused.is_error());
+    EXPECT_NE(std::string(refused.error()->what()).find("per_contract_rolls is off"),
+              std::string::npos);
+    EXPECT_FALSE(PerContractSource::instance().enabled());
+    EXPECT_FALSE(PerContractSource::instance().carry_quotes());
+    if (contract_rolls_test::shipped_futures_calendar_path().empty()) GTEST_SKIP();
+    const char* before = std::getenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON");
+    const std::string saved = before ? before : "";
+    setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON",
+           contract_rolls_test::shipped_futures_calendar_path().c_str(), 1);
+    ASSERT_TRUE(configure_per_contract_source(true, "held", true).is_ok());
+    EXPECT_TRUE(PerContractSource::instance().carry_quotes());
+    ASSERT_TRUE(configure_per_contract_source(true, "held").is_ok());
+    EXPECT_FALSE(PerContractSource::instance().carry_quotes());
+    PerContractSource::instance().disable();
+    if (saved.empty()) {
+        unsetenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON");
+    } else {
+        setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON", saved.c_str(), 1);
     }
 }

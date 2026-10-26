@@ -431,6 +431,9 @@ struct Bar {
     std::string instrument_id;
     /// Rolls step 3: on a roll bar of the per-contract series, the contract left (RollFrom).
     std::optional<RollFrom> roll_from;
+    /// Carry (trade-ngin #185): the held contract's and its neighbour's closes on this date
+    /// (CarryQuote); set only by the per-contract source with carry on.
+    std::optional<CarryQuote> carry;
 
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)

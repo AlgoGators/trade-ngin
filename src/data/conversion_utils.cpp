@@ -148,6 +148,28 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                 roll_date_array = dc->chunk(0);
             }
         }
+        // Carry (trade-ngin #185): the per-contract source's carry quote (Bar::carry), five
+        // columns that only its table with carry on carries, NULL where the day has no quote.
+        std::shared_ptr<arrow::Array> carry_held_close_array, carry_other_close_array,
+            carry_months_array, carry_held_symbol_array, carry_other_symbol_array;
+        if (auto c = table->GetColumnByName("carry_held_close"); c != nullptr) {
+            auto oc = table->GetColumnByName("carry_other_close");
+            auto mc = table->GetColumnByName("carry_months");
+            auto hs = table->GetColumnByName("carry_held_symbol");
+            auto os = table->GetColumnByName("carry_other_symbol");
+            if (oc == nullptr || mc == nullptr || hs == nullptr || os == nullptr) {
+                return make_error<std::vector<Bar>>(
+                    ErrorCode::INVALID_DATA,
+                    "carry_held_close without carry_other_close, carry_months, carry_held_symbol "
+                    "and carry_other_symbol",
+                    "DataConversionUtils");
+            }
+            carry_held_close_array = c->chunk(0);
+            carry_other_close_array = oc->chunk(0);
+            carry_months_array = mc->chunk(0);
+            carry_held_symbol_array = hs->chunk(0);
+            carry_other_symbol_array = os->chunk(0);
+        }
 
         // Prepare result vector
         std::vector<Bar> bars;
@@ -227,6 +249,24 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                     }
                     bar.roll_from->date = date_from.value();
                 }
+            }
+            if (carry_held_close_array && !carry_held_close_array->IsNull(i)) {
+                auto held_close = extract_double(carry_held_close_array, i);
+                auto other_close = extract_double(carry_other_close_array, i);
+                auto held_symbol = extract_string(carry_held_symbol_array, i);
+                auto other_symbol = extract_string(carry_other_symbol_array, i);
+                if (held_close.is_error() || other_close.is_error() || held_symbol.is_error() ||
+                    other_symbol.is_error() || carry_months_array->IsNull(i) ||
+                    carry_months_array->type_id() != arrow::Type::INT32) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting the carry quote at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.carry = CarryQuote{
+                    held_close.value(), other_close.value(),
+                    std::static_pointer_cast<arrow::Int32Array>(carry_months_array)->Value(i),
+                    held_symbol.value(), other_symbol.value()};
             }
 
             bars.push_back(bar);
