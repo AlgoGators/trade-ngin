@@ -406,7 +406,12 @@ std::vector<SourceBar> every_kind() {
                        RollFrom{2027.0, "q", RollFromKind::KNOWN, "2026-07-27"}),
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
                        RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
-            source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, "")};
+            source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, ""),
+            // R6: the micros' change of price source, and a bar after it
+            source_bar("MES.v.0", "2026-02-23 00:00:00+00", 6857.25, "m",
+                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"}),
+            source_bar("MES.v.0", "2026-02-24 00:00:00+00", 6904.25, "m",
+                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"})};
 }
 
 /// `table` with column `name` replaced by `column`.
@@ -488,6 +493,8 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     EXPECT_EQ(bars.value()[2].roll_from->kind, RollFromKind::KNOWN);
     EXPECT_EQ(bars.value()[3].roll_from->kind, RollFromKind::AFTER_ROLL);
     EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
+    EXPECT_EQ(bars.value()[5].roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(bars.value()[6].roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
     // An empty source is an empty table of the same twelve columns.
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
@@ -513,8 +520,8 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         arrow::Int8Builder kinds;
         for (int64_t i = 0; i < table->num_rows(); ++i) {
             if (i == 2) {
-                // 4: past AWAITS_NEXT_VENDOR (3), the last kind (rolls step 4)
-                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(4)).ok());
+                // 6: past AFTER_SOURCE_CHANGE (5), the last kind (R6)
+                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(6)).ok());
             } else {
                 ASSERT_TRUE(kinds.Append(0).ok());
             }
@@ -523,7 +530,7 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         ASSERT_TRUE(kinds.Finish(&column).ok());
         auto r =
             DataConversionUtils::arrow_table_to_bars(with_column(table, "roll_from_kind", column));
-        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 4");
+        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 6");
     }
 }
 
@@ -881,14 +888,14 @@ TEST_F(PerContractSourceDbTest, TheMicrosReadTheFullSizeContractsUntilTheChangeA
     EXPECT_EQ(change.instrument_id, "42003800") << "MESH6";
     EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 6857.25);
     ASSERT_TRUE(change.roll_from.has_value());
-    EXPECT_EQ(change.roll_from->kind, RollFromKind::KNOWN);
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "HD 2026-10-26: no trade";
     EXPECT_EQ(change.roll_from->instrument_id, "42140878");
     EXPECT_DOUBLE_EQ(change.roll_from->close, 6857.25);
     EXPECT_EQ(change.roll_from->date, "2026-02-23");
     const Bar& after = *on.at("2026-02-24");
     EXPECT_EQ(after.instrument_id, "42003800");
     ASSERT_TRUE(after.roll_from.has_value());
-    EXPECT_EQ(after.roll_from->kind, RollFromKind::AFTER_ROLL);
+    EXPECT_EQ(after.roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
     EXPECT_EQ(after.roll_from->instrument_id, "42140878");
     EXPECT_EQ(after.roll_from->date, "2026-02-23");
     // 2019, around the micros' listing: the ES contract the vendor names, its close.

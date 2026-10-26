@@ -203,7 +203,9 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             b.instrument_id = held_id;
             if (d.roll) {
                 RollFrom from;
-                from.kind = RollFromKind::KNOWN;
+                // R6: the micros' change is a change of price source, not a trade.
+                from.kind = d.trigger == RollTrigger::ALIAS ? RollFromKind::SOURCE_CHANGE
+                                                            : RollFromKind::KNOWN;
                 from.date = ymd(d.date);
                 if (d.old_close) {
                     from.close = *d.old_close;
@@ -236,7 +238,9 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 // A bar after a roll, up to the next one: the old contract's close here, for a
                 // consumer that withheld the roll bar and the bars since (it books the roll on its
                 // first consumed bar, HD 10-23).
-                b.roll_from = RollFrom{*d.left_close, d.left_id, RollFromKind::AFTER_ROLL,
+                b.roll_from = RollFrom{*d.left_close, d.left_id,
+                                       d.left_by_alias ? RollFromKind::AFTER_SOURCE_CHANGE
+                                                       : RollFromKind::AFTER_ROLL,
                                        ymd(d.left_roll_date)};
             }
         }

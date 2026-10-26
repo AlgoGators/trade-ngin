@@ -178,6 +178,10 @@ public:
         /// last_close_before_change. nullopt elsewhere, and on a roll of the vendor's series (no two
         /// closes on one bar: the switch bar books 0).
         std::optional<double> roll_bar_points;
+        /// R6 (HD 2026-10-26): the confirm is a change of a micro's price source (RollFromKind::
+        /// SOURCE_CHANGE or AFTER_SOURCE_CHANGE): the series reads it as a roll, but the account
+        /// trades nothing, so no caller books legs or a cost for it; it is logged with its gap.
+        bool price_source_change{false};
         /// LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): the symbol is HELD while its last consumed bar is
         /// a change bar (a pending roll, a third id, either bar of a flip) or an id-less bar inside a
         /// pending roll (code review D2: `change` alone missed that bar).

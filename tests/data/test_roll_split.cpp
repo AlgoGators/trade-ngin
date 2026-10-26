@@ -335,3 +335,55 @@ TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
     EXPECT_TRUE(st.per_contract_roll_symbols.empty());
     EXPECT_DOUBLE_EQ(st.t1_close_prices.at("SI.v.0"), 50.960) << "the held contract's close";
 }
+
+// R6 (HD 2026-10-26): the micros' 2026-02-23 change is a change of price source, not a trade. On its bar
+// (SOURCE_CHANGE) and, for a consumer that withheld that bar, on the next (AFTER_SOURCE_CHANGE), the series
+// reads it exactly as a known roll: the old contract's move booked to its close, the gap excluded, the held
+// contract the micro's; but the confirm is flagged, so live owes no legs for it (the runners and the
+// backtest skip it, PRICE_SOURCE_CHANGE) and the T-1 settlement gives it no roll footnote.
+TEST(RollSplit, TheMicrosChangeOfPriceSourceIsReadAsARollButNeverLegged) {
+    const auto walk = [](RollFromKind kind) {
+        RollTracker t;
+        t.add("e", 6906.25);
+        return t.add("m", 6857.25, from(6857.25, "e", kind, "2026-02-23"));
+    };
+    const auto known = walk(RollFromKind::KNOWN);
+    const auto source = walk(RollFromKind::SOURCE_CHANGE);
+    EXPECT_FALSE(known.price_source_change);
+    EXPECT_TRUE(source.price_source_change);
+    EXPECT_TRUE(source.confirm);
+    EXPECT_EQ(source.held_id, "m");
+    EXPECT_EQ(source.previous_held_id, "e");
+    EXPECT_DOUBLE_EQ(source.move(6857.25, 6906.25), known.move(6857.25, 6906.25));
+    EXPECT_DOUBLE_EQ(source.move(6857.25, 6906.25), 6857.25 - 6906.25) << "the old contract's own move";
+    EXPECT_EQ(source.roll_bar_points, known.roll_bar_points);
+    EXPECT_FALSE(source.holds());
+    // A consumer that withheld the change bar reads it on the next bar's AFTER_SOURCE_CHANGE field.
+    RollTracker withheld;
+    withheld.add("e", 6906.25);
+    const auto after = withheld.add("m", 6904.25, from(6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"));
+    EXPECT_TRUE(after.confirm);
+    EXPECT_TRUE(after.price_source_change);
+    EXPECT_EQ(after.held_id, "m");
+    // The series (returns, levels) reads both kinds as their roll kinds, bit for bit.
+    const std::vector<std::string> ids = {"e", "m", "m"};
+    const std::vector<double> raw = {6906.25, 6857.25, 6904.25};
+    const auto a = build_series(raw, ids, {std::nullopt, from(6857.25, "e"), from(6904.25, "e", RollFromKind::AFTER_ROLL)});
+    const auto b = build_series(raw, ids, {std::nullopt, from(6857.25, "e", RollFromKind::SOURCE_CHANGE),
+                                           from(6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE)});
+    EXPECT_EQ(a.returns, b.returns);
+    EXPECT_EQ(a.adjusted, b.adjusted);
+    EXPECT_EQ(a.flags.held_id, b.flags.held_id);
+    EXPECT_EQ(a.flags.confirm, b.flags.confirm);
+    // Live: the run whose T-1 bar is the change owes the change, flagged; the settlement names no roll bar.
+    const std::vector<Bar> consumed = {bar("2026-02-20", 6924.75, "e"), bar("2026-02-22", 6906.25, "e"),
+                                       bar("2026-02-23", 6857.25, "m",
+                                           from(6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"))};
+    const auto state = live_rolls_by_state(consumed, {{"SI.v.0", "e"}}, "2026-02-23");
+    ASSERT_EQ(state.rolls.size(), 1u);
+    EXPECT_TRUE(state.rolls[0].price_source_change);
+    EXPECT_DOUBLE_EQ(state.rolls[0].opening_price - state.rolls[0].closing_price, 0.0) << "MES's gap";
+    const auto settled = consumed_t1_settlement(consumed, "2026-02-23", roll_status_of(consumed), {}, {}, {}, {});
+    EXPECT_TRUE(settled.per_contract_roll_symbols.empty()) << "no roll footnote";
+    EXPECT_DOUBLE_EQ(settled.t1_close_prices.at("SI.v.0"), 6857.25) << "the old contract's close";
+}
