@@ -130,8 +130,9 @@ std::vector<std::pair<int, int>> pairs_after_removal(const std::vector<std::pair
 }
 
 Estimate estimate(const Window& window, int vol_span, const std::vector<std::pair<int, int>>& pairs,
-                  double fdm, bool attenuate) {
+                  double fdm, bool attenuate, std::vector<double>* forecast_sigma_bars) {
     Estimate out;
+    if (forecast_sigma_bars != nullptr) forecast_sigma_bars->clear();
     const std::size_t total = window.close.size();
     if (total == 0 || window.day.size() != total || window.level.size() != total ||
         window.returns.size() != total || vol_span <= 0) {
@@ -214,6 +215,7 @@ Estimate estimate(const Window& window, int vol_span, const std::vector<std::pai
             forecast_sigma[k] = kShortWeight * forecast_short[k] + (1.0 - kShortWeight) * forecast_long;
         }
     }
+    if (forecast_sigma_bars != nullptr) *forecast_sigma_bars = forecast_sigma;
 
     // The attenuation at every bar: q_c = the share of the trailing sigma_short values at or below
     // bar c's, defined once kAttenuationMinValues values exist, smoothed by a 10-bar EWMA seeded at
