@@ -90,6 +90,37 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     EXPECT_TRUE(before.names.empty());
 }
 
+// R6: a micro's contracts before the 2026-02-22 change are the full-size root's. The book's id names ESZ5 on
+// Mon 2025-12-15, the bar the rule rolls into ESH6 on (the crossover): the cell names the book's contract in the
+// micro's format and no line is shown yet. Each roll's months are read from its own contracts: ESZ5 to ESH6 is
+// December to March, the alias roll ESH6 to MESH6 March to March.
+TEST_F(ReportRollViewDbTest, TheMicrosBookAndRollMonthsReadTheFullSizeContracts) {
+    pqxx::read_transaction t(*conn_);
+    if (t.exec("SELECT count(*) FROM futures_data.contract_ohlcv_1d WHERE root = 'ES' AND date = '2025-12-15'")[0][0]
+            .as<int64_t>() == 0) {
+        GTEST_SKIP() << "ES contract bars are not loaded on this database";
+    }
+    ReportRollQuery q;
+    q.date = "2025-12-15";
+    q.held_symbols = {"MES.v.0"};
+    q.held_ids = {{"MES.v.0", "294973"}};  // ESZ5
+    q.rolls = {{"EXEC_MES.v.0_20251215_RC", "MES.v.0", "294973", "42140878", "2025-12-15"}};
+    const auto view = report_roll_view(t, q, contract_rolls_test::shipped_calendars(), {});
+    ASSERT_EQ(view.outlook.count("MES"), 1u);
+    EXPECT_EQ(view.outlook.at("MES").held, "MESZ5") << "the book's ESZ5, not the rule's ESH6";
+    EXPECT_FALSE(view.outlook.at("MES").in_window);
+    EXPECT_EQ(view.names.at("EXEC_MES.v.0_20251215_RC").from_month, "December");
+    EXPECT_EQ(view.names.at("EXEC_MES.v.0_20251215_RC").to_month, "March");
+    ReportRollQuery alias;
+    alias.date = "2026-02-23";
+    alias.held_symbols = {"MES.v.0"};
+    alias.rolls = {{"EXEC_MES.v.0_20260223_RC", "MES.v.0", "42140878", "42003800", "2026-02-23"}};
+    const auto change = report_roll_view(t, alias, contract_rolls_test::shipped_calendars(), {});
+    EXPECT_EQ(change.names.at("EXEC_MES.v.0_20260223_RC").from_month, "March");
+    EXPECT_EQ(change.names.at("EXEC_MES.v.0_20260223_RC").to_month, "March");
+    EXPECT_EQ(change.outlook.at("MES").held, "MESH6");
+}
+
 TEST_F(ReportRollViewDbTest, TheBarSourceLogsTheRulesFallbacksFromItsFloorOnce) {
     const std::string line = "ZW.v.0 2014-08-31 fallback vendor_bar: ZWZ4 has no contract row and the vendor "
                              "names it: the bar is the vendor's own print (close 573.75)";
