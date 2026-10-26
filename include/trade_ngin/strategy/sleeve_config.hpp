@@ -63,6 +63,14 @@ inline void hand_over_trading_rule_removals(const AppConfig& app_config, TrendFo
 /// one place it crosses from the loader to a sleeve, called by every futures runner next to
 /// hand_over_trading_rule_removals. Carry off (the block absent, or weight 0) hands over weight 0
 /// and the sleeve is today's.
+/// The carry block as a backtest stores it in backtest.run_metadata's portfolio_config (fix round 1,
+/// audit A S3): written by the two backtest runners only when carry is on, so a carry-off run's
+/// stored metadata is today's and a carry-on run says which carry it ran. A live run stores it with
+/// the whole file (trading.live_run_metadata.settings_used).
+inline nlohmann::json carry_config_json(const CarryConfig& carry) {
+    return {{"weight", carry.weight}, {"spans", carry.spans}, {"scalar", carry.scalar}};
+}
+
 inline void hand_over_carry(const AppConfig& app_config, TrendFollowingConfig& out) {
     if (!app_config.carry.enabled()) {
         out.carry_weight = 0.0;

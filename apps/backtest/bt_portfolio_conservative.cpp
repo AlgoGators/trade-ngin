@@ -621,6 +621,10 @@ int main() {
             if (!app_config.trading_rule_removals.empty()) {
                 portfolio_config_json["trading_rule_removals"] = app_config.trading_rule_removals;
             }
+            // trade-ngin #185: the carry the run traded, only with carry on (off: today's row)
+            if (app_config.carry.enabled()) {
+                portfolio_config_json["carry"] = trade_ngin::carry_config_json(app_config.carry);
+            }
             if (!app_config.listing_dates.empty()) {
                 auto contracts = nlohmann::json::array();
                 for (const auto& c : app_config.listing_dates) {

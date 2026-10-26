@@ -411,3 +411,36 @@ TEST(CarryStrategy, OnlyTradeableBarsCountAsCarryDrivenShorts) {
     ASSERT_EQ(listed.strategy->carry_driven_shorts().count(kSym), 1u);
     EXPECT_EQ(listed.strategy->carry_driven_shorts().at(kSym), 1u);
 }
+
+// Provenance (fix round 1, audit A S3): a carry-on backtest stores the carry it ran in its run metadata,
+// a carry-off one stores nothing new; both backtest runners write it the same way.
+TEST(CarryConfig, ABacktestStoresItsCarryOnlyWhenCarryIsOn) {
+    CarryConfig carry;
+    carry.present = true;
+    carry.weight = 0.4;
+    EXPECT_EQ(carry_config_json(carry),
+              nlohmann::json({{"weight", 0.4}, {"spans", {5, 20, 60, 120}}, {"scalar", 30.0}}));
+    std::filesystem::path root = std::filesystem::current_path();
+    while (!(std::filesystem::exists(root / "CMakeLists.txt") && std::filesystem::exists(root / "config_template"))) {
+        ASSERT_NE(root, root.parent_path());
+        root = root.parent_path();
+    }
+    for (const char* runner : {"apps/backtest/bt_portfolio.cpp", "apps/backtest/bt_portfolio_conservative.cpp"}) {
+        std::ifstream in(root / runner);
+        std::stringstream text;
+        text << in.rdbuf();
+        const std::string source = text.str();
+        const std::string guarded =
+            "if (app_config.carry.enabled()) {\n"
+            "                portfolio_config_json[\"carry\"] = trade_ngin::carry_config_json(app_config.carry);\n"
+            "            }";
+        EXPECT_NE(source.find(guarded), std::string::npos) << runner << ": stored only with carry on";
+        std::size_t n = 0;
+        for (std::size_t at = source.find("portfolio_config_json[\"carry\"]"); at != std::string::npos;
+             at = source.find("portfolio_config_json[\"carry\"]", at + 1)) {
+            ++n;
+        }
+        EXPECT_EQ(n, 1u) << runner;
+        EXPECT_LT(source.find(guarded), source.find("coordinator->save_portfolio_results_to_db(")) << runner;
+    }
+}
