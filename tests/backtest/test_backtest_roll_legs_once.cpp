@@ -268,6 +268,8 @@ constexpr double kGapPoints = 3.0;
 class RollFieldDb : public ServingDb {
 public:
     using ServingDb::ServingDb;
+    /// The kind of the change bar's field (R6: SOURCE_CHANGE for a micro's change of price source).
+    static inline RollFromKind kind_on_change = RollFromKind::KNOWN;
 
     Result<std::shared_ptr<arrow::Table>> get_market_data(
         const std::vector<std::string>& symbols, const Timestamp& start_date,
@@ -291,7 +293,7 @@ public:
             if (symbol->GetString(i) == kXA && time->Value(i) == change_bar) {
                 ARROW_CHECK_OK(close.Append(close_of(kXA, kChangeBar) - kGapPoints));
                 ARROW_CHECK_OK(id.Append(kOldId));
-                ARROW_CHECK_OK(kind.Append(static_cast<int8_t>(RollFromKind::KNOWN)));
+                ARROW_CHECK_OK(kind.Append(static_cast<int8_t>(kind_on_change)));
                 ARROW_CHECK_OK(date.Append(ymd(kChangeBar)));
             } else {
                 ARROW_CHECK_OK(close.AppendNull());
@@ -390,6 +392,38 @@ TEST_F(BacktestResultsRowSplitTest, TheResultsRowCarriesTheRunsTwoSplitTotals) {
     ASSERT_TRUE(cell.at("roll_gap_values"));
     EXPECT_EQ(*cell.at("roll_bar_moves"), live_results_number(moves).value_or(""));
     EXPECT_EQ(*cell.at("roll_gap_values"), live_results_number(gaps).value_or(""));
+}
+
+// R6 (HD 2026-10-26): the same run with the change bar's field a change of price source (the micros'
+// 2026-02-23 change): the series books exactly what the known roll books (the old contract's move to its
+// close, the gap excluded), but no execution is stored for it, no cost, no roll in the totals; the run logs
+// one PRICE_SOURCE_CHANGE line with its gap.
+TEST_F(BacktestResultsRowSplitTest, AChangeOfPriceSourceBooksTheMoveAndNoLegsAndNoCost) {
+    contract_rolls::PerContractSource::instance().enable(contract_rolls::FuturesCalendar{});
+    RollFieldDb::kind_on_change = RollFromKind::SOURCE_CHANGE;
+    const bool ok = run_rows(rows(), nullptr);
+    RollFieldDb::kind_on_change = RollFromKind::KNOWN;
+    contract_rolls::PerContractSource::instance().disable();
+    ASSERT_TRUE(ok);
+    EXPECT_TRUE(rows_of(ExecutionType::ROLL).empty()) << "no legs for a change of price source";
+    EXPECT_EQ(results_.roll_costs, 0.0);
+    ASSERT_TRUE(results_.roll_bar_moves.has_value());
+    EXPECT_EQ(*results_.roll_bar_moves, 0.0);
+    EXPECT_EQ(*results_.roll_gap_values, 0.0);
+    double fill_costs = 0.0;
+    for (const auto& f : rows_of(ExecutionType::STRATEGY)) fill_costs += static_cast<double>(f.total_transaction_costs);
+    EXPECT_NEAR(results_.transaction_costs, fill_costs, 1e-9) << "every cost is a STRATEGY fill's";
+    EXPECT_EQ(count_lines("PRICE_SOURCE_CHANGE ROLL_A " + kXA), 1u);
+    const size_t at = log_.find("PRICE_SOURCE_CHANGE ROLL_A " + kXA);
+    const std::string line = at == std::string::npos ? std::string() : log_.substr(at, log_.find('\n', at) - at);
+    EXPECT_NE(line.find(" qty=2 gap_points=3.0"), std::string::npos) << line;
+    EXPECT_NE(line.find(" gap_value=300.0"), std::string::npos)
+        << "long 2 x 50 x the 3-point gap, on record: " << line;
+    EXPECT_EQ(count_lines("ROLL_LEG ROLL_A " + kXA), 0u);
+    EXPECT_EQ(count_lines("ROLL_CONFIRMED " + kXA), 0u);
+    // The position is still held, now in the new contract.
+    const auto book = pm_->get_filled_strategy_positions();
+    EXPECT_DOUBLE_EQ(static_cast<double>(book.at("ROLL_A").at(kXA).quantity), 2.0);
 }
 
 // The sleeve's own fills are untouched by the roll: the one STRATEGY fill is the open on cycle 10,

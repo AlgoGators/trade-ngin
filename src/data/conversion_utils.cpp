@@ -208,7 +208,7 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                         "DataConversionUtils");
                 }
                 const int8_t kind = std::static_pointer_cast<arrow::Int8Array>(roll_kind_array)->Value(i);
-                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AWAITS_NEXT_VENDOR)) {
+                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AFTER_SOURCE_CHANGE)) {
                     return make_error<std::vector<Bar>>(
                         ErrorCode::CONVERSION_ERROR,
                         "Unknown roll_from_kind " + std::to_string(kind) + " at row " +

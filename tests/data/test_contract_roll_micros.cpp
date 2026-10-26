@@ -7,6 +7,7 @@
 
 #include "contract_rolls_test_util.hpp"
 #include "trade_ngin/data/contract_roll_rule.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
 
 using namespace trade_ngin::contract_rolls;
 using contract_rolls_test::bar;
@@ -95,4 +96,48 @@ TEST(ContractRollMicros, ReadsTheFullSizeContractsBeforeTheChangeAndRollsOnceAcr
         }
         if (day.date >= d("2026-02-23")) EXPECT_EQ(day.held.root, "MES") << ymd(day.date);
     }
+}
+
+// R6 (HD 2026-10-26): the bar source hands the change bar out as a change of price source
+// (SOURCE_CHANGE, ESH6's close and id) and every bar after it, while ESH6 prints, as AFTER_SOURCE_CHANGE;
+// the earlier roll among the full-size contracts (ESZ5 to ESH6) stays KNOWN and AFTER_ROLL.
+TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    std::map<Day, std::string> window;
+    for (const auto& dt : grid_dates()) {
+        const bool sunday = std::chrono::weekday{d(dt)} == std::chrono::Sunday;
+        if (dt <= "2025-12-19" && !sunday) rows.push_back(bar("ES", "ESZ5", "e0", dt, "2025-12-19", 6800, 1500000));
+        if (!sunday) rows.push_back(bar("ES", "ESH6", "e1", dt, "2026-03-20", 6900, dt <= "2025-12-12" ? 9000 : 1600000));
+        rows.push_back(bar("MES", "MESH6", "m1", dt, "2026-03-20", 6901, 1700000));
+        VendorBar v;
+        v.date = d(dt);
+        v.symbol = "MES.v.0";
+        v.instrument_id = dt >= "2026-02-22" ? "m1" : (dt <= "2025-12-12" ? "e0" : "e1");
+        v.close = 1;
+        grid.push_back(v);
+        window[d(dt)] = dt + " 00:00:00+00";
+    }
+    auto book = ContractBook::build(rows).value();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("MES");
+    RuleInputs in;
+    in.root = "MES";
+    in.grid = grid;
+    in.book = &book;
+    in.cal = &cal;
+    in.cycle = roll_cycle("MES").value();
+    in.alias = micro_alias("MES");
+    const auto series = apply_roll_rule(in);
+    ASSERT_TRUE(series.is_ok());
+    const auto bars = bars_of_series(series.value(), window);
+    ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
+    std::map<std::string, const SourceBar*> on;
+    for (const auto& b : bars.value()) on[ymd(b.date)] = &b;
+    ASSERT_TRUE(on.at("2026-02-23")->roll_from.has_value());
+    EXPECT_EQ(on.at("2026-02-23")->roll_from->kind, trade_ngin::RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(on.at("2026-02-23")->roll_from->instrument_id, "e1");
+    EXPECT_EQ(on.at("2026-02-24")->roll_from->kind, trade_ngin::RollFromKind::AFTER_SOURCE_CHANGE);
+    EXPECT_EQ(on.at("2026-02-24")->roll_from->date, "2026-02-23");
+    EXPECT_EQ(on.at("2025-12-15")->roll_from->kind, trade_ngin::RollFromKind::KNOWN) << "a real roll";
+    EXPECT_EQ(on.at("2025-12-16")->roll_from->kind, trade_ngin::RollFromKind::AFTER_ROLL);
 }
