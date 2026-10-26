@@ -169,6 +169,11 @@ struct DayInputs {
     double sign_band{2.0};          ///< the deferral band: |F| below it defers a sign close
     double b_sigma_floor{0.05};     ///< B_sigma's floor as a ratio to tau (kFixed: its width)
     BSigmaRule b_sigma_rule{BSigmaRule::kGranularity};
+    /// defaults.json optimization.wrong_sign_rule "buffer" (AFTS strategy 25, pp.430-432): a held
+    /// position on the wrong side of its forecast is neither closed before the search nor held by
+    /// the deferral band; it is a free row like any other and the buffer moves it a of the way to
+    /// the search's answer. false ("close", today): the forecast-sign close and the band.
+    bool wrong_sign_buffer{false};
     int trim_max{5};
     long max_iterations{100};
     overlay::Limits limits;         ///< the overlay's five limits, in reading units

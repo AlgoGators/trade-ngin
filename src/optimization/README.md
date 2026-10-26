@@ -74,6 +74,7 @@ produce `m`, the day is refused and the held book is kept on every row (`DayResu
 | Deferral band | `optimization.sign_close_band` | `config/defaults.json` |
 | Floor of `B_sigma` as a ratio to the risk target | `optimization.b_sigma_floor` | `config/defaults.json` |
 | How `B_sigma` is set: `granularity` (default), `fixed` (the floor alone, Carver's strategy 25 buffer) or `minimal` (granularity without the held-only names) | `optimization.b_sigma_rule` | `config/defaults.json` |
+| A position held against its forecast's sign: `close` (default: closed before the search, or held by the deferral band) or `buffer` (neither; the buffer moves it like any row, Carver's strategy 25) | `optimization.wrong_sign_rule` | `config/defaults.json` |
 | Floor on the search's pass cap | `optimization.max_iterations` | `config/defaults.json` |
 | Per-name cap, trim cap, the five overlay limits | `per_name_cap`, `trim_max`, `R_max`, `R_jump_max`, `R_shock_max`, `max_gross_leverage`, `max_net_leverage` on the carver module | `config/portfolios/<name>/risk.json` |
 

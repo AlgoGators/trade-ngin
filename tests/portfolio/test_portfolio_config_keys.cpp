@@ -114,6 +114,16 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
         EXPECT_EQ(pc.b_sigma_rule, rule) << value;
         EXPECT_EQ(pc.to_json().at("opt_config").at("b_sigma_rule").get<std::string>(), value);
     }
+    // wrong_sign_rule: "close" (the template's) is not recorded, "buffer" is.
+    EXPECT_FALSE(j.at("opt_config").contains("wrong_sign_rule"));
+    {
+        AppConfig app = loaded.value();
+        app.wrong_sign_rule = "buffer";
+        const PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_TRUE(pc.wrong_sign_buffer);
+        EXPECT_EQ(pc.to_json().at("opt_config").at("wrong_sign_rule").get<std::string>(), "buffer");
+        EXPECT_FALSE(runner_config(loaded.value(), "TREND_FOLLOWING", 0.20).wrong_sign_buffer);
+    }
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);

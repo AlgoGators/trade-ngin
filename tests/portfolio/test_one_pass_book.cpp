@@ -449,6 +449,35 @@ TEST_F(OnePassBookTest, TheBufferRuleOfTheConfigIsThePasss) {
     EXPECT_EQ(count_of(out, " b_symbol=floor"), 1u) << out;
 }
 
+// The book's wrong_sign_rule "buffer" reaches the pass: the flip of
+// AForecastSignCloseIsItsOwnFillBeforeTheSearch is ONE fill (4 -> -4, a = 0.889 of the way from 4
+// to -5), and a forecast of -1.99 inside today's band is not held: 4 moves a = 0.75 of the way to
+// the search's 0 and 1 is stored.
+TEST_F(OnePassBookTest, AWrongSignedRowIsBufferedWhenTheConfigSaysSo) {
+    PortfolioConfig pc = one_pass_config("A");
+    pc.wrong_sign_buffer = true;
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    ASSERT_EQ(quantity("A", "AAA"), 4.0);
+    a_->rows["AAA"] = row(-5.0, -10.0);
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    EXPECT_EQ(quantity("A", "AAA"), -4.0);
+    EXPECT_EQ(fills("A", "AAA"), (std::vector<double>{4.0, -8.0})) << "no close to flat first";
+    const OnePassDay day = pm_->last_one_pass();
+    EXPECT_EQ(day.sign_closes.count("A") ? day.sign_closes.at("A").size() : 0u, 0u);
+
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    a_->rows["AAA"] = row(-0.4, -1.99);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(2, {"AAA"}).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 1.0) << "no deferral band: the buffer moves it";
+    EXPECT_EQ(count_of(out, "band_holds=[-]"), 1u) << out;
+}
+
 // Section 6.2: a symbol that signalled before and no longer signals is closed with one fill to
 // flat on a session bar, not walked down through the buffer.
 TEST_F(OnePassBookTest, ASymbolThatStopsSignallingIsClosedWithOneFill) {

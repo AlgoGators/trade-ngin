@@ -1357,6 +1357,34 @@ TEST_F(ConfigLoaderTest, TheBufferRuleIsOptionalAndNamed) {
     }
 }
 
+// wrong_sign_rule, the same way: optional, "close" or "buffer", anything else refused.
+TEST_F(ConfigLoaderTest, TheWrongSignRuleIsOptionalAndNamed) {
+    write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().wrong_sign_rule, "");
+    for (const char* value : {"close", "buffer"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["wrong_sign_rule"] = value;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << value;
+        EXPECT_EQ(r.value().wrong_sign_rule, value);
+    }
+    for (const nlohmann::json& bad :
+         {nlohmann::json("Buffer"), nlohmann::json("hold"), nlohmann::json(0)}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["wrong_sign_rule"] = bad;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what())
+                      .find("optimization.wrong_sign_rule must be one of \"close\", \"buffer\""),
+                  std::string::npos)
+            << r.error()->what();
+    }
+}
+
 // LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
 // is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
 // optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.

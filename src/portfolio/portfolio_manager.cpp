@@ -2263,6 +2263,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
         in.sign_band = config_.sign_close_band;
         in.b_sigma_floor = config_.b_sigma_floor;
         in.b_sigma_rule = config_.b_sigma_rule;
+        in.wrong_sign_buffer = config_.wrong_sign_buffer;
         in.trim_max = config_.trim_max;
         in.max_iterations = config_.opt_config.max_iterations;
         {

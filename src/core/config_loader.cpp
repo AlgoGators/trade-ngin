@@ -192,14 +192,15 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 (std::string(key) == "sign_close_band" ? config.sign_close_band
                                                        : config.b_sigma_floor) = v.get<double>();
             }
-            // AFTS strategy 25's switch: optional, one of its named values when present.
+            // AFTS strategy 25's switches: optional, one of their named values when present.
             struct Choice {
                 const char* key;
                 std::vector<std::string> values;
                 std::string* into;
             };
             for (const Choice& choice :
-                 {Choice{"b_sigma_rule", {"granularity", "fixed", "minimal"}, &config.b_sigma_rule}}) {
+                 {Choice{"b_sigma_rule", {"granularity", "fixed", "minimal"}, &config.b_sigma_rule},
+                  Choice{"wrong_sign_rule", {"close", "buffer"}, &config.wrong_sign_rule}}) {
                 if (!optimization.contains(choice.key)) continue;
                 const auto& v = optimization.at(choice.key);
                 if (!v.is_string() || std::find(choice.values.begin(), choice.values.end(),

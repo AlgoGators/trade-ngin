@@ -401,6 +401,7 @@ DayResult rebalance(const DayInputs& in) {
     // The hold set: the engine's own (a non-SESSION bar, a withheld bar, a change bar) and the
     // deferral band (D39): a symbol the first sleeve signals whose held position is on the other
     // side of that sleeve's forecast while |F| < the band. Strict: at |F| = the band it is free.
+    // Under wrong_sign_buffer (strategy 25) there is no band.
     out.band.assign(n, 0);
     out.free.assign(n, 0);
     out.fixed.assign(n, 0);
@@ -409,7 +410,8 @@ DayResult rebalance(const DayInputs& in) {
     Mask hold = in.hold;
     for (std::size_t i = 0; i < n; ++i) {
         const double f = in.first_forecast[i];
-        if (in.first_signalling[i] && in.held[i] * f < 0.0 && std::abs(f) < in.sign_band) {
+        if (!in.wrong_sign_buffer && in.first_signalling[i] && in.held[i] * f < 0.0 &&
+            std::abs(f) < in.sign_band) {
             out.band[i] = 1;
             hold[i] = 1;
         }
@@ -496,11 +498,12 @@ DayResult rebalance(const DayInputs& in) {
     }
 
     // Section 5.2: the forecast-sign close (the sign of the uncapped N*), then the pass on the free
-    // rows from the closed book.
+    // rows from the closed book. Under wrong_sign_buffer (strategy 25) nothing is closed: the pass
+    // starts from the held book and the buffer moves a wrong-signed row like any other.
     out.sign_closed.assign(n, 0);
     Vector closed_held = in.held;
     for (std::size_t i = 0; i < n; ++i) {
-        if (out.free[i] && in.held[i] * sign(target[i]) < 0.0) {
+        if (!in.wrong_sign_buffer && out.free[i] && in.held[i] * sign(target[i]) < 0.0) {
             out.sign_closed[i] = 1;
             closed_held[i] = 0.0;
         }

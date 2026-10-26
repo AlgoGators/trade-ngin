@@ -400,6 +400,29 @@ TEST(OnePass, TheRebalanceUsesTheBufferRule) {
     EXPECT_EQ(r.b_symbol, -1);
 }
 
+// wrong_sign_rule "buffer" (AFTS gap list C-3): the day of TheDayIsClassifiedSearchedAndFilledOnce
+// with no forecast-sign close and no deferral band. Row 1 (held 4 against a target of -5) is not
+// closed: the search starts from 4 and the buffer moves it a = 0.909 of the way to -5, stored -4 in
+// ONE fill of -8; row 2 (held 4, |F| 1.5 inside today's band) is free and moves to 0; B_sigma is
+// set on the three free rows (0.02) and TE_h is over all three.
+TEST(OnePass, AWrongSignedRowIsBufferedLikeAnyOther) {
+    DayInputs in = four_symbols();
+    in.wrong_sign_buffer = true;
+    const DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_EQ(r.band, (Mask{0, 0, 0, 0}));
+    EXPECT_EQ(r.free, (Mask{1, 1, 1, 0}));
+    EXPECT_EQ(r.fixed, (Mask{0, 0, 0, 1}));
+    EXPECT_EQ(r.sign_closed, (Mask{0, 0, 0, 0}));
+    EXPECT_EQ(r.search_book, (Vector{5.0, -5.0, 0.0, 3.0}));
+    EXPECT_NEAR(r.b_sigma, 0.02, 1e-12);
+    EXPECT_NEAR(r.te_held, 0.22090722034374524, 1e-12);
+    EXPECT_NEAR(r.a, 0.9094642539574815, 1e-12);
+    EXPECT_EQ(r.book, (Vector{5.0, -4.0, 0.0, 3.0}));
+    EXPECT_EQ(r.sign_fill, (Vector{0.0, 0.0, 0.0, 0.0}));
+    EXPECT_EQ(r.rest_fill, (Vector{5.0, -8.0, -4.0, 0.0}));
+}
+
 // Section 4, the refusal: an input that is not a finite number, or a reading that is not, refuses
 // the day. The book is the held book on every row and nothing is filled; a blind window is not a
 // refusal.

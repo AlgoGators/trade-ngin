@@ -439,6 +439,10 @@ struct AppConfig {
     // alone, the book's buffer) or "minimal" (granularity without the held-only rows). Empty:
     // the key is absent.
     std::string b_sigma_rule;
+    // wrong_sign_rule, how a held position against its forecast's sign is treated: "close"
+    // (today: closed before the search, or held by the deferral band while |F| < sign_close_band)
+    // or "buffer" (no close and no band; the buffer moves it like any row). Empty: absent.
+    std::string wrong_sign_rule;
     // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
     // load, never read for a value; a futures book refuses to run on a non-empty list
     // (require_loop_keys). The equity book's files are not searched for the futures-only keys.
