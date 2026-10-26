@@ -1,0 +1,60 @@
+{
+  "id": "copper_gold_zn",
+  "description": "Copper/gold as a growth signal for 10-year Treasury futures: a rising ratio means growth, so short ZN",
+  "legs": [
+    {
+      "symbol": "ZN.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "fixed",
+    "contracts": {
+      "ZN.v.0": 1
+    }
+  },
+  "inputs": [
+    {
+      "name": "hg",
+      "source": "instrument",
+      "symbol": "HG.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "name": "gc",
+      "source": "instrument",
+      "symbol": "GC.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "series": {
+    "rule": "ratio",
+    "numerator": "hg",
+    "denominator": "gc",
+    "log": true
+  },
+  "signals": [
+    {
+      "name": "cg_mom63",
+      "type": "info_ratio_signal",
+      "sign": -1,
+      "leg": "ZN.v.0",
+      "base": {
+        "type": "momentum",
+        "n": 63,
+        "window": 252
+      }
+    }
+  ],
+  "diagnostics": [
+    "adf_250"
+  ],
+  "trade": {
+    "blend": {
+      "cg_mom63": 1.0
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2015-01-02"
+}

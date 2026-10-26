@@ -1,0 +1,106 @@
+{
+  "id": "crack_321",
+  "description": "3:2:1 crack spread in $/bbl: 2 RBOB and 1 heating oil against 3 crude. Long = long products, short crude. The anchor is illustrative, not a measured refining cost",
+  "legs": [
+    {
+      "symbol": "CL.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "RB.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "HO.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "fixed",
+    "contracts": {
+      "CL.v.0": -3,
+      "RB.v.0": 2,
+      "HO.v.0": 1
+    }
+  },
+  "inputs": [
+    {
+      "name": "cl",
+      "source": "leg",
+      "symbol": "CL.v.0"
+    },
+    {
+      "name": "rb",
+      "source": "leg",
+      "symbol": "RB.v.0"
+    },
+    {
+      "name": "ho",
+      "source": "leg",
+      "symbol": "HO.v.0"
+    }
+  ],
+  "series": {
+    "rule": "fixed",
+    "terms": [
+      {
+        "input": "rb",
+        "coef": 28.0
+      },
+      {
+        "input": "ho",
+        "coef": 14.0
+      },
+      {
+        "input": "cl",
+        "coef": -1.0
+      }
+    ],
+    "units": "usd_per_barrel"
+  },
+  "signals": [
+    {
+      "name": "z60",
+      "type": "zscore",
+      "window": 60,
+      "direction": "revert",
+      "z_at_10": 1.5
+    },
+    {
+      "name": "trend_16_64",
+      "type": "ewmac",
+      "fast": 16,
+      "slow": 64
+    },
+    {
+      "name": "value_cost",
+      "type": "value_vs_anchor",
+      "anchor": {
+        "constant": 20.0
+      },
+      "scale": 8.0
+    },
+    {
+      "name": "seas",
+      "type": "seasonal",
+      "window_days": 20,
+      "years": 5
+    }
+  ],
+  "diagnostics": [
+    "adf_250",
+    "half_life_120",
+    "hurst_250"
+  ],
+  "trade": {
+    "blend": {
+      "z60": 0.4,
+      "value_cost": 0.4,
+      "seas": 0.2
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2015-01-02",
+  "strategy": null
+}

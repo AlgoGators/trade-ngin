@@ -1,0 +1,68 @@
+{
+  "id": "fly_zt_zf_zn",
+  "description": "ZT/ZF/ZN duration-neutral butterfly (long wings), the design test case. Dollar-volatility neutral until a DV01 source exists",
+  "legs": [
+    {
+      "symbol": "ZT.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "ZF.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "ZN.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "derived",
+    "scale": 10
+  },
+  "inputs": [
+    {
+      "name": "zt",
+      "source": "leg",
+      "symbol": "ZT.v.0"
+    },
+    {
+      "name": "zf",
+      "source": "leg",
+      "symbol": "ZF.v.0"
+    },
+    {
+      "name": "zn",
+      "source": "leg",
+      "symbol": "ZN.v.0"
+    }
+  ],
+  "series": {
+    "rule": "neutral",
+    "risk": "duration",
+    "shape": [
+      1,
+      -2,
+      1
+    ],
+    "fallback": "vol"
+  },
+  "signals": [
+    {
+      "name": "z60",
+      "type": "zscore",
+      "window": 60
+    }
+  ],
+  "diagnostics": [
+    "adf_250",
+    "half_life_120"
+  ],
+  "trade": {
+    "blend": {
+      "z60": 1.0
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2015-01-02"
+}

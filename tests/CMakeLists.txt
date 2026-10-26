@@ -272,6 +272,8 @@ set(TEST_SOURCES
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
     strategy/test_penny_stock_lifecycle.cpp
+    relative_value/test_trade_definition.cpp
+    relative_value/test_definition_validator.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp
@@ -308,7 +310,8 @@ target_include_directories(trade_ngin_tests
         ${CMAKE_SOURCE_DIR}/include
 )
 
-target_compile_definitions(trade_ngin_tests PRIVATE TESTING USE_DIRECT_DB_CONNECTION)
+target_compile_definitions(trade_ngin_tests PRIVATE TESTING USE_DIRECT_DB_CONNECTION
+    TRADE_NGIN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 target_link_libraries(trade_ngin_tests
     PRIVATE

@@ -1,0 +1,75 @@
+{
+  "id": "gold_silver",
+  "description": "Gold/silver ratio (log), traded as a notional-neutral GC/SI package",
+  "legs": [
+    {
+      "symbol": "GC.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "SI.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "derived",
+    "scale": 5,
+    "weights": {
+      "risk": "notional",
+      "shape": [
+        1,
+        -1
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "gc",
+      "source": "leg",
+      "symbol": "GC.v.0"
+    },
+    {
+      "name": "si",
+      "source": "leg",
+      "symbol": "SI.v.0"
+    }
+  ],
+  "series": {
+    "rule": "ratio",
+    "numerator": "gc",
+    "denominator": "si",
+    "log": true
+  },
+  "signals": [
+    {
+      "name": "z60",
+      "type": "zscore",
+      "window": 60
+    },
+    {
+      "name": "trend_16_64",
+      "type": "ewmac",
+      "fast": 16,
+      "slow": 64
+    },
+    {
+      "name": "pctl250",
+      "type": "percentile",
+      "window": 250
+    }
+  ],
+  "diagnostics": [
+    "adf_250",
+    "half_life_120"
+  ],
+  "trade": {
+    "blend": {
+      "z60": 0.5,
+      "trend_16_64": 0.25,
+      "pctl250": 0.25
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2015-01-02"
+}
