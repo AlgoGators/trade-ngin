@@ -539,26 +539,54 @@ TEST_F(InstrumentIdDb, TheThreeBarIdSequencesOnTheClone) {
     std::map<std::pair<std::string, std::string>, std::string> id;
     for (const auto& r : rows.value()) id[{r.symbol, r.date}] = r.instrument_id;
     auto id_at = [&id](const std::string& s, const std::string& d) { return id[{s, d}]; };
-    // symbol, (previous, day, next) ids around 2025-09-03 and 2025-11-05.
-    const std::vector<std::tuple<std::string, std::string, std::string, std::string, std::string>>
-        expected = {
-            {"6E.v.0", "2025-09-03", "3624", "3624", "3624"},
-            {"6J.v.0", "2025-09-03", "6796", "6796", "6796"},
-            {"ZN.v.0", "2025-09-03", "42002111", "42066706", "42002111"},
-            {"6E.v.0", "2025-11-05", "4274", "42040878", "4274"},
-            {"6J.v.0", "2025-11-05", "4197", "42039890", "4197"},
-            {"ZN.v.0", "2025-11-05", "42002111", "42002111", "42002111"},
-        };
-    for (const auto& [s, d, prev, day, next] : expected) {
-        SCOPED_TRACE(s + " " + d);
-        const Day dd = ymd_day(d);
-        EXPECT_EQ(id_at(s, SessionClassifier::ymd(dd - std::chrono::days{1})), prev);
-        EXPECT_EQ(id_at(s, d), day);
-        EXPECT_EQ(id_at(s, SessionClassifier::ymd(dd + std::chrono::days{1})), next);
+    // The raw table's own row of a day (its id and volume), read directly.
+    pqxx::connection pc(conn_);
+    pqxx::work w(pc);
+    auto raw_of = [&w](const std::string& s, const std::string& d) {
+        const auto r = w.exec(
+            "SELECT instrument_id, volume FROM futures_data.ohlcv_1d_raw WHERE symbol = $1 AND "
+            "ts_event = ($2::date AT TIME ZONE 'UTC')",
+            pqxx::params{s, d});
+        return r.empty() ? std::make_pair(std::string(), -1.0)
+                         : std::make_pair(r[0][0].as<std::string>(), r[0][1].as<double>());
+    };
+    // symbol, (previous, day, next) ids around 2025-09-03 and 2025-11-05. R6: the 213-row fix of
+    // algogators #36 replaced 6E's and 6J's stray one-day ids of 2025-11-05 (42040878, 42039890) with
+    // their own contracts' bars (108,452 and 125,478 lots, ids 4274 and 4197); a replaced day names its
+    // corrected volume, and the test reads which row the table holds. ZN's stray of 2025-09-03 stays.
+    struct Seq {
+        std::string symbol, date, prev, day, next;
+        double corrected_volume = -1;
+        std::string corrected_day;
+    };
+    const std::vector<Seq> expected = {
+        {"6E.v.0", "2025-09-03", "3624", "3624", "3624"},
+        {"6J.v.0", "2025-09-03", "6796", "6796", "6796"},
+        {"ZN.v.0", "2025-09-03", "42002111", "42066706", "42002111"},
+        {"6E.v.0", "2025-11-05", "4274", "42040878", "4274", 108452, "4274"},
+        {"6J.v.0", "2025-11-05", "4197", "42039890", "4197", 125478, "4197"},
+        {"ZN.v.0", "2025-11-05", "42002111", "42002111", "42002111"},
+    };
+    for (const auto& e : expected) {
+        SCOPED_TRACE(e.symbol + " " + e.date);
+        const Day dd = ymd_day(e.date);
+        const bool replaced = e.corrected_volume >= 0 && raw_of(e.symbol, e.date).second == e.corrected_volume;
+        EXPECT_EQ(id_at(e.symbol, SessionClassifier::ymd(dd - std::chrono::days{1})), e.prev);
+        EXPECT_EQ(id_at(e.symbol, e.date), replaced ? e.corrected_day : e.day);
+        EXPECT_EQ(id_at(e.symbol, SessionClassifier::ymd(dd + std::chrono::days{1})), e.next);
     }
-    // 6A 2025-11-05: the raw table holds the 196-lot copy, the loader keeps the 76,895-lot one:
-    // not the same print, so no id (its neighbours have one).
-    EXPECT_EQ(id.count(std::make_pair(std::string("6A.v.0"), std::string("2025-11-05"))), 0u);
+    // 6A 2025-11-05: on the reference clone the raw table holds the 196-lot copy and the loader keeps
+    // the 76,895-lot one: not the same print, so no id (its neighbours have one). R6: derived from the
+    // tables, so it holds on any copy: an id exactly when the raw row is the kept print (the 213-row
+    // fix made the two one print on the tuning copy: id 7103).
+    const auto kept = w.exec(
+        "SELECT volume FROM futures_data.ohlcv_1d WHERE symbol = '6A.v.0' AND "
+        "time = ('2025-11-05'::date AT TIME ZONE 'UTC') ORDER BY volume DESC, close, open, high, low LIMIT 1");
+    ASSERT_EQ(kept.size(), 1u);
+    const auto raw_6a = raw_of("6A.v.0", "2025-11-05");
+    const bool same_print = raw_6a.second == kept[0][0].as<double>();
+    EXPECT_EQ(id.count(std::make_pair(std::string("6A.v.0"), std::string("2025-11-05"))), same_print ? 1u : 0u);
+    if (same_print) EXPECT_EQ(id_at("6A.v.0", "2025-11-05"), raw_6a.first);
     EXPECT_EQ(id.count(std::make_pair(std::string("6A.v.0"), std::string("2025-11-04"))), 1u);
     EXPECT_EQ(id.count(std::make_pair(std::string("6A.v.0"), std::string("2025-11-06"))), 1u);
 }
@@ -574,9 +602,23 @@ TEST_F(InstrumentIdDb, TheNamedCellsOnTheRealBarsLiveAndBacktestViews) {
         SessionVerdict verdict;
         const char* reason_has;
     };
+    // R6: 6E's and 6J's 2025-11-05 were replaced by the 213-row fix (their own contracts' bars, 108,452
+    // and 125,478 lots, ids 4274 and 4197): on a copy that holds the corrected bar they are SESSION.
+    pqxx::connection pc(conn_);
+    pqxx::work w(pc);
+    auto replaced = [&w](const char* s, const char* d, double volume) {
+        const auto r = w.exec("SELECT volume FROM futures_data.ohlcv_1d_raw WHERE symbol = $1 AND "
+                              "ts_event = ($2::date AT TIME ZONE 'UTC')",
+                              pqxx::params{std::string(s), std::string(d)});
+        return !r.empty() && r[0][0].as<double>() == volume;
+    };
+    const bool e_fixed = replaced("6E.v.0", "2025-11-05", 108452);
+    const bool j_fixed = replaced("6J.v.0", "2025-11-05", 125478);
     const std::vector<Cell> cells = {
-        {"6E.v.0", "2025-11-05", SessionVerdict::JUNK, "instrument id change (4274 -> 42040878"},
-        {"6J.v.0", "2025-11-05", SessionVerdict::JUNK, "corrupt print"},
+        e_fixed ? Cell{"6E.v.0", "2025-11-05", SessionVerdict::SESSION, ""}
+                : Cell{"6E.v.0", "2025-11-05", SessionVerdict::JUNK, "instrument id change (4274 -> 42040878"},
+        j_fixed ? Cell{"6J.v.0", "2025-11-05", SessionVerdict::SESSION, ""}
+                : Cell{"6J.v.0", "2025-11-05", SessionVerdict::JUNK, "corrupt print"},
         {"ZN.v.0", "2025-11-05", SessionVerdict::SESSION, ""},
         {"6E.v.0", "2025-09-03", SessionVerdict::SESSION, ""},
         {"6J.v.0", "2025-09-03", SessionVerdict::SESSION, ""},
@@ -594,8 +636,11 @@ TEST_F(InstrumentIdDb, TheNamedCellsOnTheRealBarsLiveAndBacktestViews) {
         EXPECT_EQ(lv.reason, v.reason);
     }
     // The next session confirms each flip.
-    for (const auto& [s, d] : std::vector<std::pair<std::string, std::string>>{
-             {"6E.v.0", "2025-11-06"}, {"6J.v.0", "2025-11-06"}, {"ZN.v.0", "2025-09-04"}}) {
+    // (R6: a flip the 213-row fix replaced is no flip: only the ones the table holds)
+    std::vector<std::pair<std::string, std::string>> flips = {{"ZN.v.0", "2025-09-04"}};
+    if (!e_fixed) flips.push_back({"6E.v.0", "2025-11-06"});
+    if (!j_fixed) flips.push_back({"6J.v.0", "2025-11-06"});
+    for (const auto& [s, d] : flips) {
         const auto v = at(full, s, d);
         EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << s << " " << d << ": " << v.reason;
         EXPECT_NE(v.id_note.find("is confirmed a ONE-DAY FLIP"), npos) << s << " " << v.id_note;
