@@ -244,6 +244,9 @@ public:
     /// trend_estimator::kWindowBars (a symbol with less history starts at its first bar).
     const std::map<std::string, std::size_t>& short_window_rows() const { return short_window_rows_; }
 
+    /// Carry (trade-ngin #185): whether this sleeve trades the blend (carry weight above 0).
+    bool carry_on() const { return trend_config_.carry_weight > 0.0; }
+
     /// Carry (trade-ngin #185): the carry-driven equity shorts of this run, per symbol.
     const std::map<std::string, std::size_t>& carry_driven_shorts() const { return carry_driven_shorts_; }
 

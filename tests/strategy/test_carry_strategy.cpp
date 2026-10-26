@@ -22,6 +22,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #undef private
+#include "trade_ngin/strategy/carry_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 
 using namespace trade_ngin;
@@ -352,4 +353,40 @@ TEST(CarryStrategy, TheSeededHistoryKeepsItsQuotes) {
     for (std::size_t k = 500; k < bars.size(); ++k) b = seeded.forecast({bars[k]});
     EXPECT_EQ(a, b);
     EXPECT_EQ(whole.data().carry.mean_scaled, seeded.data().carry.mean_scaled);
+}
+
+// The run's one line for carry-driven equity shorts (HD's Q1): printed only with carry on, counting the
+// shorts the sleeve made; every futures runner prints it beside the short-window line.
+TEST(CarryStrategy, TheRunReportsItsCarryDrivenEquityShorts) {
+    StateManager::reset_instance();
+    const auto bars = path(700, 670, 0.0015, 0.0080, -0.0008);
+    auto off = std::make_shared<Sleeve>("CARRY_line_off", 0.0, std::vector<std::string>{kSym});
+    off->forecast(bars);
+    std::shared_ptr<StrategyInterface> off_ptr(off, off->strategy.get());
+    EXPECT_EQ(carry_driven_shorts_line({off_ptr}), "") << "carry off prints nothing";
+    auto on = std::make_shared<Sleeve>("CARRY_line_on", 0.4, std::vector<std::string>{kSym});
+    on->forecast(bars);
+    std::shared_ptr<StrategyInterface> on_ptr(on, on->strategy.get());
+    EXPECT_EQ(carry_driven_shorts_line({on_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS symbols=1 rows=1 names=[TSTCARRY:1]");
+    auto none = std::make_shared<Sleeve>("CARRY_line_none", 0.4);
+    std::shared_ptr<StrategyInterface> none_ptr(none, none->strategy.get());
+    EXPECT_EQ(carry_driven_shorts_line({none_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS symbols=0 rows=0 names=[-]");
+
+    std::filesystem::path root = std::filesystem::current_path();
+    while (!(std::filesystem::exists(root / "CMakeLists.txt") && std::filesystem::exists(root / "config_template"))) {
+        ASSERT_NE(root, root.parent_path());
+        root = root.parent_path();
+    }
+    for (const char* runner : {"apps/backtest/bt_portfolio.cpp", "apps/backtest/bt_portfolio_conservative.cpp",
+                               "apps/strategies/live_portfolio.cpp", "apps/strategies/live_portfolio_conservative.cpp"}) {
+        std::ifstream in(root / runner);
+        std::stringstream text;
+        text << in.rdbuf();
+        const std::string source = text.str();
+        const std::size_t short_line = source.find("INFO(trade_ngin::estimator_short_window_line(strategies));");
+        const std::size_t carry_line = source.find("trade_ngin::carry_driven_shorts_line(strategies)");
+        ASSERT_NE(carry_line, std::string::npos) << runner;
+        EXPECT_LT(short_line, carry_line) << runner;
+        EXPECT_LT(carry_line - short_line, 200u) << runner << ": printed beside the short-window line";
+    }
 }

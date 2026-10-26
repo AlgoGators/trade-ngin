@@ -69,6 +69,7 @@
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 #include "trade_ngin/live/stored_book_ownership.hpp"
+#include "trade_ngin/strategy/carry_log.hpp"
 #include "trade_ngin/strategy/short_window_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -2606,6 +2607,9 @@ int main(int argc, char* argv[]) {
             }
             INFO("Portfolio processing completed");
             INFO(trade_ngin::estimator_short_window_line(strategies));
+            if (const std::string line = trade_ngin::carry_driven_shorts_line(strategies); !line.empty()) {
+                INFO(line);  // carry on only (trade-ngin #185, HD's Q1)
+            }
 
             // ========================================
             // PHASE 4: PER-STRATEGY SIGNALS STORAGE

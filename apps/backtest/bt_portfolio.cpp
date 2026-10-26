@@ -16,6 +16,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/strategy/carry_log.hpp"
 #include "trade_ngin/strategy/short_window_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -556,6 +557,9 @@ int main() {
 
         INFO("Backtest completed successfully");
         INFO(trade_ngin::estimator_short_window_line(strategies));
+        if (const std::string line = trade_ngin::carry_driven_shorts_line(strategies); !line.empty()) {
+            INFO(line);  // carry on only (trade-ngin #185, HD's Q1)
+        }
 
         // Analyze and display results
         const auto& backtest_results = result.value();
