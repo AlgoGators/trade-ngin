@@ -14,6 +14,7 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr std::size_t kMinReturns = 20;
 constexpr double kMissingVariance = 0.01;
 constexpr double kDaysPerYear = 365.25;
+constexpr double kFixedAnnualisation = 16.0;  // AFTS: a daily standard deviation x 16 is annual
 
 double sign(double v) {
     return v > 0.0 ? 1.0 : (v < 0.0 ? -1.0 : 0.0);
@@ -139,6 +140,36 @@ Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, cons
             out.matrix[i][i] = kMissingVariance;
         }
     }
+    return out;
+}
+
+Covariance strategy25_covariance(const Matrix& returns, const Vector& ordinals,
+                                 const Vector& sigma) {
+    Covariance out;
+    const std::size_t n = sigma.size();
+    out.carver = true;
+    out.matrix.assign(n, Vector(n, 0.0));
+    out.filled.assign(n, 0);
+    std::vector<std::size_t> members;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isfinite(sigma[i]) && sigma[i] > 0.0) members.push_back(i);
+    }
+    const Matrix m = overlay::carver_matrix(returns, ordinals, sigma, members);
+    if (m.size() != members.size()) members.clear();
+    for (std::size_t a = 0; a < members.size(); ++a) {
+        for (std::size_t b = 0; b < members.size(); ++b) {
+            out.matrix[members[a]][members[b]] = m[a][b];
+        }
+    }
+    Mask member(n, 0);
+    for (std::size_t i : members) member[i] = 1;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!member[i]) {
+            out.filled[i] = 1;
+            out.matrix[i][i] = kMissingVariance;
+        }
+    }
+    out.bars_per_year = members.empty() ? 0.0 : kFixedAnnualisation * kFixedAnnualisation;
     return out;
 }
 
@@ -518,35 +549,56 @@ DayResult rebalance(const DayInputs& in) {
     const std::size_t f = out.free_rows.size();
     if (f > 0) {
         out.searched = true;
-        // Sigma_opt over the free rows: their last closes, the stale rule in union dates of these
-        // symbols (more than five union dates behind the newest last close).
-        Matrix closes(in.opt_closes.size(), Vector(f, 0.0));
-        Matrix levels(in.opt_closes.size(), Vector(f, 0.0));
-        std::vector<long> last(f, -1);
-        std::vector<long> union_count(in.opt_closes.size() + 1, 0);
-        for (std::size_t d = 0; d < in.opt_closes.size(); ++d) {
-            bool any = false;
-            for (std::size_t a = 0; a < f; ++a) {
-                closes[d][a] = in.opt_closes[d][out.free_rows[a]];
-                levels[d][a] = in.opt_levels[d][out.free_rows[a]];
-                if (!std::isnan(closes[d][a])) {
-                    any = true;
-                    last[a] = static_cast<long>(d);
+        if (in.opt_carver) {
+            // Strategy 25's covariance over the free rows: the overlay window's returns and each
+            // row's 32-day EWMA sd annualised by 16. No stale rule.
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            Matrix returns(in.returns.size(), Vector(f, nan));
+            for (std::size_t d = 0; d < in.returns.size(); ++d) {
+                for (std::size_t a = 0; a < f; ++a) {
+                    const std::size_t i = out.free_rows[a];
+                    if (i < in.returns[d].size()) returns[d][a] = in.returns[d][i];
                 }
             }
-            union_count[d + 1] = union_count[d] + (any ? 1 : 0);
+            Vector sigma(f, 0.0);
+            for (std::size_t a = 0; a < f; ++a) {
+                const std::size_t i = out.free_rows[a];
+                sigma[a] = i < in.opt_sigma.size() ? in.opt_sigma[i] : 0.0;
+            }
+            out.stale.assign(f, 0);
+            out.covariance = strategy25_covariance(returns, in.ordinals, sigma);
+        } else {
+            // Sigma_opt over the free rows: their last closes, the stale rule in union dates of
+            // these symbols (more than five union dates behind the newest last close).
+            Matrix closes(in.opt_closes.size(), Vector(f, 0.0));
+            Matrix levels(in.opt_closes.size(), Vector(f, 0.0));
+            std::vector<long> last(f, -1);
+            std::vector<long> union_count(in.opt_closes.size() + 1, 0);
+            for (std::size_t d = 0; d < in.opt_closes.size(); ++d) {
+                bool any = false;
+                for (std::size_t a = 0; a < f; ++a) {
+                    closes[d][a] = in.opt_closes[d][out.free_rows[a]];
+                    levels[d][a] = in.opt_levels[d][out.free_rows[a]];
+                    if (!std::isnan(closes[d][a])) {
+                        any = true;
+                        last[a] = static_cast<long>(d);
+                    }
+                }
+                union_count[d + 1] = union_count[d] + (any ? 1 : 0);
+            }
+            long newest = -1;
+            for (long l : last) newest = std::max(newest, l);
+            out.stale.assign(f, 0);
+            for (std::size_t a = 0; a < f; ++a) {
+                // union dates after the symbol's last close, up to the newest last close
+                const long behind =
+                    last[a] < 0 ? std::numeric_limits<long>::max()
+                                : union_count[static_cast<std::size_t>(newest) + 1] -
+                                      union_count[static_cast<std::size_t>(last[a]) + 1];
+                out.stale[a] = behind > 5;
+            }
+            out.covariance = optimiser_covariance(closes, levels, in.opt_ordinals, out.stale);
         }
-        long newest = -1;
-        for (long l : last) newest = std::max(newest, l);
-        out.stale.assign(f, 0);
-        for (std::size_t a = 0; a < f; ++a) {
-            // union dates after the symbol's last close, up to the newest last close
-            const long behind = last[a] < 0 ? std::numeric_limits<long>::max()
-                                            : union_count[static_cast<std::size_t>(newest) + 1] -
-                                                  union_count[static_cast<std::size_t>(last[a]) + 1];
-            out.stale[a] = behind > 5;
-        }
-        out.covariance = optimiser_covariance(closes, levels, in.opt_ordinals, out.stale);
 
         Vector uf(f), hf(f), xt(f), cost(f);
         for (std::size_t a = 0; a < f; ++a) {

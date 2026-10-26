@@ -140,11 +140,13 @@ GateWindow gate_window(const std::vector<std::vector<double>>& returns,
     return out;
 }
 
-void carver_covariance(GateWindow& window, const std::vector<std::vector<double>>& returns,
-                       const std::vector<double>& ordinals, const std::vector<double>& sigma) {
-    if (window.blind()) return;
-    const std::size_t participants = window.in_r.size();
-    if (returns.size() != ordinals.size() || sigma.size() != participants) return;
+std::vector<std::vector<double>> carver_matrix(const std::vector<std::vector<double>>& returns,
+                                               const std::vector<double>& ordinals,
+                                               const std::vector<double>& sigma,
+                                               const std::vector<std::size_t>& members) {
+    std::vector<std::vector<double>> out;
+    if (returns.size() != ordinals.size()) return out;
+    const std::size_t participants = sigma.size();
     // weekly returns, Saturday to Friday, per participant (NaN for a week with no return)
     const double nan = std::numeric_limits<double>::quiet_NaN();
     std::vector<long> weeks;
@@ -192,21 +194,31 @@ void carver_covariance(GateWindow& window, const std::vector<std::vector<double>
         if (!(cxx > 0.0) || !(cyy > 0.0)) return 0.0;
         return std::max(-1.0, std::min(1.0, cxy / std::sqrt(cxx * cyy)));
     };
+    auto sd = [&](std::size_t i) { return std::isfinite(sigma[i]) && sigma[i] > 0.0 ? sigma[i] : 0.0; };
+    const std::size_t k = members.size();
+    out.assign(k, std::vector<double>(k, 0.0));
+    for (std::size_t a = 0; a < k; ++a) {
+        out[a][a] = sd(members[a]) * sd(members[a]);
+        for (std::size_t b = a + 1; b < k; ++b) {
+            const double c = sd(members[a]) * sd(members[b]) * rho(members[a], members[b]);
+            out[a][b] = c;
+            out[b][a] = c;
+        }
+    }
+    return out;
+}
+
+void carver_covariance(GateWindow& window, const std::vector<std::vector<double>>& returns,
+                       const std::vector<double>& ordinals, const std::vector<double>& sigma) {
+    if (window.blind()) return;
+    const std::size_t participants = window.in_r.size();
+    if (returns.size() != ordinals.size() || sigma.size() != participants) return;
     std::vector<std::size_t> core;
     for (std::size_t i = 0; i < participants; ++i) {
         if (window.in_r[i]) core.push_back(i);
     }
+    window.covariance = carver_matrix(returns, ordinals, sigma, core);
     auto sd = [&](std::size_t i) { return std::isfinite(sigma[i]) && sigma[i] > 0.0 ? sigma[i] : 0.0; };
-    const std::size_t k = core.size();
-    window.covariance.assign(k, std::vector<double>(k, 0.0));
-    for (std::size_t a = 0; a < k; ++a) {
-        window.covariance[a][a] = sd(core[a]) * sd(core[a]);
-        for (std::size_t b = a + 1; b < k; ++b) {
-            const double c = sd(core[a]) * sd(core[b]) * rho(core[a], core[b]);
-            window.covariance[a][b] = c;
-            window.covariance[b][a] = c;
-        }
-    }
     for (std::size_t i = 0; i < participants; ++i) {
         if (window.in_shock[i]) window.shock_sigma[i] = sd(i);
     }

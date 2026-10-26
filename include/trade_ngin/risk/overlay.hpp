@@ -73,6 +73,17 @@ inline constexpr double kCarverCorrelationWeeks = 26.0;
 void carver_covariance(GateWindow& window, const std::vector<std::vector<double>>& returns,
                        const std::vector<double>& ordinals, const std::vector<double>& sigma);
 
+/// The carver covariance's matrix over `members` (column indices of `returns` and `sigma`), in
+/// their order: sigma_i sigma_j rho_ij, rho_ij as carver_covariance states it (weekly sums over
+/// every row of `returns`, span kCarverCorrelationWeeks, rho 0 on fewer than two common weeks or no
+/// variance); a sigma that is not a positive number counts as 0. Empty when `returns` and
+/// `ordinals` differ in length. carver_covariance's own matrix, and the optimiser's under
+/// optimiser_covariance "carver" (one_pass::strategy25_covariance).
+std::vector<std::vector<double>> carver_matrix(const std::vector<std::vector<double>>& returns,
+                                               const std::vector<double>& ordinals,
+                                               const std::vector<double>& sigma,
+                                               const std::vector<std::size_t>& members);
+
 /**
  * THE READINGS on the participants' weights x_i = N_i M_i P_i FX_i / E (signed, on the sizing
  * capital): R = sqrt(x' Sigma x) and R_jump = sqrt(x' Sigma_jump x) over the participants in R,

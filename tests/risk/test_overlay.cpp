@@ -323,6 +323,28 @@ TEST(Overlay, TheCarverCorrelationIsOfWeeklySumsExponentiallyWeighted) {
     EXPECT_LT(std::abs(want), 0.5);
 }
 
+// carver_matrix is the carver covariance's matrix over the members given, in their order (the
+// optimiser passes its free rows): participant 2 then 0 here, rho -1; empty when the returns and
+// the dates differ in length.
+TEST(Overlay, TheCarverMatrixIsOverTheMembersInTheirOrder) {
+    const auto o = weekday_ordinals(30);
+    std::vector<std::vector<double>> r(o.size(), std::vector<double>(3, 0.0));
+    unsigned state = 4242u;
+    for (std::size_t d = 0; d < o.size(); ++d) {
+        state = state * 1103515245u + 12345u;
+        const double x = static_cast<double>(state % 1000u) / 1000.0 - 0.5;
+        r[d] = {0.01 * x, 0.02 * x, -0.01 * x};
+    }
+    const auto m = carver_matrix(r, o, {0.20, 0.35, 0.10}, {2, 0});
+    ASSERT_EQ(m.size(), 2u);
+    expect_rel(m[0][0], 0.10 * 0.10);
+    expect_rel(m[1][1], 0.20 * 0.20);
+    expect_rel(m[0][1], -0.10 * 0.20);
+    expect_rel(m[1][0], -0.10 * 0.20);
+    std::vector<double> shorter(o.begin(), o.end() - 1);
+    EXPECT_TRUE(carver_matrix(r, shorter, {0.20, 0.35, 0.10}, {0, 1}).empty());
+}
+
 // A blind window is left as it is: no covariance reading, and nothing to replace.
 TEST(Overlay, TheCarverCovarianceLeavesABlindWindowAlone) {
     const auto o = weekday_ordinals(3);

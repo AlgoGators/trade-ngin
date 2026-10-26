@@ -443,6 +443,10 @@ struct AppConfig {
     // (today: closed before the search, or held by the deferral band while |F| < sign_close_band)
     // or "buffer" (no close and no band; the buffer moves it like any row). Empty: absent.
     std::string wrong_sign_rule;
+    // optimiser_covariance, the optimiser's covariance: "sample" (today: the equal-weight sample
+    // covariance of the last 756 closes) or "carver" (strategy 25's: the 32-day EWMA sd x 16 and
+    // exponentially weighted weekly correlations, the overlay's carver estimator). Empty: absent.
+    std::string optimiser_covariance;
     // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
     // load, never read for a value; a futures book refuses to run on a non-empty list
     // (require_loop_keys). The equity book's files are not searched for the futures-only keys.

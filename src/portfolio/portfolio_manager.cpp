@@ -2264,6 +2264,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
         in.b_sigma_floor = config_.b_sigma_floor;
         in.b_sigma_rule = config_.b_sigma_rule;
         in.wrong_sign_buffer = config_.wrong_sign_buffer;
+        in.opt_carver = config_.optimiser_carver;
         in.trim_max = config_.trim_max;
         in.max_iterations = config_.opt_config.max_iterations;
         {
@@ -2285,6 +2286,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
         in.jump_sigma_daily.assign(n, 0.0);
         in.overlay_carver = config_.overlay_carver;
         in.sizing_sigma.assign(n, 0.0);
+        in.opt_sigma.assign(n, 0.0);
         std::unordered_set<std::string> fed;
         for (const auto& bar : data) fed.insert(bar.symbol);
         // Each sleeve's unrounded contribution N*_s and held quantity, per symbol.
@@ -2302,6 +2304,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
             in.first_signalling[i] = own[i].signalling;
             in.jump_sigma_daily[i] = own[i].jump_sigma_daily;
             in.sizing_sigma[i] = own[i].sizing_sigma;
+            in.opt_sigma[i] = own[i].ewma_sigma;
             slow_zeroed[i] = own[i].slow_rule_zeroed;
             in.has_bar[i] = fed.count(symbol) > 0;
             // Section 6.1: the hold applies on sized days only (in warm-up the book follows the

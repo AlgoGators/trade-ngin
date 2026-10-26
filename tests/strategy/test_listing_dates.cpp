@@ -371,6 +371,11 @@ TEST(ListingDates, SleeveSwitchesContractOnTheListingDateAndKeepsTheHistory) {
     EXPECT_EQ(sleeve.series(kMicro).multiplier, 5.0);
     EXPECT_EQ(sleeve.series(kBig).multiplier, 50.0) << "the predecessor is still weighed for its close";
     EXPECT_GT(sleeve.series(kBig).close, 0.0);
+    // strategy 25's sigma for the optimiser: the estimator's short-run sd annualised by 16
+    const auto& estimate = sleeve.strategy->get_all_instrument_data().at(kOther).estimate;
+    ASSERT_GT(estimate.sigma_short_fixed, 0.0);
+    EXPECT_EQ(sleeve.series(kOther).ewma_sigma, estimate.sigma_short_fixed);
+    EXPECT_NE(sleeve.series(kOther).ewma_sigma, sleeve.series(kOther).sizing_sigma);
 
     // the day after
     sleeve.feed_day(kListedBar + 1);

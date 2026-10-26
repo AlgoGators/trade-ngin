@@ -139,6 +139,44 @@ TEST(OnePass, TheSearchFromTheHeldBookThenTheBuffer) {
     expect_rel(buffered.unrounded[3], 5.025466944923568);
 }
 
+// optimiser_covariance "carver" (AFTS gap list C-4): strategy 25's covariance is sigma_i sigma_j
+// rho_ij with the given sigmas (the 32-day EWMA sd x 16) and the overlay's weekly correlations.
+// Symbol 1 is twice symbol 0 and symbol 2 its negative on every day, so rho is exactly +1 and -1;
+// symbol 3 has no sigma and sits on the 0.01 diagonal alone; there is no date intersection and no
+// stale rule, and the annualisation is 16 (256 bars a year). Returns and dates of different
+// lengths estimate nothing.
+TEST(OnePass, StrategyTwentyFivesCovariance) {
+    Vector o;
+    for (int w = 0; w < 40; ++w) {
+        for (int d = 0; d < 5; ++d) o.push_back(21004.0 + 7.0 * w + d);
+    }
+    Matrix r(o.size(), Vector(4, 0.0));
+    unsigned state = 99u;
+    for (std::size_t d = 0; d < o.size(); ++d) {
+        state = state * 1103515245u + 12345u;
+        const double x = static_cast<double>(state % 1000u) / 1000.0 - 0.5;
+        r[d] = {0.01 * x, 0.02 * x, -0.01 * x, d % 3 == 0 ? kNaN : 0.005 * x};
+    }
+    const Covariance c = strategy25_covariance(r, o, {0.20, 0.35, 0.10, 0.0});
+    EXPECT_TRUE(c.carver);
+    EXPECT_EQ(c.filled, (Mask{0, 0, 0, 1}));
+    EXPECT_DOUBLE_EQ(c.bars_per_year, 256.0);
+    expect_rel(c.matrix[0][0], 0.20 * 0.20);
+    expect_rel(c.matrix[1][1], 0.35 * 0.35);
+    expect_rel(c.matrix[0][1], 0.20 * 0.35);
+    expect_rel(c.matrix[1][0], 0.20 * 0.35);
+    expect_rel(c.matrix[0][2], -0.20 * 0.10);
+    expect_rel(c.matrix[1][2], -0.35 * 0.10);
+    EXPECT_DOUBLE_EQ(c.matrix[3][3], 0.01);
+    EXPECT_DOUBLE_EQ(c.matrix[0][3], 0.0);
+    EXPECT_DOUBLE_EQ(c.matrix[3][1], 0.0);
+
+    const Covariance none = strategy25_covariance(r, Vector(3, 0.0), {0.20, 0.35, 0.10, 0.0});
+    EXPECT_EQ(none.filled, (Mask{1, 1, 1, 1}));
+    EXPECT_DOUBLE_EQ(none.bars_per_year, 0.0);
+    EXPECT_DOUBLE_EQ(none.matrix[0][0], 0.01);
+}
+
 // b_sigma_rule (AFTS gap list C-1, C-2): row 3, the lumpiest contract, is held at 1 and searched to
 // 0. Today's rule lets that held-only row set B_sigma (0.0447), the held book is inside its own
 // buffer's reach (a = 0.023) and rounds back unchanged; strategy 25's fixed buffer (0.05 tau = 1%)
@@ -421,6 +459,29 @@ TEST(OnePass, AWrongSignedRowIsBufferedLikeAnyOther) {
     EXPECT_EQ(r.book, (Vector{5.0, -4.0, 0.0, 3.0}));
     EXPECT_EQ(r.sign_fill, (Vector{0.0, 0.0, 0.0, 0.0}));
     EXPECT_EQ(r.rest_fill, (Vector{5.0, -8.0, -4.0, 0.0}));
+}
+
+// optimiser_covariance "carver" reaches the pass: the day of
+// TheDayIsClassifiedSearchedAndFilledOnce with strategy 25's covariance on opt_sigma (no window: no
+// common week, rho 0). Row 1's sigma 0.25
+// gives a one-contract risk of 0.2 x 0.25 = 0.05, which sets B_sigma, against today's guarded 0.01
+// variance (B_sigma 0.02); row 0 without a sigma is on the 0.01 diagonal.
+TEST(OnePass, TheRebalanceUsesStrategyTwentyFivesCovariance) {
+    DayInputs in = four_symbols();
+    in.opt_carver = true;
+    in.opt_sigma = {0.0, 0.25, 0.30, 0.40};
+    const DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_TRUE(r.covariance.carver);
+    ASSERT_EQ(r.free_rows, (std::vector<std::size_t>{0, 1}));
+    EXPECT_EQ(r.covariance.filled, (Mask{1, 0}));
+    EXPECT_DOUBLE_EQ(r.covariance.matrix[0][0], 0.01);
+    EXPECT_NEAR(r.covariance.matrix[1][1], 0.0625, 1e-15);
+    EXPECT_NEAR(r.b_sigma, 0.05, 1e-12);
+    EXPECT_EQ(r.b_symbol, 1);
+    EXPECT_EQ(r.stale, (Mask{0, 0}));
+    in.opt_carver = false;
+    EXPECT_NEAR(rebalance(in).b_sigma, 0.02, 1e-12) << "today: the guarded diagonal";
 }
 
 // Section 4, the refusal: an input that is not a finite number, or a reading that is not, refuses

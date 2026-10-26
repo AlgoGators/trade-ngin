@@ -858,6 +858,7 @@ bool TrendFollowingStrategy::overlay_series(const std::string& symbol, OverlaySe
     }
     out->jump_sigma_daily = data.estimate.valid ? data.estimate.jump_sigma_daily : 0.0;
     out->sizing_sigma = data.estimate.valid ? data.estimate.sigma : 0.0;
+    out->ewma_sigma = data.estimate.valid ? data.estimate.sigma_short_fixed : 0.0;
     out->optimal_position = data.optimal_position;
     out->forecast = data.current_forecast;
     out->signalling = is_signalling(symbol);

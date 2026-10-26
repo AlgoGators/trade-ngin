@@ -65,6 +65,8 @@ struct PortfolioConfig : public ConfigBase {
     one_pass::BSigmaRule b_sigma_rule{one_pass::BSigmaRule::kGranularity};
     // AppConfig::wrong_sign_rule: false is "close", true is "buffer".
     bool wrong_sign_buffer{false};
+    // AppConfig::optimiser_covariance: false is "sample", true is "carver".
+    bool optimiser_carver{false};
     // The overlay's covariance (risk.json's carver module overlay_covariance): false is "sample",
     // true is "carver" (overlay::carver_covariance).
     bool overlay_carver{false};
@@ -149,6 +151,7 @@ struct PortfolioConfig : public ConfigBase {
                     b_sigma_rule == one_pass::BSigmaRule::kFixed ? "fixed" : "minimal";
             }
             if (wrong_sign_buffer) opt["wrong_sign_rule"] = "buffer";
+            if (optimiser_carver) opt["optimiser_covariance"] = "carver";
             auto& risk = j["risk_config"];
             for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
                 risk.erase(retired);

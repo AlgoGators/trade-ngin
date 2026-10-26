@@ -49,11 +49,24 @@ std::pair<Vector, Mask> clip_to_cap(const Vector& book, const Vector& u, double 
 struct Covariance {
     Matrix matrix;            ///< over every symbol; a filled symbol has 0.01 on its diagonal alone
     Mask filled;              ///< the symbols on the 0.01 diagonal
-    double bars_per_year{0.0};  ///< 0 when no symbol is estimated
+    double bars_per_year{0.0};  ///< 0 when no symbol is estimated; 256 (16 x 16) when carver
+    bool carver{false};       ///< built by strategy25_covariance
 };
 
 Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, const Vector& ordinals,
                                 const Mask& stale);
+
+/**
+ * Section 5.1 under defaults.json optimization.optimiser_covariance "carver": AFTS strategy 25's
+ * covariance (p.417; Appendix B p.641), sigma_i sigma_j rho_ij with sigma_i the symbol's 32-day
+ * EWMA standard deviation of daily returns annualised by 16 (`sigma`, per symbol) and rho_ij the
+ * exponentially weighted correlation of weekly returns, six-month (26-week) span, no shrinkage: the
+ * overlay's carver estimator (overlay::carver_matrix) on `returns`, the symbols' daily percentage
+ * returns on the dates `ordinals`. A symbol whose sigma is not a positive number is on the 0.01
+ * diagonal alone (filled). There is no stale rule and no date intersection.
+ */
+Covariance strategy25_covariance(const Matrix& returns, const Vector& ordinals,
+                                 const Vector& sigma);
 
 /// Section 5.2: TE(n) = sqrt((n u - x)' Sigma (n u - x)) + cost_mult x sum |n_i - h_i| c_i, c_i the
 /// cost of one contract over the sizing capital.
@@ -207,6 +220,12 @@ struct DayInputs {
     Matrix opt_closes;
     Matrix opt_levels;
     Vector opt_ordinals;
+    /// defaults.json optimization.optimiser_covariance "carver" (AFTS strategy 25): the optimiser's
+    /// covariance is strategy25_covariance on `returns` and `ordinals` (the overlay's window) with
+    /// `opt_sigma` (per symbol, the 32-day EWMA sd annualised by 16); false ("sample", today):
+    /// optimiser_covariance on the closes above.
+    bool opt_carver{false};
+    Vector opt_sigma;
 };
 
 struct DayResult {

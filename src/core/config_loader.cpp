@@ -200,7 +200,9 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             };
             for (const Choice& choice :
                  {Choice{"b_sigma_rule", {"granularity", "fixed", "minimal"}, &config.b_sigma_rule},
-                  Choice{"wrong_sign_rule", {"close", "buffer"}, &config.wrong_sign_rule}}) {
+                  Choice{"wrong_sign_rule", {"close", "buffer"}, &config.wrong_sign_rule},
+                  Choice{"optimiser_covariance", {"sample", "carver"},
+                         &config.optimiser_covariance}}) {
                 if (!optimization.contains(choice.key)) continue;
                 const auto& v = optimization.at(choice.key);
                 if (!v.is_string() || std::find(choice.values.begin(), choice.values.end(),

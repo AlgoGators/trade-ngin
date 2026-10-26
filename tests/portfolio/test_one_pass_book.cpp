@@ -478,6 +478,23 @@ TEST_F(OnePassBookTest, AWrongSignedRowIsBufferedWhenTheConfigSaysSo) {
     EXPECT_EQ(count_of(out, "band_holds=[-]"), 1u) << out;
 }
 
+// The book's optimiser_covariance "carver" reaches the pass with the sleeve's ewma_sigma: 0 -> 5 on
+// a sigma of 0.25 is a one-contract risk of 0.05, which sets B_sigma (a = (0.25 - 0.05) / 0.25 =
+// 0.8, 4 stored); today the guarded 0.01 variance (no window) sets 0.02. The log names the rule.
+TEST_F(OnePassBookTest, TheOptimisersCovarianceOfTheConfigIsThePasss) {
+    PortfolioConfig pc = one_pass_config("A");
+    pc.optimiser_carver = true;
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    a_->rows["AAA"].ewma_sigma = 0.25;
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 4.0);
+    EXPECT_EQ(count_of(out, " b_sigma=0.05 "), 1u) << out;
+    EXPECT_EQ(count_of(out, "COVARIANCE_STRATEGY25 symbols=1/1 bars_per_year=256"), 1u) << out;
+}
+
 // Section 6.2: a symbol that signalled before and no longer signals is closed with one fill to
 // flat on a session bar, not walked down through the buffer.
 TEST_F(OnePassBookTest, ASymbolThatStopsSignallingIsClosedWithOneFill) {

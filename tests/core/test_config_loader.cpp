@@ -1385,6 +1385,35 @@ TEST_F(ConfigLoaderTest, TheWrongSignRuleIsOptionalAndNamed) {
     }
 }
 
+// optimiser_covariance, the same way: optional, "sample" or "carver", anything else refused.
+TEST_F(ConfigLoaderTest, TheOptimiserCovarianceIsOptionalAndNamed) {
+    write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().optimiser_covariance, "");
+    for (const char* value : {"sample", "carver"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["optimiser_covariance"] = value;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << value;
+        EXPECT_EQ(r.value().optimiser_covariance, value);
+    }
+    for (const nlohmann::json& bad : {nlohmann::json("Carver"), nlohmann::json("ewma"),
+                                      nlohmann::json(nullptr)}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["optimiser_covariance"] = bad;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what())
+                      .find("optimization.optimiser_covariance must be one of \"sample\", "
+                            "\"carver\""),
+                  std::string::npos)
+            << r.error()->what();
+    }
+}
+
 // LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
 // is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
 // optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.

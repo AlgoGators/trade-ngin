@@ -124,6 +124,17 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
         EXPECT_EQ(pc.to_json().at("opt_config").at("wrong_sign_rule").get<std::string>(), "buffer");
         EXPECT_FALSE(runner_config(loaded.value(), "TREND_FOLLOWING", 0.20).wrong_sign_buffer);
     }
+    // optimiser_covariance: "sample" (the template's) is not recorded, "carver" is.
+    EXPECT_FALSE(j.at("opt_config").contains("optimiser_covariance"));
+    {
+        AppConfig app = loaded.value();
+        app.optimiser_covariance = "carver";
+        const PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_TRUE(pc.optimiser_carver);
+        EXPECT_EQ(pc.to_json().at("opt_config").at("optimiser_covariance").get<std::string>(),
+                  "carver");
+        EXPECT_FALSE(runner_config(loaded.value(), "TREND_FOLLOWING", 0.20).optimiser_carver);
+    }
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);

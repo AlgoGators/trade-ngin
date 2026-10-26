@@ -218,7 +218,12 @@ inline KeptLines kept_lines(const std::vector<std::string>& symbols, const DayIn
         estimated += filled ? 0 : 1;
         if (!filled) continue;
         const std::string& symbol = symbols[r.free_rows[a]];
-        if (a < r.stale.size() && r.stale[a]) {
+        if (r.covariance.carver) {
+            out.warn.push_back("COVARIANCE_NO_SIGMA symbol=" + symbol +
+                               ": no 32-day standard deviation from its sleeve for strategy 25's "
+                               "covariance; its column is the guarded 0.01 variance with zero "
+                               "covariances");
+        } else if (a < r.stale.size() && r.stale[a]) {
             out.warn.push_back("COVARIANCE_STALE_PARTICIPANT symbol=" + symbol +
                                ": its last close trails the newest by more than five union dates; "
                                "left out of the optimiser's date intersection; its column is the "
@@ -230,8 +235,10 @@ inline KeptLines kept_lines(const std::vector<std::string>& symbols, const DayIn
                                "covariances");
         }
     }
-    out.info.push_back("COVARIANCE_DATE_ALIGNED symbols=" + std::to_string(estimated) + "/" +
-                       std::to_string(f) + " bars_per_year=" + num(r.covariance.bars_per_year) +
+    out.info.push_back(std::string(r.covariance.carver ? "COVARIANCE_STRATEGY25"
+                                                       : "COVARIANCE_DATE_ALIGNED") +
+                       " symbols=" + std::to_string(estimated) + "/" + std::to_string(f) +
+                       " bars_per_year=" + num(r.covariance.bars_per_year) +
                        " left_out=" + std::to_string(static_cast<long>(f) - estimated));
     {
         double best = -1.0;
