@@ -708,7 +708,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     ruled_forecast = instrument_data.blend.forecast;
                     slow_rule_zeroed = trend_part != estimate.mean_scaled;
                     instrument_data.current_scaled_forecast = ruled_forecast;
-                    if (ruled_symbol && ruled_forecast < 0.0 && !(trend_part < 0.0)) {
+                    // Counted on the bars the book can trade only (the bars the carry record is
+                    // written for): a listing pair's untraded side computes every bar too.
+                    if (tradeable && ruled_symbol && ruled_forecast < 0.0 && !(trend_part < 0.0)) {
                         ++carry_driven_shorts_[symbol];
                     }
                 }

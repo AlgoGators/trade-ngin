@@ -16,6 +16,7 @@
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 
 #define private public
@@ -367,10 +368,10 @@ TEST(CarryStrategy, TheRunReportsItsCarryDrivenEquityShorts) {
     auto on = std::make_shared<Sleeve>("CARRY_line_on", 0.4, std::vector<std::string>{kSym});
     on->forecast(bars);
     std::shared_ptr<StrategyInterface> on_ptr(on, on->strategy.get());
-    EXPECT_EQ(carry_driven_shorts_line({on_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS symbols=1 rows=1 names=[TSTCARRY:1]");
+    EXPECT_EQ(carry_driven_shorts_line({on_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS tradeable_bars symbols=1 rows=1 names=[TSTCARRY:1]");
     auto none = std::make_shared<Sleeve>("CARRY_line_none", 0.4);
     std::shared_ptr<StrategyInterface> none_ptr(none, none->strategy.get());
-    EXPECT_EQ(carry_driven_shorts_line({none_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS symbols=0 rows=0 names=[-]");
+    EXPECT_EQ(carry_driven_shorts_line({none_ptr}), "CARRY_DRIVEN_EQUITY_SHORTS tradeable_bars symbols=0 rows=0 names=[-]");
 
     std::filesystem::path root = std::filesystem::current_path();
     while (!(std::filesystem::exists(root / "CMakeLists.txt") && std::filesystem::exists(root / "config_template"))) {
@@ -389,4 +390,24 @@ TEST(CarryStrategy, TheRunReportsItsCarryDrivenEquityShorts) {
         EXPECT_LT(short_line, carry_line) << runner;
         EXPECT_LT(carry_line - short_line, 200u) << runner << ": printed beside the short-window line";
     }
+}
+
+// Only tradeable bars count (fix round 1, audits B and C): a contract outside its tradeable window
+// (listed after these bars) computes its forecast on every bar but none of its shorts is counted.
+TEST(CarryStrategy, OnlyTradeableBarsCountAsCarryDrivenShorts) {
+    StateManager::reset_instance();
+    const auto bars = path(700, 670, 0.0015, 0.0080, -0.0008);
+    ListingDates::instance().set({{kSym, "TSTOLD", "2015-01-05", 10.0}});
+    {
+        Sleeve unlisted("CARRY_count_unlisted", 0.4, {kSym});
+        unlisted.forecast(bars);
+        EXPECT_TRUE(unlisted.data().carry_used) << "the forecast is still computed";
+        EXPECT_TRUE(unlisted.strategy->carry_driven_shorts().empty())
+            << "no tradeable bar, no carry-driven short counted";
+    }
+    ListingDates::instance().clear();
+    Sleeve listed("CARRY_count_listed", 0.4, {kSym});
+    listed.forecast(bars);
+    ASSERT_EQ(listed.strategy->carry_driven_shorts().count(kSym), 1u);
+    EXPECT_EQ(listed.strategy->carry_driven_shorts().at(kSym), 1u);
 }

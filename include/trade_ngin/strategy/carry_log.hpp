@@ -15,10 +15,10 @@
 
 namespace trade_ngin {
 
-/// "CARRY_DRIVEN_EQUITY_SHORTS symbols=<n> rows=<r> names=[<symbol>:<rows> ...]": per symbol, the signal
-/// bars of this run on which a carry-on sleeve's blended forecast of a ruled equity was short while its
-/// trend part was not (the largest count among the sleeves), and their total; "names=[-]" when there is
-/// none. Empty when no sleeve has carry on.
+/// "CARRY_DRIVEN_EQUITY_SHORTS tradeable_bars symbols=<n> rows=<r> names=[<symbol>:<rows> ...]": per
+/// symbol, the tradeable signal bars of this run on which a carry-on sleeve's blended forecast of a ruled
+/// equity was short while its trend part was not (the largest count among the sleeves), and their
+/// total; "names=[-]" when there is none. Empty when no sleeve has carry on.
 inline std::string carry_driven_shorts_line(
     const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
     bool carry = false;
@@ -38,7 +38,7 @@ inline std::string carry_driven_shorts_line(
         total += n;
         names += (names.empty() ? "" : " ") + symbol + ":" + std::to_string(n);
     }
-    return "CARRY_DRIVEN_EQUITY_SHORTS symbols=" + std::to_string(rows.size()) +
+    return "CARRY_DRIVEN_EQUITY_SHORTS tradeable_bars symbols=" + std::to_string(rows.size()) +
            " rows=" + std::to_string(total) + " names=[" + (names.empty() ? std::string("-") : names) + "]";
 }
 

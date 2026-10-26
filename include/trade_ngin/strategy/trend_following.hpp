@@ -322,9 +322,10 @@ private:
     /// Per symbol, the bars of this run sized on an estimator window shorter than
     /// trend_estimator::kWindowBars (LOOP_SPEC section 1: flagged and counted).
     std::map<std::string, std::size_t> short_window_rows_;
-    /// Carry (trade-ngin #185): per symbol, the signal bars of this run on which an equity symbol
-    /// the slow rule names went short on the blend while its trend part alone was not short (HD's
-    /// Q1: carry-driven equity shorts are allowed, counted and reported).
+    /// Carry (trade-ngin #185): per symbol, the TRADEABLE signal bars of this run on which an equity
+    /// symbol the slow rule names went short on the blend while its trend part alone was not short
+    /// (HD's Q1: carry-driven equity shorts are allowed, counted and reported). A bar outside the
+    /// symbol's tradeable window (listing dates) is not counted.
     std::map<std::string, std::size_t> carry_driven_shorts_;
 
     // Previous day positions for PnL calculation
