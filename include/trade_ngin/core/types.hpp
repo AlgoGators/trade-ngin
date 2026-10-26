@@ -381,6 +381,31 @@ struct RollFrom {
 };
 
 /**
+ * @brief Carry (trade-ngin #185): the close of the held contract and of its neighbouring contract on
+ *        the same date, both real contract closes, never the adjusted series.
+ *
+ * The neighbour is the NEARER contract of the root's roll cycle when one is alive on the date, else
+ * (the held contract is the front) the FURTHER one (contract_rolls::carry_quote). `months` is the
+ * neighbour's delivery month less the held contract's: negative for the nearer one, positive for the
+ * further one, never 0. Raw carry is other_close - held_close for a nearer neighbour and
+ * held_close - other_close for a further one (carry_estimator.hpp). Set by the per-contract source
+ * only when carry is on (per_contract_source.hpp); absent on every other bar, and on any date the
+ * held contract or its neighbour has no row of its own.
+ */
+struct CarryQuote {
+    double held_close{0.0};
+    double other_close{0.0};
+    int months{0};
+    std::string held_symbol;   ///< "CLZ2"
+    std::string other_symbol;  ///< "CLX2"
+
+    bool operator==(const CarryQuote& o) const {
+        return held_close == o.held_close && other_close == o.other_close && months == o.months &&
+               held_symbol == o.held_symbol && other_symbol == o.other_symbol;
+    }
+};
+
+/**
  * @brief Market data bar structure
  * Represents OHLCV data for any timeframe.
  *
