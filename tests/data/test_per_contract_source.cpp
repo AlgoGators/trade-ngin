@@ -1050,3 +1050,67 @@ TEST(PerContractSourceCarry, CarryNeedsThePerContractSourceAndTheSwitchSetsTheQu
         setenv("TRADE_NGIN_FUTURES_HOLIDAYS_JSON", saved.c_str(), 1);
     }
 }
+
+// Carry (fix round 1, audit A S1): the one production path that puts quotes on bars, the loader's own
+// call (get_market_data -> per_contract_bars -> attach_carry_quotes -> the five Arrow columns ->
+// Bar::carry), on the clone. Each quote's two closes are the contract table's own rows of the bar's date,
+// the pair moves on GC's crossover bar of 2026-07-29, and with the quotes off the table is today's.
+TEST_F(PerContractSourceDbTest, TheLoadersOwnCallHandsOutCarryQuotesOnlyWithCarryOn) {
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, true);
+    const auto quoted = load({"GC.v.0", "ZN.v.0"}, "2026-07-01", "2026-08-31");
+    ASSERT_FALSE(quoted.empty());
+    pqxx::connection c(contract_rolls_test::dsn());
+    pqxx::read_transaction t(c);
+    auto close_of = [&](const std::string& raw, const std::string& date) {
+        auto r = t.exec("SELECT close FROM futures_data.contract_ohlcv_1d WHERE raw_symbol = $1 AND date = $2 "
+                        "AND expiration > $2::date - 400",
+                        pqxx::params{raw, date});
+        EXPECT_EQ(r.size(), 1u) << raw << " " << date;
+        return r.empty() ? -1.0 : r[0][0].as<double>();
+    };
+    std::map<std::string, int> with_quote, bars;
+    for (const auto& b : quoted) {
+        ++bars[b.symbol];
+        if (!b.carry) continue;
+        ++with_quote[b.symbol];
+        const std::string date = core::format_utc_date(b.timestamp);
+        EXPECT_NE(b.carry->months, 0) << b.symbol << " " << date;
+        EXPECT_EQ(b.carry->held_close, close_of(b.carry->held_symbol, date)) << b.symbol << " " << date;
+        EXPECT_EQ(b.carry->other_close, close_of(b.carry->other_symbol, date)) << b.symbol << " " << date;
+        if (b.symbol == "GC.v.0") {
+            // GC's cycle G J M Q Z: before the 07-29 crossover Q6 is held, the front, against Z6;
+            // from it Z6 is held against the nearer Q6 while Q6 is alive (it expires 08-27); after
+            // that Z6 is the front, against the further G7
+            const std::string held = date < "2026-07-29" ? "GCQ6" : "GCZ6";
+            const std::string other = date < "2026-07-29" ? "GCZ6" : date <= "2026-08-27" ? "GCQ6" : "GCG7";
+            const int months = date < "2026-07-29" ? 4 : date <= "2026-08-27" ? -4 : 2;
+            EXPECT_EQ(b.carry->held_symbol, held) << date;
+            EXPECT_EQ(b.carry->other_symbol, other) << date;
+            EXPECT_EQ(b.carry->months, months) << date;
+        }
+    }
+    for (const char* s : {"GC.v.0", "ZN.v.0"}) {
+        ASSERT_GT(bars[s], 30) << s;
+        EXPECT_GT(with_quote[s], bars[s] * 3 / 4) << s << ": most bars carry a quote";
+    }
+    // Carry off: the same call hands out no quote and the table is the twelve columns of today.
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, false);
+    const auto plain = load({"GC.v.0", "ZN.v.0"}, "2026-07-01", "2026-08-31");
+    ASSERT_EQ(plain.size(), quoted.size());
+    for (size_t i = 0; i < plain.size(); ++i) {
+        EXPECT_FALSE(plain[i].carry.has_value());
+        EXPECT_EQ(plain[i].close, quoted[i].close);
+        EXPECT_EQ(plain[i].instrument_id, quoted[i].instrument_id);
+        EXPECT_EQ(plain[i].roll_from, quoted[i].roll_from);
+    }
+    const auto ts = [](const std::string& s) {
+        return std::chrono::system_clock::time_point(std::chrono::sys_days(d(s)));
+    };
+    auto table = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
+    ASSERT_TRUE(table.is_ok());
+    EXPECT_EQ(table.value()->num_columns(), 12);
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, true);
+    auto table_on = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
+    ASSERT_TRUE(table_on.is_ok());
+    EXPECT_EQ(table_on.value()->num_columns(), 17);
+}
