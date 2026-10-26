@@ -152,7 +152,8 @@ int main() {
         // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
         // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
         if (auto source = contract_rolls::configure_per_contract_source(
-                app_config.per_contract_rolls, app_config.per_contract_switch_bar);
+                app_config.per_contract_rolls, app_config.per_contract_switch_bar,
+                app_config.carry.enabled());
             source.is_error()) {
             std::cerr << source.error()->what() << std::endl;
             ERROR(source.error()->what());
@@ -428,6 +429,8 @@ int main() {
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
                     // Trading rules removed by cost (no value changes without the block).
                     trade_ngin::hand_over_trading_rule_removals(app_config, trend_config);
+                    // Carry (trade-ngin #185; weight 0 or the block absent: no value changes).
+                    trade_ngin::hand_over_carry(app_config, trend_config);
                     // The first sleeve's own series and its risk target feed the risk overlay
                     // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
                     portfolio_config.overlay_sleeve = strategy_id;

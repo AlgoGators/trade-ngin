@@ -276,6 +276,7 @@ set(TEST_SOURCES
     strategy/test_fast_sleeve_configuration.cpp
     strategy/test_trend_estimator.cpp
     strategy/test_carry_estimator.cpp
+    strategy/test_carry_strategy.cpp
     strategy/test_trend_history_seed.cpp
     strategy/test_equity_slow_rule.cpp
     strategy/test_mean_reversion_backtest.cpp

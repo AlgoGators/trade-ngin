@@ -47,6 +47,15 @@ struct TrendFollowingConfig {
     // removed from a ruled symbol: anything else is refused when the sleeve is built. Empty: every
     // contract runs every pair. The runner sets it from portfolio.json's trading_rule_removals.
     std::map<std::string, std::vector<std::pair<int, int>>> rule_removals;
+    // Carry (trade-ngin #185; Carver, strategies ten and eleven): the carry style's weight in the
+    // blend (0 is off: every value is today's), its spans and its forecast scalar. With weight above
+    // 0 an instrument whose window holds a carry quote trades FDM x ((1 - weight) x its trend average
+    // + weight x its carry average), capped at 20, the FDM table 52's for its number of rules
+    // (carry_estimator.hpp); an instrument with no quote yet trades its trend forecast alone. The
+    // runner sets them on the book's first sleeve from portfolio.json's carry block.
+    double carry_weight{0.0};
+    std::vector<int> carry_spans{5, 20, 60, 120};
+    double carry_scalar{30.0};
 };
 
 /**

@@ -1,5 +1,6 @@
 // src/strategy/trend_following.cpp
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/carry_estimator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
@@ -142,6 +143,45 @@ Result<void> TrendFollowingStrategy::validate_trend_config(
                                   ") is read by the equity slow rule on this symbol and cannot "
                                   "be removed");
                 }
+            }
+        }
+    }
+
+    // Carry (trade-ngin #185): a weight from 0 to 1; with carry on, spans fastest first, a positive
+    // scalar, and table 52 printing a multiplier for every number of rules a contract can keep.
+    if (!(trend_config.carry_weight >= 0.0 && trend_config.carry_weight <= 1.0)) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "The carry weight must be from 0 to 1", "TrendFollowingStrategy");
+    }
+    if (trend_config.carry_weight > 0.0) {
+        if (trend_config.carry_spans.empty() || !(trend_config.carry_scalar > 0.0)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Carry is on with no span or with a scalar that is not positive",
+                                    "TrendFollowingStrategy");
+        }
+        for (std::size_t k = 0; k < trend_config.carry_spans.size(); ++k) {
+            if (trend_config.carry_spans[k] <= 0 ||
+                (k > 0 && trend_config.carry_spans[k] <= trend_config.carry_spans[k - 1])) {
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                        "The carry spans must be positive, fastest first",
+                                        "TrendFollowingStrategy");
+            }
+        }
+        std::vector<std::size_t> trend_counts{trend_config.ema_windows.size()};
+        for (const auto& [removal_symbol, removed] : trend_config.rule_removals) {
+            trend_counts.push_back(
+                trend_estimator::pairs_after_removal(trend_config.ema_windows, removed).size());
+        }
+        for (std::size_t trend_rules : trend_counts) {
+            const auto blended = carry_estimator::blend(
+                0.0, static_cast<int>(trend_rules), 0.0,
+                static_cast<int>(trend_config.carry_spans.size()), trend_config.carry_weight);
+            if (!(blended.fdm > 0.0)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Carry is on and table 52 prints no multiplier for " +
+                        std::to_string(blended.rules) + " trading rules",
+                    "TrendFollowingStrategy");
             }
         }
     }

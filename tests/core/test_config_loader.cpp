@@ -1794,3 +1794,79 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateCarriesTheTradingRuleRemovals) {
     ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
     EXPECT_TRUE(base.value().trading_rule_removals.empty());
 }
+
+// portfolio.json's optional "carry" block (trade-ngin #185): absent or weight 0 is carry off;
+// present it is parsed strictly, and with weight above 0 only a book of one trend sleeve may carry it.
+TEST_F(ConfigLoaderTest, CarryAbsentIsOffAndTheBlockIsReadAsWritten) {
+    write_full_set("base");
+    auto absent = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(absent.is_ok()) << (absent.error() ? absent.error()->what() : "");
+    EXPECT_FALSE(absent.value().carry.present);
+    EXPECT_FALSE(absent.value().carry.enabled());
+
+    write_full_set("base", nlohmann::json::object(),
+                   {{"strategies", one_trend_sleeve()},
+                    {"carry", {{"weight", 0.4}, {"spans", {5, 20, 60, 120}}, {"scalar", 30}, {"_note", "x"}}},
+                    {"_carry_note", "a note beside the block is not a misspelt block"}});
+    auto on = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(on.is_ok()) << (on.error() ? on.error()->what() : "");
+    EXPECT_TRUE(on.value().carry.enabled());
+    EXPECT_EQ(on.value().carry.weight, 0.4);
+    EXPECT_EQ(on.value().carry.spans, (std::vector<int>{5, 20, 60, 120}));
+    EXPECT_EQ(on.value().carry.scalar, 30.0);
+
+    // weight 0 is present and off, and needs no particular book
+    nlohmann::json two = one_trend_sleeve();
+    two["TREND_FOLLOWING_FAST"] = {{"enabled_backtest", true}, {"type", "TrendFollowingFastStrategy"}};
+    write_full_set("base", nlohmann::json::object(), {{"strategies", two}, {"carry", {{"weight", 0.0}}}});
+    auto off = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(off.is_ok()) << (off.error() ? off.error()->what() : "");
+    EXPECT_TRUE(off.value().carry.present);
+    EXPECT_FALSE(off.value().carry.enabled());
+    EXPECT_EQ(off.value().carry.spans, (std::vector<int>{5, 20, 60, 120})) << "Carver's spans by default";
+}
+
+TEST_F(ConfigLoaderTest, AMalformedCarryBlockIsRefused) {
+    auto refused = [&](const nlohmann::json& portfolio, const std::string& named) {
+        nlohmann::json with_sleeve = portfolio;
+        if (!with_sleeve.contains("strategies")) with_sleeve["strategies"] = one_trend_sleeve();
+        write_full_set("base", nlohmann::json::object(), with_sleeve);
+        auto r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << portfolio.dump();
+        EXPECT_NE(std::string(r.error()->what()).find(named), std::string::npos) << r.error()->what();
+    };
+    refused({{"carry", 0.4}}, "must be an object");
+    refused({{"carry", {{"spans", {5}}}}}, "needs a weight from 0 to 1");
+    refused({{"carry", {{"weight", 1.5}}}}, "needs a weight from 0 to 1");
+    refused({{"carry", {{"weight", -0.1}}}}, "needs a weight from 0 to 1");
+    refused({{"carry", {{"weight", "0.4"}}}}, "needs a weight from 0 to 1");
+    refused({{"carry", {{"weight", 0.4}, {"spans", nlohmann::json::array()}}}}, "non-empty list of spans");
+    refused({{"carry", {{"weight", 0.4}, {"spans", {20, 5}}}}}, "fastest first");
+    refused({{"carry", {{"weight", 0.4}, {"spans", {5, 5}}}}}, "fastest first");
+    refused({{"carry", {{"weight", 0.4}, {"spans", {0, 5}}}}}, "fastest first");
+    refused({{"carry", {{"weight", 0.4}, {"spans", {5.5}}}}}, "fastest first");
+    refused({{"carry", {{"weight", 0.4}, {"scalar", 0}}}}, "positive scalar");
+    refused({{"carry", {{"weight", 0.4}, {"wieght", 0.4}}}}, "unknown key \"wieght\"");
+    // a misspelt block is an absent block: carry would silently be off
+    refused({{"carry_rules", {{"weight", 0.4}}}}, "\"carry_rules\"");
+    // carry on joins ONE trend sleeve
+    nlohmann::json two = one_trend_sleeve();
+    two["TREND_FOLLOWING_FAST"] = {{"enabled_backtest", true}, {"type", "TrendFollowingFastStrategy"}};
+    refused({{"strategies", two}, {"carry", {{"weight", 0.4}}}},
+            "exactly one enabled TrendFollowingStrategy sleeve; this book enables 2");
+}
+
+// The shipped templates carry the block at weight 0: carry is off and the book is today's.
+TEST_F(ConfigLoaderTest, TheTemplatesShipWithCarryOff) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    for (const char* book : {"conservative", "base"}) {
+        auto loaded = ConfigLoader::load(tmpl, book);
+        ASSERT_TRUE(loaded.is_ok()) << book << ": " << (loaded.is_error() ? loaded.error()->what() : "");
+        EXPECT_TRUE(loaded.value().carry.present) << book;
+        EXPECT_EQ(loaded.value().carry.weight, 0.0) << book;
+        EXPECT_FALSE(loaded.value().carry.enabled()) << book;
+        EXPECT_EQ(loaded.value().carry.spans, (std::vector<int>{5, 20, 60, 120})) << book;
+        EXPECT_EQ(loaded.value().carry.scalar, 30.0) << book;
+    }
+}

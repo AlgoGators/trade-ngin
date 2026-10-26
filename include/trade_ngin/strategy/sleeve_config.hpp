@@ -59,4 +59,18 @@ inline void hand_over_trading_rule_removals(const AppConfig& app_config, TrendFo
     out.rule_removals = app_config.trading_rule_removals;
 }
 
+/// The hand-over of portfolio.json's carry block (trade-ngin #185) to the book's first sleeve, the
+/// one place it crosses from the loader to a sleeve, called by every futures runner next to
+/// hand_over_trading_rule_removals. Carry off (the block absent, or weight 0) hands over weight 0
+/// and the sleeve is today's.
+inline void hand_over_carry(const AppConfig& app_config, TrendFollowingConfig& out) {
+    if (!app_config.carry.enabled()) {
+        out.carry_weight = 0.0;
+        return;
+    }
+    out.carry_weight = app_config.carry.weight;
+    out.carry_spans = app_config.carry.spans;
+    out.carry_scalar = app_config.carry.scalar;
+}
+
 }  // namespace trade_ngin

@@ -336,6 +336,25 @@ struct EquitySlowRule {
     std::vector<std::pair<int, int>> pairs;
 };
 
+/**
+ * @brief portfolio.json's optional top-level carry block (trade-ngin #185; Carver, strategy eleven):
+ *        the carry rules of the book's first sleeve, blended with its trend rules into one forecast.
+ *
+ *   "carry": {"weight": 0.4, "spans": [5, 20, 60, 120], "scalar": 30}
+ *
+ * `weight` is the carry style's share of the forecast weights (table 51: 0.4, trend 0.6), in [0, 1];
+ * `spans` the smoothing spans in business days, fastest first; `scalar` the forecast scalar. Absent,
+ * or with weight 0, carry is off and the strategy is today's to the last stored digit. With weight
+ * above 0 the book must be one enabled TrendFollowingStrategy sleeve and per_contract_rolls on.
+ */
+struct CarryConfig {
+    bool present{false};
+    double weight{0.0};
+    std::vector<int> spans{5, 20, 60, 120};
+    double scalar{30.0};
+    bool enabled() const { return present && weight > 0.0; }
+};
+
 struct AppConfig {
     // Portfolio identification
     std::string portfolio_id;
@@ -418,6 +437,10 @@ struct AppConfig {
     // Absent means empty, and an empty map changes nothing anywhere. A book of more than one
     // enabled sleeve, or whose sleeve is not a TrendFollowingStrategy, is refused with the block.
     std::map<std::string, std::vector<std::pair<int, int>>> trading_rule_removals;
+
+    // portfolio.json's optional top-level carry block (CarryConfig); not in to_json(), so the stored
+    // run metadata does not change while it is off.
+    CarryConfig carry;
 
     // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
     // D19); both required on a futures book. The one mode is "half_compounding": the book is sized
