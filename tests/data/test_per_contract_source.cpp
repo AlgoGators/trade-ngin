@@ -351,15 +351,13 @@ TEST(PerContractSource, AFallbackRollsWarnIsLoggedFromTheFloorAndOnce) {
     source.disable();
 }
 
-TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVendorsSeries) {
+TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOff) {
     auto& source = PerContractSource::instance();
     source.disable();
     EXPECT_FALSE(source.enabled());
     source.enable(contract_rolls_test::shipped_calendars());
     EXPECT_TRUE(source.enabled());
     EXPECT_TRUE(source.calendar().for_root("GC").is_ok());
-    EXPECT_TRUE(source.first_micros_warning());
-    EXPECT_FALSE(source.first_micros_warning());
     source.disable();
     EXPECT_FALSE(source.enabled());
     EXPECT_TRUE(configure_per_contract_source(false).is_ok());
@@ -374,11 +372,6 @@ TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOffAndTheMicrosStayOnTheVend
     EXPECT_FALSE(switch_bar_from("Vendor").has_value());
     EXPECT_STREQ(to_string(SwitchBar::VENDOR), "vendor");
     EXPECT_STREQ(to_string(SwitchBar::HELD), "held");
-    for (const char* micro : {"MES", "MNQ", "MYM", "M2K"}) {
-        EXPECT_TRUE(reads_vendor_series(micro));
-        EXPECT_NE(micros_warning_line().find(micro), std::string::npos) << "the WARN names " << micro;
-    }
-    for (const char* root : {"GC", "ES", "ZN", "MBT"}) EXPECT_FALSE(reads_vendor_series(root));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -413,7 +406,12 @@ std::vector<SourceBar> every_kind() {
                        RollFrom{2027.0, "q", RollFromKind::KNOWN, "2026-07-27"}),
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
                        RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
-            source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, "")};
+            source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, ""),
+            // R6: the micros' change of price source, and a bar after it
+            source_bar("MES.v.0", "2026-02-23 00:00:00+00", 6857.25, "m",
+                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"}),
+            source_bar("MES.v.0", "2026-02-24 00:00:00+00", 6904.25, "m",
+                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"})};
 }
 
 /// `table` with column `name` replaced by `column`.
@@ -429,14 +427,15 @@ std::shared_ptr<arrow::Table> with_column(const std::shared_ptr<arrow::Table>& t
 
 }  // namespace
 
-TEST(PerContractSourceLoader, TheSymbolsSplitIntoTheRuleAndTheVendorsSeriesAndAnyOtherIsRefused) {
-    auto split = split_source_symbols({"GC.v.0", "MES.v.0", "ZN.v.0", "M2K.v.0"});
-    ASSERT_TRUE(split.is_ok()) << split.error()->what();
-    EXPECT_EQ(split.value().roots, (std::vector<std::string>{"GC", "ZN"}));
-    EXPECT_EQ(split.value().vendor_symbols, (std::vector<std::string>{"MES.v.0", "M2K.v.0"}));
-    EXPECT_TRUE(split_source_symbols({}).value().roots.empty());
+// R6: the rule serves every root asked for, the four micros too (no root is left on the vendor's
+// series); any other symbol is refused.
+TEST(PerContractSourceLoader, EveryRootIsTheRulesTheMicrosIncludedAndAnyOtherSymbolIsRefused) {
+    auto roots = source_roots({"GC.v.0", "MES.v.0", "ZN.v.0", "M2K.v.0", "MNQ.v.0", "MYM.v.0"});
+    ASSERT_TRUE(roots.is_ok()) << roots.error()->what();
+    EXPECT_EQ(roots.value(), (std::vector<std::string>{"GC", "MES", "ZN", "M2K", "MNQ", "MYM"}));
+    EXPECT_TRUE(source_roots({}).value().empty());
     for (const char* bad : {"GC", "GC.v.1", ".v.0", "GCQ6"}) {
-        auto r = split_source_symbols({"GC.v.0", bad});
+        auto r = source_roots({"GC.v.0", bad});
         ASSERT_TRUE(r.is_error()) << bad;
         EXPECT_NE(std::string(r.error()->what()).find(bad), std::string::npos) << bad;
     }
@@ -494,6 +493,8 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     EXPECT_EQ(bars.value()[2].roll_from->kind, RollFromKind::KNOWN);
     EXPECT_EQ(bars.value()[3].roll_from->kind, RollFromKind::AFTER_ROLL);
     EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
+    EXPECT_EQ(bars.value()[5].roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(bars.value()[6].roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
     // An empty source is an empty table of the same twelve columns.
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
@@ -519,8 +520,8 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         arrow::Int8Builder kinds;
         for (int64_t i = 0; i < table->num_rows(); ++i) {
             if (i == 2) {
-                // 4: past AWAITS_NEXT_VENDOR (3), the last kind (rolls step 4)
-                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(4)).ok());
+                // 6: past AFTER_SOURCE_CHANGE (5), the last kind (R6)
+                ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(6)).ok());
             } else {
                 ASSERT_TRUE(kinds.Append(0).ok());
             }
@@ -529,7 +530,7 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         ASSERT_TRUE(kinds.Finish(&column).ok());
         auto r =
             DataConversionUtils::arrow_table_to_bars(with_column(table, "roll_from_kind", column));
-        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 4");
+        ASSERT_TRUE(r.is_error()) << (null_kind ? "NULL kind" : "kind 6");
     }
 }
 
@@ -664,7 +665,7 @@ TEST_F(PerContractSourceDbTest, TheGcExampleOnTheLoadersOwnCall) {
     int rolls = 0;
     for (const auto& b : ours) {
         if (b.symbol == "MES.v.0") {
-            // the micros stay on the vendor's bars
+            // R6: MES is read by the rule too; it holds MESU6 all window, the vendor's contract
             const Bar* vb = v.at(key_of(b));
             EXPECT_EQ(b.close, vb->close);
             EXPECT_EQ(b.instrument_id, vb->instrument_id);
@@ -845,4 +846,67 @@ TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
         EXPECT_EQ(v.roll_from->date, "2025-01-15");
     }
     EXPECT_EQ(switch_bars, 1);
+}
+
+// R6 (plan 10b point 5): the micros read the rule through the loader's own call. Before the
+// vendor's 2026-02-22 change MES.v.0 is the ES contract the rule holds, on Sunday 02-22 too (ESH6's
+// own bar, where the vendor names MESH6); Monday 02-23 is the one roll into MESH6, known on its bar,
+// the field ESH6's close and id; after it the field carries ESH6 while it prints. In the listing-date
+// era (2019) the bars are ES contracts, the vendor's. The series starts where the vendor's does.
+TEST_F(PerContractSourceDbTest, TheMicrosReadTheFullSizeContractsUntilTheChangeAndRollOnceAcrossIt) {
+    {
+        pqxx::connection c(contract_rolls_test::dsn());
+        pqxx::read_transaction t(c);
+        if (t.exec("SELECT count(*) FROM futures_data.contract_ohlcv_1d WHERE root = 'ES' AND "
+                   "date = '2026-02-23'")[0][0]
+                .as<int64_t>() == 0) {
+            GTEST_SKIP() << "ES contract bars are not loaded on this database";
+        }
+        for (const auto& [root, first] : {std::pair<std::string, std::string>{"MES", "2010-06-07"},
+                                          {"M2K", "2017-07-09"}}) {
+            auto start = series_start(t, root);
+            ASSERT_TRUE(start.is_ok()) << start.error()->what();
+            const auto vendor_first = t.exec("SELECT min((time AT TIME ZONE 'UTC')::date)::text FROM "
+                                             "futures_data.ohlcv_1d WHERE symbol = $1",
+                                             pqxx::params{root + ".v.0"})[0][0]
+                                          .as<std::string>();
+            EXPECT_EQ(ymd(start.value()), vendor_first) << root << ": the series starts where the vendor's does";
+            EXPECT_EQ(vendor_first, first) << root;
+        }
+    }
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars());
+    const auto ours = load({"MES.v.0"}, "2026-02-18", "2026-02-26");
+    std::map<std::string, const Bar*> on;
+    for (const auto& b : ours) on[core::format_utc_date(b.timestamp)] = &b;
+    ASSERT_EQ(on.size(), 8u);
+    for (const char* day : {"2026-02-18", "2026-02-19", "2026-02-20", "2026-02-22"}) {
+        EXPECT_EQ(on.at(day)->instrument_id, "42140878") << day << ": ESH6";
+        EXPECT_FALSE(on.at(day)->roll_from.has_value()) << day;
+    }
+    EXPECT_DOUBLE_EQ(static_cast<double>(on.at("2026-02-22")->close), 6906.25) << "ESH6's own Sunday bar";
+    const Bar& change = *on.at("2026-02-23");
+    EXPECT_EQ(change.instrument_id, "42003800") << "MESH6";
+    EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 6857.25);
+    ASSERT_TRUE(change.roll_from.has_value());
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "HD 2026-10-26: no trade";
+    EXPECT_EQ(change.roll_from->instrument_id, "42140878");
+    EXPECT_DOUBLE_EQ(change.roll_from->close, 6857.25);
+    EXPECT_EQ(change.roll_from->date, "2026-02-23");
+    const Bar& after = *on.at("2026-02-24");
+    EXPECT_EQ(after.instrument_id, "42003800");
+    ASSERT_TRUE(after.roll_from.has_value());
+    EXPECT_EQ(after.roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
+    EXPECT_EQ(after.roll_from->instrument_id, "42140878");
+    EXPECT_EQ(after.roll_from->date, "2026-02-23");
+    // 2019, around the micros' listing: the ES contract the vendor names, its close.
+    PerContractSource::instance().disable();
+    const auto vendor = load({"MES.v.0"}, "2019-04-29", "2019-05-10");
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars());
+    const auto listing = load({"MES.v.0"}, "2019-04-29", "2019-05-10");
+    ASSERT_EQ(listing.size(), vendor.size());
+    ASSERT_FALSE(listing.empty());
+    for (size_t i = 0; i < listing.size(); ++i) {
+        EXPECT_EQ(listing[i].close, vendor[i].close) << core::format_utc_date(listing[i].timestamp);
+        EXPECT_EQ(listing[i].instrument_id, vendor[i].instrument_id);
+    }
 }

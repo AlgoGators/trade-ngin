@@ -62,7 +62,6 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     ASSERT_EQ(view.outlook.count("SI"), 1u);
     const auto& si = view.outlook.at("SI");
     EXPECT_EQ(si.held, "SIZ5");
-    EXPECT_TRUE(si.rule_rolls);
     EXPECT_TRUE(si.in_window) << "the window opens 11-20";
     EXPECT_EQ(si.deadline, "2025-11-28");
     EXPECT_TRUE(si.first_notice);
@@ -70,7 +69,17 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     EXPECT_EQ(si.target, "SIH6");
     EXPECT_EQ(si.cycle, "HKNUZ");
     ASSERT_EQ(view.outlook.count("MES"), 1u);
-    EXPECT_FALSE(view.outlook.at("MES").rule_rolls) << "the micros stay on the vendor's series";
+    // R6: MES is the rule's too; before the 2026-02-22 change it holds ESZ5, printed as the micro's month.
+    const auto& mes = view.outlook.at("MES");
+    if (mes.held_symbol == "ESZ5") {
+        EXPECT_EQ(mes.held, "MESZ5");
+        EXPECT_EQ(mes.target, "MESH6");
+        EXPECT_EQ(mes.deadline, "2025-12-19");
+        EXPECT_EQ(mes.roll_by, "2025-12-18");
+        EXPECT_FALSE(mes.in_window) << "the window opens 12-12";
+    } else {
+        ADD_FAILURE() << "MES holds " << mes.held_symbol << " on 2025-11-21 (ES contract bars not loaded?)";
+    }
     ReportRollQuery early = q;
     early.date = "2025-11-19";
     early.held_symbols = {"SI.v.0"};
@@ -79,6 +88,37 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     ASSERT_EQ(before.outlook.count("SI"), 1u);
     EXPECT_FALSE(before.outlook.at("SI").in_window);
     EXPECT_TRUE(before.names.empty());
+}
+
+// R6: a micro's contracts before the 2026-02-22 change are the full-size root's. The book's id names ESZ5 on
+// Mon 2025-12-15, the bar the rule rolls into ESH6 on (the crossover): the cell names the book's contract in the
+// micro's format and no line is shown yet. Each roll's months are read from its own contracts: ESZ5 to ESH6 is
+// December to March, the alias roll ESH6 to MESH6 March to March.
+TEST_F(ReportRollViewDbTest, TheMicrosBookAndRollMonthsReadTheFullSizeContracts) {
+    pqxx::read_transaction t(*conn_);
+    if (t.exec("SELECT count(*) FROM futures_data.contract_ohlcv_1d WHERE root = 'ES' AND date = '2025-12-15'")[0][0]
+            .as<int64_t>() == 0) {
+        GTEST_SKIP() << "ES contract bars are not loaded on this database";
+    }
+    ReportRollQuery q;
+    q.date = "2025-12-15";
+    q.held_symbols = {"MES.v.0"};
+    q.held_ids = {{"MES.v.0", "294973"}};  // ESZ5
+    q.rolls = {{"EXEC_MES.v.0_20251215_RC", "MES.v.0", "294973", "42140878", "2025-12-15"}};
+    const auto view = report_roll_view(t, q, contract_rolls_test::shipped_calendars(), {});
+    ASSERT_EQ(view.outlook.count("MES"), 1u);
+    EXPECT_EQ(view.outlook.at("MES").held, "MESZ5") << "the book's ESZ5, not the rule's ESH6";
+    EXPECT_FALSE(view.outlook.at("MES").in_window);
+    EXPECT_EQ(view.names.at("EXEC_MES.v.0_20251215_RC").from_month, "December");
+    EXPECT_EQ(view.names.at("EXEC_MES.v.0_20251215_RC").to_month, "March");
+    ReportRollQuery alias;
+    alias.date = "2026-02-23";
+    alias.held_symbols = {"MES.v.0"};
+    alias.rolls = {{"EXEC_MES.v.0_20260223_RC", "MES.v.0", "42140878", "42003800", "2026-02-23"}};
+    const auto change = report_roll_view(t, alias, contract_rolls_test::shipped_calendars(), {});
+    EXPECT_EQ(change.names.at("EXEC_MES.v.0_20260223_RC").from_month, "March");
+    EXPECT_EQ(change.names.at("EXEC_MES.v.0_20260223_RC").to_month, "March");
+    EXPECT_EQ(change.outlook.at("MES").held, "MESH6");
 }
 
 TEST_F(ReportRollViewDbTest, TheBarSourceLogsTheRulesFallbacksFromItsFloorOnce) {

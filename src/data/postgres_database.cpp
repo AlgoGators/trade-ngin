@@ -1644,40 +1644,15 @@ Result<std::vector<contract_rolls::SourceBar>> PostgresDatabase::per_contract_so
                                         symbol_validation.error()->what(), "PostgresDatabase");
             }
         }
-        auto split = contract_rolls::split_source_symbols(wanted);
-        if (split.is_error()) {
-            return make_error<Bars>(split.error()->code(), split.error()->what(),
+        auto roots = contract_rolls::source_roots(wanted);
+        if (roots.is_error()) {
+            return make_error<Bars>(roots.error()->code(), roots.error()->what(),
                                     "PostgresDatabase");
         }
-        const std::vector<std::string>& vendor_symbols = split.value().vendor_symbols;
-        const std::vector<std::string>& roots = split.value().roots;
         Bars out;
-        if (!vendor_symbols.empty()) {
-            if (contract_rolls::PerContractSource::instance().first_micros_warning()) {
-                WARN(contract_rolls::micros_warning_line());
-            }
-            const pqxx::result vendor =
-                txn.exec(market_data_utils::build_futures_bar_query(full_table_name, true),
-                         pqxx::params{start_ts, end_ts, vendor_symbols});
-            for (const auto& row : vendor) {
-                contract_rolls::SourceBar b;
-                b.time_text = row["time"].as<std::string>();
-                b.date = contract_rolls::parse_ymd(b.time_text.substr(0, 10));
-                b.symbol = row["symbol"].as<std::string>();
-                b.open = row["open"].as<double>();
-                b.high = row["high"].as<double>();
-                b.low = row["low"].as<double>();
-                b.close = row["close"].as<double>();
-                b.volume = row["volume"].as<double>();
-                if (!row["instrument_id"].is_null()) {
-                    b.instrument_id = row["instrument_id"].as<std::string>();
-                }
-                out.push_back(std::move(b));
-            }
-        }
         const contract_rolls::FuturesCalendar calendars =
             contract_rolls::PerContractSource::instance().calendar();
-        for (const auto& root : roots) {
+        for (const auto& root : roots.value()) {
             auto bars = contract_rolls::per_contract_bars(
                 txn, root, start_ts, end_ts, calendars,
                 contract_rolls::PerContractSource::instance().switch_bar());

@@ -63,6 +63,9 @@ struct ConfirmedRoll {
     /// Rolls step 4 (ruling 18, migration 040): the held contract's move booked on the roll bar, in
     /// price points (RollTracker::Status::roll_bar_points); nullopt on a roll of the vendor's series.
     std::optional<double> roll_bar_points;
+    /// R6 (HD 2026-10-26): a micro's change of price source (RollTracker::Status::price_source_change):
+    /// the runner books no legs and no cost for it, only a PRICE_SOURCE_CHANGE line with its gap.
+    bool price_source_change{false};
 };
 
 /**
@@ -282,7 +285,7 @@ inline LiveRollState live_rolls_by_state(
             if (since_state && steps[i].date != t1_date) late = true;
             out.rolls.push_back({symbol, steps[i].date, st.previous_held_id, st.held_id,
                                  st.last_close_before_change, st.change_bar_close, st.bars_pending,
-                                 st.mark_close.has_value(), st.roll_bar_points});
+                                 st.mark_close.has_value(), st.roll_bar_points, st.price_source_change});
         }
         if (late) {
             // The whole sum after the stored state; the caller takes off what the stored rows

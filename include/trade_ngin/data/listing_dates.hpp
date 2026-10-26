@@ -58,6 +58,14 @@ struct InstrumentIdRelabel {
     std::string to;
 };
 
+/// The relabels a run reads (R6): `declared` with portfolio.json's per_contract_rolls off; none with it
+/// on, where the per-contract rule names each change as one roll between the two contracts of one expiry
+/// (trigger alias, contract_roll_rule.hpp MicroAlias), so no id is read as another.
+std::vector<InstrumentIdRelabel> relabels_read(const std::vector<InstrumentIdRelabel>& declared,
+                                               bool per_contract_rolls);
+/// The line a run logs when it declares relabels and does not read them (the switch on).
+std::string relabels_not_read_line(const std::vector<InstrumentIdRelabel>& declared);
+
 /// How the book moves from the predecessor to the listed contract on the switch rebalance.
 ///   kCloseReenter  the predecessor is closed by the engine's close-out and the pass opens the
 ///                  listed contract from a held position of zero

@@ -963,3 +963,29 @@ TEST(ListingDates, TheEquitySlowRuleRulesThePredecessorThroughItsListedContract)
     EXPECT_EQ(data.at(kBig).current_forecast, 0.0);
     EXPECT_EQ(sleeve.target(kBig), 0.0);
 }
+
+// R6: with per_contract_rolls on the declared relabels are not read (the rule names the micros' change
+// as one alias roll): the runners install relabels_read's list, so a bar carrying the new id keeps it and
+// the per-contract roll on the change bar stays an id change. With the switch off the declared list is
+// read as before.
+TEST(InstrumentIdRelabel, TheSwitchOnReadsNoRelabel) {
+    const std::vector<InstrumentIdRelabel> declared = {{"MES", "2026-02-22", "42140878", "42003800"},
+                                                       {"M2K", "2026-02-22", "42005017", "42002147"}};
+    EXPECT_TRUE(relabels_read(declared, true).empty());
+    const auto off = relabels_read(declared, false);
+    ASSERT_EQ(off.size(), 2u);
+    EXPECT_EQ(off[1].symbol, "M2K");
+    EXPECT_EQ(off[1].to, "42002147");
+    EXPECT_TRUE(relabels_read({}, false).empty());
+    EXPECT_EQ(relabels_not_read_line(declared),
+              "INSTRUMENT_ID_RELABELS not read: per_contract_rolls is on and the rule rolls each change (trigger "
+              "alias): MES 2026-02-22 42140878 -> 42003800; M2K 2026-02-22 42005017 -> 42002147;");
+    using namespace std::chrono;
+    auto& rule = ListingDates::instance();
+    for (const bool on : {true, false}) {
+        rule.set_relabels(relabels_read(declared, on));
+        EXPECT_EQ(rule.read_id("MES.v.0", sys_days{2026y / 2 / 23}, "42003800"), on ? "42003800" : "42140878") << on;
+        EXPECT_EQ(rule.has_relabels(), !on);
+    }
+    rule.set_relabels({});
+}

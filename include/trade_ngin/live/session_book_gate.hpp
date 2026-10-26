@@ -408,7 +408,10 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         // from the target's close on the switch bar.
         if (rs != roll_status.end() && rs->second.mark_close) {
             out.t1_close_prices[symbol] = *rs->second.mark_close;
-            if (rs->second.confirm) out.per_contract_roll_symbols.insert(symbol);
+            // (R6: a micro's change of price source is no roll: no footnote)
+            if (rs->second.confirm && !rs->second.price_source_change) {
+                out.per_contract_roll_symbols.insert(symbol);
+            }
         }
         if (rs != roll_status.end() && rs->second.previous_close) {
             out.t2_close_prices[symbol] = *rs->second.previous_close;

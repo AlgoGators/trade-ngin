@@ -27,9 +27,17 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
     f.base_close.assign(n, std::nullopt);
     f.leg_opening_price.assign(n, std::nullopt);
     if (n == 0) return f;
+    // R6: a change of price source reads as the roll kind it stands for (series_kind).
+    std::vector<std::optional<RollFrom>> as_read;
+    if (!roll_from.empty()) {
+        as_read = roll_from;
+        for (auto& rf : as_read) {
+            if (rf) rf->kind = series_kind(rf->kind);
+        }
+    }
     auto field = [&](size_t t) -> const std::optional<RollFrom>& {
         static const std::optional<RollFrom> none;
-        return roll_from.empty() ? none : roll_from[t];
+        return as_read.empty() ? none : as_read[t];
     };
 
     std::string held;            // the confirmed id the position is held in
@@ -275,9 +283,14 @@ Series build_series(const std::vector<double>& raw, const std::vector<std::strin
 }
 
 RollTracker::Status RollTracker::add(const std::string& id, double close,
-                                     const std::optional<RollFrom>& rf) {
+                                     const std::optional<RollFrom>& field) {
     Status st;
     ++n_;
+    // R6: a change of price source reads as the roll kind it stands for; the confirm it makes is
+    // flagged (Status::price_source_change) so no caller legs it.
+    std::optional<RollFrom> rf = field;
+    const bool source_change = rf && is_price_source_change(rf->kind);
+    if (rf) rf->kind = series_kind(rf->kind);
     if (id.empty()) {
         st.held_id = held_;
         st.pending = !pending_.empty();
@@ -383,6 +396,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         st.change_bar_close = close;
         st.bars_pending = 1;
         st.roll_bar_points = st.move(close, last_close_);  // ruling 18: the old contract's own move
+        st.price_source_change = source_change;
         held_ = id;
         last_known_ = id;
         pending_.clear();
