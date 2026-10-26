@@ -195,3 +195,67 @@ TEST(CarryEstimator, TheTrendEstimatorHandsOutItsForecastVolatilityAndNothingEls
     EXPECT_EQ(with.scaled, plain.scaled);
     EXPECT_EQ(with.mean_scaled, plain.mean_scaled);
 }
+
+TEST(CarryBlend, TheWeightsAreTable51) {
+    // Every row of table 51 that has both styles, and its carry-only rows (trend weight 0).
+    struct Row {
+        int trend;
+        int carry;
+        double trend_each;
+        double carry_each;
+    };
+    for (const Row& r : {Row{6, 4, 0.10, 0.10}, Row{5, 4, 0.12, 0.10}, Row{4, 4, 0.15, 0.10},
+                         Row{3, 4, 0.20, 0.10}, Row{2, 4, 0.30, 0.10}, Row{2, 3, 0.30, 0.13333},
+                         Row{1, 3, 0.60, 0.13333}}) {
+        const Blend b = blend(1.0, r.trend, 1.0, r.carry, 0.4);
+        EXPECT_NEAR(b.trend_weight, r.trend_each, 5e-5) << r.trend << "+" << r.carry;
+        EXPECT_NEAR(b.carry_weight, r.carry_each, 5e-5) << r.trend << "+" << r.carry;
+        EXPECT_NEAR(b.trend_weight * r.trend + b.carry_weight * r.carry, 1.0, 1e-12);
+        EXPECT_EQ(b.rules, r.trend + r.carry);
+    }
+    for (const auto& [carry, each] : {std::pair<int, double>{3, 0.3333}, {2, 0.5}, {1, 1.0}}) {
+        const Blend b = blend(5.0, 6, 1.0, carry, 1.0);
+        EXPECT_EQ(b.trend_weight, 0.0);
+        EXPECT_EQ(b.trend_rules, 0) << "a style of weight 0 counts no rule";
+        EXPECT_NEAR(b.carry_weight, each, 5e-5);
+        EXPECT_EQ(b.rules, carry);
+    }
+}
+
+TEST(CarryBlend, TheFdmIsTable52ByTheRulesTheInstrumentKeeps) {
+    EXPECT_EQ(rule_count_fdm(10), 1.35);
+    EXPECT_EQ(rule_count_fdm(9), 1.34);
+    EXPECT_EQ(rule_count_fdm(8), 1.32);
+    EXPECT_EQ(rule_count_fdm(7), 1.29);
+    EXPECT_EQ(rule_count_fdm(6), 1.27);
+    EXPECT_EQ(rule_count_fdm(4), 1.23);
+    EXPECT_EQ(rule_count_fdm(3), 1.03);
+    EXPECT_EQ(rule_count_fdm(1), 1.00);
+    EXPECT_EQ(rule_count_fdm(13), 1.39);
+    EXPECT_EQ(rule_count_fdm(22), 1.55);
+    EXPECT_EQ(rule_count_fdm(25), 1.69);
+    EXPECT_EQ(rule_count_fdm(40), 2.00);
+    EXPECT_EQ(rule_count_fdm(55), 2.00);
+    EXPECT_EQ(rule_count_fdm(0), 0.0);
+    EXPECT_EQ(rule_count_fdm(23), 0.0) << "not printed: refused, never guessed";
+    // The four rows the speed limit leaves (ticket #185's table).
+    EXPECT_EQ(blend(1.0, 6, 1.0, 4, 0.4).fdm, 1.35);
+    EXPECT_EQ(blend(1.0, 5, 1.0, 4, 0.4).fdm, 1.34);
+    EXPECT_EQ(blend(1.0, 4, 1.0, 4, 0.4).fdm, 1.32);
+    EXPECT_EQ(blend(1.0, 3, 1.0, 4, 0.4).fdm, 1.29);
+}
+
+TEST(CarryBlend, TheBlendedForecastByHandAndItsCap) {
+    // Trend average 8, carry average -5, ten rules: 1.35 x (0.6 x 8 + 0.4 x -5) = 1.35 x 2.8 = 3.78.
+    const Blend b = blend(8.0, 6, -5.0, 4, 0.4);
+    EXPECT_NEAR(b.trend_part, 4.8, 1e-12);
+    EXPECT_NEAR(b.carry_part, -2.0, 1e-12);
+    EXPECT_NEAR(b.forecast, 1.35 * 2.8, 1e-12);
+    // Three trend speeds left: 1.29 x (0.6 x 12 + 0.4 x 10) = 14.448.
+    EXPECT_NEAR(blend(12.0, 3, 10.0, 4, 0.4).forecast, 1.29 * 11.2, 1e-12);
+    // The cap: 1.35 x (0.6 x 20 + 0.4 x 20) = 27 is 20; and -20 the other way.
+    EXPECT_EQ(blend(20.0, 6, 20.0, 4, 0.4).forecast, 20.0);
+    EXPECT_EQ(blend(-20.0, 6, -20.0, 4, 0.4).forecast, -20.0);
+    // Carry only: the carry average times table 52 for the carry spans.
+    EXPECT_NEAR(blend(9.0, 6, 5.0, 4, 1.0).forecast, 1.23 * 5.0, 1e-12);
+}

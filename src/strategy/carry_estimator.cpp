@@ -83,5 +83,35 @@ Estimate estimate(const Window& window, const std::vector<int>& spans, double sc
     return out;
 }
 
+double rule_count_fdm(int rules) {
+    // Carver, Advanced Futures Trading Strategies, table 52 as printed.
+    static const double table[] = {0.0,  1.00, 1.02, 1.03, 1.23, 1.25, 1.27, 1.29, 1.32, 1.34, 1.35, 1.36,
+                                   1.38, 1.39, 1.41, 1.42, 1.44, 1.46, 1.48, 1.50, 1.53, 1.54, 1.55};
+    if (rules >= 1 && rules <= 22) return table[rules];
+    if (rules == 25) return 1.69;
+    if (rules == 30) return 1.81;
+    if (rules == 35) return 1.93;
+    if (rules >= 40) return 2.00;
+    return 0.0;
+}
+
+Blend blend(double trend_mean, int trend_rules, double carry_mean, int carry_rules,
+            double carry_weight) {
+    Blend out;
+    const double trend_style = 1.0 - carry_weight;
+    out.trend_rules = trend_style > 0.0 ? trend_rules : 0;
+    out.carry_rules = carry_weight > 0.0 ? carry_rules : 0;
+    out.rules = out.trend_rules + out.carry_rules;
+    out.trend_weight = out.trend_rules > 0 ? trend_style / out.trend_rules : 0.0;
+    out.carry_weight = out.carry_rules > 0 ? carry_weight / out.carry_rules : 0.0;
+    out.fdm = rule_count_fdm(out.rules);
+    out.trend_part = out.trend_rules > 0 ? trend_style * trend_mean : 0.0;
+    out.carry_part = out.carry_rules > 0 ? carry_weight * carry_mean : 0.0;
+    double forecast = out.fdm * (out.trend_part + out.carry_part);
+    if (!std::isfinite(forecast)) forecast = 0.0;
+    out.forecast = std::clamp(forecast, -kCarryCap, kCarryCap);
+    return out;
+}
+
 }  // namespace carry_estimator
 }  // namespace trade_ngin

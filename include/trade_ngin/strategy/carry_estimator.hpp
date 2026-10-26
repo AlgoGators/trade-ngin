@@ -83,5 +83,47 @@ struct Estimate {
 Estimate estimate(const Window& window, const std::vector<int>& spans,
                   double scalar = kCarryScalar);
 
+/**
+ * The blend (trade-ngin #185; Carver, strategy eleven, tables 51 and 52): one forecast from the two
+ * families of trading rules an instrument keeps.
+ *
+ *   F = cap at +/-20 of  FDM x ( w_trend x sum of the trend forecasts + w_carry x sum of the carry
+ *                                 forecasts )
+ *
+ * Within a style every rule weighs the same (table 51): each trend speed (1 - carry_weight) / its
+ * number, each carry span carry_weight / its number, so the bracket is (1 - carry_weight) x the trend
+ * average + carry_weight x the carry average (0.6 and 0.4 by default). The FDM is table 52's for the
+ * number of rules the instrument trades: the trend speeds and the carry spans it keeps, a style of
+ * weight 0 counting none (table 51's carry-only rows). The trend forecasts are the trend estimators'
+ * scaled ones, the carry forecasts this file's capped spans.
+ */
+/// Table 52: the forecast diversification multiplier for a number of trading rules (1 to 22, 25,
+/// 30, 35, and 2.0 from 40); 0 for a count the table does not print, which the caller refuses.
+double rule_count_fdm(int rules);
+
+struct Blend {
+    int trend_rules = 0;
+    int carry_rules = 0;
+    int rules = 0;              // the rules counted for the FDM
+    double trend_weight = 0.0;  // each trend speed's weight (table 51)
+    double carry_weight = 0.0;  // each carry span's weight
+    double fdm = 0.0;
+    double trend_part = 0.0;    // (1 - carry_weight) x the trend average
+    double carry_part = 0.0;    // carry_weight x the carry average
+    double forecast = 0.0;      // FDM x (trend_part + carry_part), capped at +/-20
+};
+
+/**
+ * @brief The blended forecast of one instrument.
+ * @param trend_mean the equal-weight mean of the trend speeds' scaled forecasts it keeps
+ * @param trend_rules how many it keeps (at least 1)
+ * @param carry_mean the equal-weight mean of its capped carry spans
+ * @param carry_rules how many it keeps (at least 1)
+ * @param carry_weight the carry style's weight, in (0, 1] (0.4)
+ * @return fdm 0 (and forecast 0) for a rule count table 52 does not print
+ */
+Blend blend(double trend_mean, int trend_rules, double carry_mean, int carry_rules,
+            double carry_weight);
+
 }  // namespace carry_estimator
 }  // namespace trade_ngin
