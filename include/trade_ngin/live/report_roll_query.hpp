@@ -21,7 +21,7 @@ namespace trade_ngin {
  *     holds after that bar, so the old contract until its roll legs are booked;
  *   - rolls: every ROLL closing leg of the run (EXEC_<symbol>_<YYYYMMDD>_RC) with the contract it closes,
  *     the contract its opening leg (_RO) opens and the date in its id (the confirming bar's); a leg with
- *     no split (a roll of the vendor's series) is asked for too, its line naming the cost only.
+ *     no split is asked for too and gets no line (R6: with the switch on every closing leg has one).
  */
 contract_rolls::ReportRollQuery report_roll_query(
     const std::string& settled_date, const std::unordered_map<std::string, Position>& book,
