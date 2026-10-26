@@ -286,12 +286,14 @@ TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
 TEST_F(DelistingFloorDbTest, EmptyFloorPreservesTheUnboundedRead) {
     // The default argument must be behaviour-preserving: any caller that passes
     // nothing gets exactly what it got before.
+    // R6 fix round 1 (audit A S3): the OLDEST delisting of the table, so any floor hidden in the
+    // default path (one later than that date) drops it.
     const auto old = oldest_delistings(discover_connection_string());
-    ASSERT_EQ(old.size(), 2u) << "a ticker must carry a delisting row, or this test proves nothing";
-    auto with_empty = db_->get_delisting_dates({old[1].ticker}, "");
-    auto defaulted = db_->get_delisting_dates({old[1].ticker});
+    ASSERT_FALSE(old.empty()) << "a ticker must carry a delisting row, or this test proves nothing";
+    auto with_empty = db_->get_delisting_dates({old[0].ticker}, "");
+    auto defaulted = db_->get_delisting_dates({old[0].ticker});
     ASSERT_TRUE(with_empty.is_ok() && defaulted.is_ok());
     EXPECT_EQ(with_empty.value(), defaulted.value());
     ASSERT_EQ(defaulted.value().size(), 1u);
-    EXPECT_EQ(defaulted.value().at(old[1].ticker), old[1].date);
+    EXPECT_EQ(defaulted.value().at(old[0].ticker), old[0].date);
 }

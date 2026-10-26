@@ -483,10 +483,17 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
                 .as<size_t>();
         w.commit();
     }
-    EXPECT_EQ(silent_dividends, direct_dividends) << "the scan is not reaching the table";
     size_t on_a_bar = 0;
     for (const auto& s : silent) on_a_bar += s.has_bar;
     EXPECT_GT(on_a_bar, 0u) << "no silent class-1 row on a bar at all means the scan is not reaching the table";
+    // R6 fix round 1 (audit A S3): with no silent dividend in the table the count check compares 0 with
+    // 0 and proves nothing: it is skipped, visibly, after every other check of the test has run.
+    if (direct_dividends == 0) {
+        GTEST_SKIP() << "the silent-dividend check is not judged: the table holds no dividend with a flat bar on "
+                        "its ex-date since "
+                     << kBarEraFloor << " (every other check of this test ran and passed)";
+    }
+    EXPECT_EQ(silent_dividends, direct_dividends) << "the scan is not reaching the table";
 }
 
 // The allowlist must never become a rubber stamp: every entry has to name a row
