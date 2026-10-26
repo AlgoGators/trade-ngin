@@ -645,37 +645,66 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
     c.add_bars(bars.value());
     const auto cal = holiday_lookup(checker);
 
-    // The named cases, through the loader (the loader's 6A is the kept 76,895 copy).
-    const std::vector<std::tuple<std::string, std::string, SessionVerdict>> cases = {
+    // The named cases, through the loader (the loader's 6A is the kept 76,895 copy). R6: the 213-row
+    // fix of algogators #36 (in the tuning copy, as production on 2026-10-25) replaced the thin and
+    // stub prints of 2025-09-03, 2025-10-10 and 2025-11-05, MYM's April hole and 6E/GC's 2026-07-02 with
+    // the contracts' own bars. A replaced case names its corrected bar's volume: the test reads which
+    // bar the table holds and expects the Python reference's verdict for that bar (c7b_classify.py on
+    // the tuning copy, evidence/R6/out/classifier_ref_cells.txt), so each copy is judged on its own bar.
+    struct Case {
+        std::string symbol, date;
+        SessionVerdict want;            // the verdict on the reference clone's bar
+        double corrected_volume = -1;   // the replaced bar's volume (-1: never replaced)
+    };
+    const std::vector<Case> cases = {
         {"6A.v.0", "2025-11-05", SessionVerdict::SESSION},
-        {"6B.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"6C.v.0", "2025-11-05", SessionVerdict::JUNK},
+        {"6B.v.0", "2025-11-05", SessionVerdict::JUNK, 64415},
+        {"6C.v.0", "2025-11-05", SessionVerdict::JUNK, 56367},
         {"6E.v.0", "2025-11-05", SessionVerdict::SESSION},
-        {"6J.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"6M.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"GC.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"HG.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"SI.v.0", "2025-11-05", SessionVerdict::JUNK},
-        {"GC.v.0", "2025-09-03", SessionVerdict::JUNK},
-        {"ZM.v.0", "2025-10-10", SessionVerdict::JUNK},
-        {"ZR.v.0", "2025-10-10", SessionVerdict::JUNK},
+        {"6J.v.0", "2025-11-05", SessionVerdict::JUNK, 125478},
+        {"6M.v.0", "2025-11-05", SessionVerdict::JUNK, 56396},
+        {"GC.v.0", "2025-11-05", SessionVerdict::JUNK, 158701},
+        {"HG.v.0", "2025-11-05", SessionVerdict::JUNK, 30470},
+        {"SI.v.0", "2025-11-05", SessionVerdict::JUNK, 43598},
+        {"GC.v.0", "2025-09-03", SessionVerdict::JUNK, 227686},
+        {"ZM.v.0", "2025-10-10", SessionVerdict::JUNK, 45809},
+        {"ZR.v.0", "2025-10-10", SessionVerdict::JUNK, 521},
         // the chain window: MYM's April hole and the 6L Sunday junk print
-        {"MYM.v.0", "2026-04-23", SessionVerdict::NO_BAR_FEED_HOLE},
+        {"MYM.v.0", "2026-04-23", SessionVerdict::NO_BAR_FEED_HOLE, 192198},
         {"6L.v.0", "2026-04-26", SessionVerdict::JUNK},
         // the dead Sundays: holes, including the Memorial Day eve (a moving holiday)
         {"MES.v.0", "2026-05-17", SessionVerdict::NO_BAR_FEED_HOLE},
         {"MES.v.0", "2026-05-24", SessionVerdict::NO_BAR_FEED_HOLE},
         {"ZC.v.0", "2026-05-24", SessionVerdict::NO_BAR_CLOSURE},
         // C7b R8: a weekday eve of a fixed-date holiday is a session day
-        {"6E.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE},
-        {"GC.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE},
+        {"6E.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE, 188182},
+        {"GC.v.0", "2026-07-02", SessionVerdict::NO_BAR_FEED_HOLE, 113384},
     };
-    for (const auto& [s, d, want] : cases) {
-        const auto v = c.classify_symbol_day(s, ymd_day(d), cal);
-        EXPECT_EQ(v.verdict, want) << s << " " << d << ": " << v.reason;
+    std::map<std::pair<std::string, std::string>, double> volume_on;
+    for (const auto& b : bars.value()) {
+        volume_on[{b.symbol, SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp))}] =
+            static_cast<double>(b.volume);
     }
-    const auto mym = c.classify_symbol_day("MYM.v.0", ymd_day("2026-04-23"), cal);
-    EXPECT_EQ(mym.hole_age_days, 3);
+    int corrected = 0;
+    for (const auto& cs : cases) {
+        const auto held = volume_on.find({cs.symbol, cs.date});
+        const bool replaced = cs.corrected_volume >= 0 && held != volume_on.end() &&
+                              held->second == cs.corrected_volume;
+        corrected += replaced;
+        const auto v = c.classify_symbol_day(cs.symbol, ymd_day(cs.date), cal);
+        EXPECT_EQ(v.verdict, replaced ? SessionVerdict::SESSION : cs.want)
+            << cs.symbol << " " << cs.date << (replaced ? " (the corrected bar)" : "") << ": " << v.reason;
+    }
+    // The hole's age: MYM's April hole on the reference clone; on a copy where it is filled, MES's
+    // Sunday hole of 2026-05-17 (last bar Friday 05-15: 2 days).
+    const bool mym_filled = volume_on.count({"MYM.v.0", "2026-04-23"}) > 0;
+    const auto hole = c.classify_symbol_day(mym_filled ? "MES.v.0" : "MYM.v.0",
+                                            ymd_day(mym_filled ? "2026-05-17" : "2026-04-23"), cal);
+    EXPECT_EQ(hole.verdict, SessionVerdict::NO_BAR_FEED_HOLE);
+    EXPECT_EQ(hole.hole_age_days, mym_filled ? 2 : 3);
+    EXPECT_TRUE(corrected == 0 || corrected == 13)
+        << corrected << " of the 13 replaced bars are the corrected ones: a copy with only some of the "
+                        "213 rows replaced is neither reference";
 
     // The 2026 table, as the Python reference counts it on this clone (165,037 stored rows,
     // last date 2026-08-06): SESSION 5,950 / JUNK 51 / NO_BAR(closure) 1,496 / feed hole 351.
@@ -692,8 +721,21 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
         stored = r[0][0].as<long>();
         last = r[0][1].as<std::string>();
     }
-    if (stored != 165037 || last != "2026-08-06") {
-        GTEST_SKIP() << "the table is not the clone the reference was counted on (" << stored
+    // R6: the reference counted on the tuning copy too (166,611 rows, last 2026-10-23; c7b_classify.py,
+    // evidence/R6/out/classifier_ref_2026_table.csv): the 213-row fix filled 227 feed holes.
+    struct Reference {
+        long stored;
+        const char* last;
+        int session, junk, closure, feed_hole;
+    };
+    const std::vector<Reference> references = {{165037, "2026-08-06", 5950, 51, 1496, 351},
+                                               {166611, "2026-10-23", 6177, 51, 1496, 124}};
+    const Reference* ref = nullptr;
+    for (const auto& r : references) {
+        if (r.stored == stored && last == r.last) ref = &r;
+    }
+    if (!ref) {
+        GTEST_SKIP() << "the table is not a clone the reference was counted on (" << stored
                      << " rows, last " << last << ")";
     }
     std::map<SessionVerdict, int> counts;
@@ -704,10 +746,10 @@ TEST_F(SessionClassifierDb, TheLoadersBarsGiveTheReferenceVerdictsAndThe2026Coun
         counts[SessionVerdict::NO_BAR_CLOSURE] += static_cast<int>(t1.closure);
         counts[SessionVerdict::NO_BAR_FEED_HOLE] += static_cast<int>(t1.feed_hole);
     }
-    EXPECT_EQ(counts[SessionVerdict::SESSION], 5950);
-    EXPECT_EQ(counts[SessionVerdict::JUNK], 51);
-    EXPECT_EQ(counts[SessionVerdict::NO_BAR_CLOSURE], 1496);
-    EXPECT_EQ(counts[SessionVerdict::NO_BAR_FEED_HOLE], 351);
+    EXPECT_EQ(counts[SessionVerdict::SESSION], ref->session);
+    EXPECT_EQ(counts[SessionVerdict::JUNK], ref->junk);
+    EXPECT_EQ(counts[SessionVerdict::NO_BAR_CLOSURE], ref->closure);
+    EXPECT_EQ(counts[SessionVerdict::NO_BAR_FEED_HOLE], ref->feed_hole);
     db->disconnect();
 }
 
