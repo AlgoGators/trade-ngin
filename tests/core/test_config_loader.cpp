@@ -1325,6 +1325,38 @@ TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
     }
 }
 
+// AFTS strategy 25's b_sigma_rule (defaults.json optimization): optional, absent is today's rule
+// (the empty member); each named value is read as written; anything else is refused naming the key
+// and the values allowed.
+TEST_F(ConfigLoaderTest, TheBufferRuleIsOptionalAndNamed) {
+    write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().b_sigma_rule, "");
+    ASSERT_TRUE(ConfigLoader::require_loop_keys(r.value()).is_ok()) << "not a required key";
+    for (const char* value : {"granularity", "fixed", "minimal"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["b_sigma_rule"] = value;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << value;
+        EXPECT_EQ(r.value().b_sigma_rule, value);
+    }
+    for (const nlohmann::json& bad : {nlohmann::json("Fixed"), nlohmann::json("book"), nlohmann::json(1),
+                                      nlohmann::json(true)}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["b_sigma_rule"] = bad;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        const std::string what = r.error()->what();
+        EXPECT_NE(what.find("optimization.b_sigma_rule must be one of \"granularity\", \"fixed\", "
+                            "\"minimal\""),
+                  std::string::npos)
+            << what;
+    }
+}
+
 // LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
 // is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
 // optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.

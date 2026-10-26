@@ -434,6 +434,11 @@ struct AppConfig {
     bool has_cost_penalty_scalar{false};
     double sign_close_band{0.0};
     double b_sigma_floor{0.0};
+    // AFTS strategy 25's switch in the same block, optional (absent: today's rule):
+    // b_sigma_rule, how B_sigma is set: "granularity" (today), "fixed" (b_sigma_floor x tau
+    // alone, the book's buffer) or "minimal" (granularity without the held-only rows). Empty:
+    // the key is absent.
+    std::string b_sigma_rule;
     // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
     // load, never read for a value; a futures book refuses to run on a non-empty list
     // (require_loop_keys). The equity book's files are not searched for the futures-only keys.

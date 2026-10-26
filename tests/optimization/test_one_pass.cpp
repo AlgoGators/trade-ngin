@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "trade_ngin/optimization/one_pass.hpp"
@@ -136,6 +137,45 @@ TEST(OnePass, TheSearchFromTheHeldBookThenTheBuffer) {
     EXPECT_EQ(buffered.book, (Vector{3.0, -10.0, 16.0, 5.0, 2.0}));
     expect_rel(buffered.unrounded[2], 16.10186777969427);
     expect_rel(buffered.unrounded[3], 5.025466944923568);
+}
+
+// b_sigma_rule (AFTS gap list C-1, C-2): row 3, the lumpiest contract, is held at 1 and searched to
+// 0. Today's rule lets that held-only row set B_sigma (0.0447), the held book is inside its own
+// buffer's reach (a = 0.023) and rounds back unchanged; strategy 25's fixed buffer (0.05 tau = 1%)
+// exits it and opens row 2; the minimal variant leaves the held-only row out of the names, so the
+// floor governs here, and with a lower floor the next-largest named row sets it.
+TEST(OnePass, TheBufferWidthByRule) {
+    const Fixture f = fixture();
+    const Covariance c = optimiser_covariance(f.closes, f.levels, f.ordinals, kStale);
+    const Vector searched = {3.0, -10.0, 20.0, 0.0, 2.0};
+    auto [b, index] = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.05, BSigmaRule::kGranularity);
+    expect_rel(b, 0.044722270829816);
+    EXPECT_EQ(index, 3);
+    Buffered buffered = buffer(searched, kHeld, f.u, c.matrix, b);
+    expect_rel(buffered.te_held, 0.045768799673906464);
+    expect_rel(buffered.a, 0.02286555145747257);
+    EXPECT_TRUE(buffered.returned_to_held);
+    EXPECT_EQ(buffered.book, kHeld);
+
+    std::tie(b, index) = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.05, BSigmaRule::kFixed);
+    EXPECT_DOUBLE_EQ(b, 0.05 * 0.20);
+    EXPECT_EQ(index, -1);
+    buffered = buffer(searched, kHeld, f.u, c.matrix, b);
+    expect_rel(buffered.a, 0.7815105471140166);
+    EXPECT_EQ(buffered.book, (Vector{3.0, -10.0, 16.0, 0.0, 2.0})) << "the held row 3 exits";
+
+    std::tie(b, index) = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.10, BSigmaRule::kFixed);
+    EXPECT_DOUBLE_EQ(b, 0.10 * 0.20) << "the fixed rule's width is the floor ratio";
+    EXPECT_EQ(buffer(searched, kHeld, f.u, c.matrix, b).book, (Vector{3.0, -10.0, 11.0, 0.0, 2.0}));
+
+    std::tie(b, index) = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.05, BSigmaRule::kMinimal);
+    EXPECT_DOUBLE_EQ(b, 0.05 * 0.20) << "without row 3 no named row is above the floor";
+    EXPECT_EQ(index, -1);
+    std::tie(b, index) = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.001, BSigmaRule::kMinimal);
+    expect_rel(b, 0.0013299492588549058);
+    EXPECT_EQ(index, 1) << "the largest one-contract risk among the rows the search answers non-zero";
+    std::tie(b, index) = b_sigma(f.u, c.matrix, searched, kHeld, 0.20, 0.001, BSigmaRule::kGranularity);
+    EXPECT_EQ(index, 3) << "today's rule still names the held-only row";
 }
 
 // The whole pass with the forecast-sign close first: symbol 1 is held short against a forecast
@@ -345,6 +385,19 @@ TEST(OnePass, TheDayIsClassifiedSearchedAndFilledOnce) {
     ASSERT_GE(kept.info.size(), 3u);
     EXPECT_EQ(kept.info[0].rfind("T4_RISK_WINDOW dates=0 symbols=4 ", 0), 0u) << kept.info[0];
     EXPECT_EQ(kept.warn.size(), 2u) << "both free rows have no close: each on the guarded diagonal";
+}
+
+// The rule reaches the pass: the day of TheDayIsClassifiedSearchedAndFilledOnce under the fixed
+// rule sets B_sigma to the floor (0.05 x 0.20) with no symbol, against 0.02 set by a row today.
+TEST(OnePass, TheRebalanceUsesTheBufferRule) {
+    DayInputs in = four_symbols();
+    DayResult r = rebalance(in);
+    EXPECT_NEAR(r.b_sigma, 0.02, 1e-12);
+    EXPECT_GE(r.b_symbol, 0);
+    in.b_sigma_rule = BSigmaRule::kFixed;
+    r = rebalance(in);
+    EXPECT_NEAR(r.b_sigma, 0.01, 1e-12);
+    EXPECT_EQ(r.b_symbol, -1);
 }
 
 // Section 4, the refusal: an input that is not a finite number, or a reading that is not, refuses

@@ -250,6 +250,17 @@ Mask book_eligible(const Vector& searched, const Vector& held) {
     return out;
 }
 
+std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const Vector& searched,
+                                const Vector& held, double tau, double floor_ratio,
+                                BSigmaRule rule) {
+    if (rule == BSigmaRule::kFixed) return {floor_ratio * tau, -1};
+    Mask eligible = book_eligible(searched, held);
+    if (rule == BSigmaRule::kMinimal) {
+        for (std::size_t i = 0; i < searched.size(); ++i) eligible[i] = searched[i] != 0.0;
+    }
+    return b_sigma(u, covariance, eligible, tau, floor_ratio);
+}
+
 Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
                 const Matrix& covariance, double b) {
     Buffered out;
@@ -547,8 +558,8 @@ DayResult rebalance(const DayInputs& in) {
         out.search_te = found.tracking_error;
         out.passes = found.passes;
         out.pass_capped = found.pass_capped;
-        const auto [b, b_index] = b_sigma(uf, out.covariance.matrix, book_eligible(found.book, hf),
-                                          in.tau, in.b_sigma_floor);
+        const auto [b, b_index] = b_sigma(uf, out.covariance.matrix, found.book, hf, in.tau,
+                                          in.b_sigma_floor, in.b_sigma_rule);
         out.b_sigma = b;
         out.b_symbol = b_index < 0 ? -1 : static_cast<long>(out.free_rows[static_cast<std::size_t>(b_index)]);
         const Buffered buffered = buffer(found.book, hf, uf, out.covariance.matrix, b);

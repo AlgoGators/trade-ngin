@@ -425,6 +425,30 @@ TEST_F(OnePassBookTest, TheDeferralBandHoldsUntilTheForecastReachesTwo) {
     EXPECT_EQ(fills("A", "AAA").back(), -held) << "ONE fill, the whole held quantity";
 }
 
+// The book's b_sigma_rule reaches the pass. 0 -> 5 (one contract a weight of 0.2, on the guarded
+// 0.01 variance a risk of 0.02): today B_sigma is that contract's 0.02, a = (0.1 - 0.02) / 0.1 and
+// 4 is stored; under the fixed rule B_sigma is 0.05 x 0.20 = 0.01, a = 0.9, and 4.5 rounds to 5.
+TEST_F(OnePassBookTest, TheBufferRuleOfTheConfigIsThePasss) {
+    make_pm();
+    a_->rows["AAA"] = row(5.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 4.0);
+    EXPECT_EQ(count_of(out, " b_sigma=0.02 "), 1u) << out;
+
+    PortfolioConfig fixed = one_pass_config("A");
+    fixed.b_sigma_rule = one_pass::BSigmaRule::kFixed;
+    make_pm(true, fixed);
+    a_->rows["AAA"] = row(5.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 5.0);
+    EXPECT_EQ(count_of(out, " b_sigma=0.01 "), 1u) << out;
+    EXPECT_EQ(count_of(out, " b_symbol=floor"), 1u) << out;
+}
+
 // Section 6.2: a symbol that signalled before and no longer signals is closed with one fill to
 // flat on a session bar, not walked down through the buffer.
 TEST_F(OnePassBookTest, ASymbolThatStopsSignallingIsClosedWithOneFill) {

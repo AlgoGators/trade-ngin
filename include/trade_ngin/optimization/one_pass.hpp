@@ -93,6 +93,24 @@ std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const
 /// Section 5.3: the symbols in the book, a non-zero search answer or a non-zero held position.
 Mask book_eligible(const Vector& searched, const Vector& held);
 
+/**
+ * How B_sigma is set (defaults.json optimization.b_sigma_rule; absent: granularity).
+ *   - kGranularity (today, D24): b_sigma over book_eligible(searched, held), the floor or the
+ *     largest one-contract risk of the names wanted or held, whichever is larger.
+ *   - kFixed (AFTS strategy 25, p.431): floor_ratio x tau alone, whatever the names; at the
+ *     floor 0.05 it is the book's 1% at tau 20%. Any other ratio departs from the book.
+ *   - kMinimal (the AFTS gap list's minimum fix for C-1): kGranularity with the held-only rows (a
+ *     held position the search answers zero) left out of the names, so a held lumpy contract no
+ *     longer sets the buffer that protects it. Departs from the book.
+ */
+enum class BSigmaRule { kGranularity, kFixed, kMinimal };
+
+/// B_sigma under `rule` from the search answer and the held book. Returns B and the index of the
+/// symbol that sets it, -1 when the floor governs (always under kFixed).
+std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const Vector& searched,
+                                const Vector& held, double tau, double floor_ratio,
+                                BSigmaRule rule);
+
 /// Section 5.3: TE_h = sqrt((h - y)' Sigma (h - y)) in weights. At or below B: no trade. Otherwise
 /// the book is h + a (y - h), a = (TE_h - B) / TE_h, rounded to nearest.
 struct Buffered {
@@ -149,7 +167,8 @@ struct DayInputs {
     double cap{2.0};                ///< L, the per-name cap on the sizing capital
     double cost_multiplier{100.0};  ///< the search's cost multiplier
     double sign_band{2.0};          ///< the deferral band: |F| below it defers a sign close
-    double b_sigma_floor{0.05};     ///< B_sigma's floor as a ratio to tau
+    double b_sigma_floor{0.05};     ///< B_sigma's floor as a ratio to tau (kFixed: its width)
+    BSigmaRule b_sigma_rule{BSigmaRule::kGranularity};
     int trim_max{5};
     long max_iterations{100};
     overlay::Limits limits;         ///< the overlay's five limits, in reading units

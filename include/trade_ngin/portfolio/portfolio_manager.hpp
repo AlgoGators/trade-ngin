@@ -61,6 +61,8 @@ struct PortfolioConfig : public ConfigBase {
     double per_name_cap{2.0};
     double sign_close_band{2.0};
     double b_sigma_floor{0.05};
+    // How B_sigma is set (AppConfig::b_sigma_rule; one_pass::BSigmaRule).
+    one_pass::BSigmaRule b_sigma_rule{one_pass::BSigmaRule::kGranularity};
     // The overlay's covariance (risk.json's carver module overlay_covariance): false is "sample",
     // true is "carver" (overlay::carver_covariance).
     bool overlay_carver{false};
@@ -138,6 +140,12 @@ struct PortfolioConfig : public ConfigBase {
             }
             opt["sign_close_band"] = sign_close_band;
             opt["b_sigma_floor"] = b_sigma_floor;
+            // Recorded only when it is not "granularity", so a granularity book stores the
+            // object it stored before the rule became a key.
+            if (b_sigma_rule != one_pass::BSigmaRule::kGranularity) {
+                opt["b_sigma_rule"] =
+                    b_sigma_rule == one_pass::BSigmaRule::kFixed ? "fixed" : "minimal";
+            }
             auto& risk = j["risk_config"];
             for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
                 risk.erase(retired);

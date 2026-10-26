@@ -192,6 +192,30 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 (std::string(key) == "sign_close_band" ? config.sign_close_band
                                                        : config.b_sigma_floor) = v.get<double>();
             }
+            // AFTS strategy 25's switch: optional, one of its named values when present.
+            struct Choice {
+                const char* key;
+                std::vector<std::string> values;
+                std::string* into;
+            };
+            for (const Choice& choice :
+                 {Choice{"b_sigma_rule", {"granularity", "fixed", "minimal"}, &config.b_sigma_rule}}) {
+                if (!optimization.contains(choice.key)) continue;
+                const auto& v = optimization.at(choice.key);
+                if (!v.is_string() || std::find(choice.values.begin(), choice.values.end(),
+                                                v.get<std::string>()) == choice.values.end()) {
+                    std::string allowed;
+                    for (const auto& value : choice.values) {
+                        allowed += (allowed.empty() ? "\"" : ", \"") + value + "\"";
+                    }
+                    return make_error<AppConfig>(
+                        ErrorCode::INVALID_DATA,
+                        "config for " + config.portfolio_id + ": defaults.json optimization." +
+                            choice.key + " must be one of " + allowed + ", got " + v.dump(),
+                        "ConfigLoader");
+                }
+                *choice.into = v.get<std::string>();
+            }
             for (const char* key : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
                 if (optimization.contains(key)) {
                     config.retired_loop_keys.push_back(std::string("defaults.json optimization: ") +

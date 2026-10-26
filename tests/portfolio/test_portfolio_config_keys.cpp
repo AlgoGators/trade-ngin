@@ -101,6 +101,19 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     }
     const nlohmann::json carver = runner_config(carver_app, "TREND_FOLLOWING", 0.20).to_json();
     EXPECT_EQ(carver.at("risk_config").at("overlay_covariance").get<std::string>(), "carver");
+    // b_sigma_rule: "granularity" (the template's) is not recorded, the other two are; the
+    // loaded string becomes the book's rule.
+    EXPECT_FALSE(j.at("opt_config").contains("b_sigma_rule"));
+    EXPECT_EQ(runner_config(loaded.value(), "TREND_FOLLOWING", 0.20).b_sigma_rule,
+              one_pass::BSigmaRule::kGranularity);
+    for (const auto& [value, rule] : std::vector<std::pair<std::string, one_pass::BSigmaRule>>{
+             {"fixed", one_pass::BSigmaRule::kFixed}, {"minimal", one_pass::BSigmaRule::kMinimal}}) {
+        AppConfig app = loaded.value();
+        app.b_sigma_rule = value;
+        const PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_EQ(pc.b_sigma_rule, rule) << value;
+        EXPECT_EQ(pc.to_json().at("opt_config").at("b_sigma_rule").get<std::string>(), value);
+    }
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);

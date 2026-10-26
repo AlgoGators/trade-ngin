@@ -2262,6 +2262,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
         in.cost_multiplier = config_.opt_config.cost_penalty_scalar;
         in.sign_band = config_.sign_close_band;
         in.b_sigma_floor = config_.b_sigma_floor;
+        in.b_sigma_rule = config_.b_sigma_rule;
         in.trim_max = config_.trim_max;
         in.max_iterations = config_.opt_config.max_iterations;
         {

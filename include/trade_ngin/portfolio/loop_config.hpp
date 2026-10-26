@@ -17,6 +17,9 @@ namespace trade_ngin {
 inline void apply_loop_config(const AppConfig& app, PortfolioConfig& portfolio) {
     portfolio.sign_close_band = app.sign_close_band;
     portfolio.b_sigma_floor = app.b_sigma_floor;
+    portfolio.b_sigma_rule = app.b_sigma_rule == "fixed"     ? one_pass::BSigmaRule::kFixed
+                             : app.b_sigma_rule == "minimal" ? one_pass::BSigmaRule::kMinimal
+                                                             : one_pass::BSigmaRule::kGranularity;
     portfolio.sizing_mode = app.sizing_mode;
     portfolio.equity_slow_symbols = app.equity_slow_rule.symbols;
     portfolio.equity_slow_pairs = app.equity_slow_rule.pairs;
