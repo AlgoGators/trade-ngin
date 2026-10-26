@@ -484,6 +484,52 @@ TEST(OnePass, TheRebalanceUsesStrategyTwentyFivesCovariance) {
     EXPECT_NEAR(rebalance(in).b_sigma, 0.02, 1e-12) << "today: the guarded diagonal";
 }
 
+// Strategy 25's covariance reads the free rows' own columns of the overlay window: row 0 is held
+// (not free) and its returns equal row 1's, rows 1 and 2 are free and move against each other every
+// day, so their weekly correlation is -1 and the covariance is -0.2 x 0.3; a copy that took the
+// first two columns would read +1. Row 1 without a sigma is filled and named in the warning.
+TEST(OnePass, StrategyTwentyFivesCovarianceReadsTheFreeRowsColumns) {
+    DayInputs in = four_symbols();
+    in.hold = {1, 0, 0, 1};
+    in.wrong_sign_buffer = true;  // row 2 is free (no deferral band)
+    in.opt_carver = true;
+    in.opt_sigma = {0.1, 0.2, 0.3, 0.4};
+    unsigned state = 7u;
+    for (int w = 0; w < 40; ++w) {
+        for (int d = 0; d < 5; ++d) {
+            state = state * 1103515245u + 12345u;
+            const double x = static_cast<double>(state % 1000u) / 1000.0 - 0.5;
+            in.ordinals.push_back(21004.0 + 7.0 * w + d);
+            in.returns.push_back({0.01 * x, 0.01 * x, -0.02 * x, 0.005 * x});
+        }
+    }
+    DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    ASSERT_EQ(r.free_rows, (std::vector<std::size_t>{1, 2}));
+    EXPECT_EQ(r.covariance.filled, (Mask{0, 0}));
+    expect_rel(r.covariance.matrix[0][0], 0.04);
+    expect_rel(r.covariance.matrix[1][1], 0.09);
+    expect_rel(r.covariance.matrix[0][1], -0.2 * 0.3);
+
+    in.opt_sigma[1] = 0.0;
+    r = rebalance(in);
+    EXPECT_EQ(r.covariance.filled, (Mask{1, 0}));
+    EXPECT_DOUBLE_EQ(r.covariance.matrix[0][0], 0.01);
+    EXPECT_DOUBLE_EQ(r.covariance.matrix[0][1], 0.0);
+    const KeptLines kept = kept_lines({"AAA", "BBB", "CCC", "DDD"}, in, r);
+    bool named = false;
+    for (const auto& line : kept.warn) {
+        named = named || line.rfind("COVARIANCE_NO_SIGMA symbol=BBB", 0) == 0;
+    }
+    EXPECT_TRUE(named) << "the filled row is named";
+    bool counted = false;
+    for (const auto& line : kept.info) {
+        counted = counted ||
+                  line.rfind("COVARIANCE_STRATEGY25 symbols=1/2 bars_per_year=256 left_out=1", 0) == 0;
+    }
+    EXPECT_TRUE(counted);
+}
+
 // Section 4, the refusal: an input that is not a finite number, or a reading that is not, refuses
 // the day. The book is the held book on every row and nothing is filled; a blind window is not a
 // refusal.
