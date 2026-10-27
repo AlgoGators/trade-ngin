@@ -862,6 +862,65 @@ TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
     EXPECT_EQ(switch_bars, 1);
 }
 
+// MM (HD 2026-10-27): the gold and silver micros through the loader's own call, on the loaded copy.
+// Their own .v.0 starts at the listing; before it the series is the full-size contract the rule holds,
+// on the full-size root's grid (GC.v.0's Friday 2010-10-01 and Sunday 10-03), and starts where the
+// full-size series does. The listing bar is the one change of price source: MGC GCZ0 to MGCZ0 (same
+// expiry) on Monday 2010-10-04, SIL SIN3 to SILU3 (SIL lists no July) on Monday 2013-06-17.
+TEST_F(PerContractSourceDbTest, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirListing) {
+    {
+        pqxx::connection c(contract_rolls_test::dsn());
+        pqxx::read_transaction t(c);
+        if (t.exec("SELECT count(*) FROM futures_data.ohlcv_1d WHERE symbol IN ('MGC.v.0', 'SIL.v.0')")[0][0]
+                .as<int64_t>() == 0) {
+            GTEST_SKIP() << "MGC and SIL are not loaded on this database";
+        }
+        for (const auto& [root, full] : {std::pair<std::string, std::string>{"MGC", "GC"}, {"SIL", "SI"}}) {
+            auto start = series_start(t, root);
+            ASSERT_TRUE(start.is_ok()) << start.error()->what();
+            auto full_start = series_start(t, full);
+            ASSERT_TRUE(full_start.is_ok()) << full_start.error()->what();
+            EXPECT_EQ(ymd(start.value()), ymd(full_start.value())) << root;
+            EXPECT_EQ(ymd(start.value()), "2010-06-07") << root;
+        }
+    }
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars());
+    const auto gold = load({"MGC.v.0"}, "2010-09-27", "2010-10-08");
+    std::map<std::string, const Bar*> on;
+    for (const auto& b : gold) on[core::format_utc_date(b.timestamp)] = &b;
+    ASSERT_EQ(on.size(), 11u) << "the grid's 09-27 to 10-01 and 10-03 are GC.v.0's, 10-04 to 10-08 MGC.v.0's";
+    for (const char* day : {"2010-09-27", "2010-10-01", "2010-10-03"}) {
+        ASSERT_TRUE(on.count(day)) << day;
+        EXPECT_EQ(on.at(day)->instrument_id, "197012") << day << ": GCZ0";
+        EXPECT_FALSE(on.at(day)->roll_from.has_value()) << day;
+    }
+    EXPECT_DOUBLE_EQ(static_cast<double>(on.at("2010-10-01")->close), 1320.0) << "GCZ0's own close";
+    const Bar& change = *on.at("2010-10-04");
+    EXPECT_EQ(change.instrument_id, "88890") << "MGCZ0";
+    EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 1315.8);
+    ASSERT_TRUE(change.roll_from.has_value());
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(change.roll_from->instrument_id, "197012");
+    EXPECT_DOUBLE_EQ(change.roll_from->close, 1315.8);
+    EXPECT_EQ(on.at("2010-10-05")->roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
+
+    const auto silver = load({"SIL.v.0"}, "2013-06-10", "2013-06-21");
+    on.clear();
+    for (const auto& b : silver) on[core::format_utc_date(b.timestamp)] = &b;
+    for (const char* day : {"2013-06-10", "2013-06-14", "2013-06-16"}) {
+        ASSERT_TRUE(on.count(day)) << day;
+        EXPECT_EQ(on.at(day)->instrument_id, "113863") << day << ": SIN3";
+    }
+    const Bar& listing = *on.at("2013-06-17");
+    EXPECT_EQ(listing.instrument_id, "131488") << "SILU3";
+    EXPECT_DOUBLE_EQ(static_cast<double>(listing.close), 21.8);
+    ASSERT_TRUE(listing.roll_from.has_value());
+    EXPECT_EQ(listing.roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(listing.roll_from->instrument_id, "113863");
+    EXPECT_DOUBLE_EQ(listing.roll_from->close, 21.83);
+    PerContractSource::instance().disable();
+}
+
 // R6 (plan 10b point 5): the micros read the rule through the loader's own call. Before the
 // vendor's 2026-02-22 change MES.v.0 is the ES contract the rule holds, on Sunday 02-22 too (ESH6's
 // own bar, where the vendor names MESH6); Monday 02-23 is the one roll into MESH6, known on its bar,

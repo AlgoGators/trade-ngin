@@ -60,16 +60,54 @@ Result<RollOutlook> ContractRollSeries::outlook(Day date) const {
     }
 }
 
+GridRows grid_rows(const std::string& root, int first_param) {
+    const auto alias = micro_alias(root);
+    GridRows g;
+    const std::string own = "$" + std::to_string(first_param);
+    if (!alias || !alias->full_size_grid) {
+        g.predicate = "o.symbol = " + own;
+        g.params.append(root + ".v.0");
+        return g;
+    }
+    const std::string date = "(o.time AT TIME ZONE 'UTC')::date";
+    const std::string change = "$" + std::to_string(first_param + 1) + "::date";
+    g.predicate = "((o.symbol = " + own + " AND " + date + " >= " + change + ") OR (o.symbol = $" +
+                  std::to_string(first_param + 2) + " AND " + date + " < " + change + "))";
+    g.params.append(root + ".v.0");
+    g.params.append(ymd(alias->change));
+    g.params.append(alias->full_root + ".v.0");
+    return g;
+}
+
+std::vector<VendorBar> read_root_grid(pqxx::transaction_base& txn, const std::string& root,
+                                      Day start, Day end) {
+    const auto alias = micro_alias(root);
+    if (!alias || !alias->full_size_grid || !(start < alias->change)) {
+        return read_vendor_grid(txn, root + ".v.0", start, end);
+    }
+    auto grid = read_vendor_grid(txn, alias->full_root + ".v.0", start,
+                                 std::min(end, alias->change - std::chrono::days{1}));
+    if (!(end < alias->change)) {
+        auto own = read_vendor_grid(txn, root + ".v.0", alias->change, end);
+        grid.insert(grid.end(), std::make_move_iterator(own.begin()),
+                    std::make_move_iterator(own.end()));
+    }
+    return grid;
+}
+
 Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root) {
     const auto alias = micro_alias(root);
     try {
+        const GridRows grid = grid_rows(root, 4);
+        pqxx::params params{alias ? alias->full_root : root,
+                            alias ? ymd(alias->change) : std::string("1900-01-01"), root};
+        params.append(grid.params);
         const auto r = txn.exec(
             "SELECT min((o.time AT TIME ZONE 'UTC')::date)::text FROM futures_data.ohlcv_1d o"
-            " WHERE o.symbol = $1 AND EXISTS (SELECT 1 FROM futures_data.contract_ohlcv_1d c"
-            " WHERE c.root = (CASE WHEN (o.time AT TIME ZONE 'UTC')::date < $3::date THEN $2 ELSE $4"
+            " WHERE " + grid.predicate + " AND EXISTS (SELECT 1 FROM futures_data.contract_ohlcv_1d c"
+            " WHERE c.root = (CASE WHEN (o.time AT TIME ZONE 'UTC')::date < $2::date THEN $1 ELSE $3"
             " END) AND c.date = (o.time AT TIME ZONE 'UTC')::date)",
-            pqxx::params{root + ".v.0", alias ? alias->full_root : root,
-                         alias ? ymd(alias->change) : std::string("1900-01-01"), root});
+            params);
         if (r.empty() || r[0][0].is_null()) {
             return make_error<Day>(ErrorCode::DATA_NOT_FOUND,
                                    "root " + root + ": no grid date with a contract row",
@@ -103,7 +141,7 @@ Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const 
     RuleInputs in;
     std::shared_ptr<ContractBook> book;
     try {
-        in.grid = read_vendor_grid(txn, root + ".v.0", start, end);
+        in.grid = read_root_grid(txn, root, start, end);
         auto built = ContractBook::build(read_contract_bars(txn, roots, start - kCarryLookback, end));
         if (built.is_error()) {
             return make_error<ContractRollSeries>(built.error()->code(), built.error()->what(),

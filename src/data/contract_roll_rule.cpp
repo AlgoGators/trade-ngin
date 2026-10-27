@@ -247,6 +247,13 @@ HeldSeries Rule::run() {
                             micro = c;
                         }
                     }
+                    // MM: a micro that lists no contract of the held one's expiry (SIL on
+                    // 2013-06-17 lists from September, SI holds July) changes into its cycle target.
+                    if (!micro && in_.alias->full_size_grid) {
+                        auto target = cycle_target(book_, in_.root, in_.cycle, hk, d);
+                        if (target.is_error()) throw RuleRefusal(target.error()->what());
+                        micro = target.value();
+                    }
                     if (micro && held->bar_on(d)) {
                         day.roll = true;
                         day.old = hk;
@@ -404,11 +411,17 @@ HeldSeries Rule::run() {
 }  // namespace
 
 std::optional<MicroAlias> micro_alias(const std::string& root) {
-    static const std::map<std::string, std::string> full = {
-        {"MES", "ES"}, {"MNQ", "NQ"}, {"MYM", "YM"}, {"M2K", "RTY"}};
-    auto it = full.find(root);
-    if (it == full.end()) return std::nullopt;
-    return MicroAlias{it->second, parse_ymd("2026-02-22")};
+    static const std::map<std::string, MicroAlias> table = {
+        {"MES", {"ES", parse_ymd("2026-02-22"), false}},
+        {"MNQ", {"NQ", parse_ymd("2026-02-22"), false}},
+        {"MYM", {"YM", parse_ymd("2026-02-22"), false}},
+        {"M2K", {"RTY", parse_ymd("2026-02-22"), false}},
+        // MM: the listing dates (CME SER-5391, SER-6658).
+        {"MGC", {"GC", parse_ymd("2010-10-04"), true}},
+        {"SIL", {"SI", parse_ymd("2013-06-17"), true}}};
+    auto it = table.find(root);
+    if (it == table.end()) return std::nullopt;
+    return it->second;
 }
 
 const char* to_string(RollTrigger trigger) {

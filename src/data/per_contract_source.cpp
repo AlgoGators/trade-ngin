@@ -540,12 +540,16 @@ Result<std::vector<SourceBar>> per_contract_bars(
     using Bars = std::vector<SourceBar>;
     std::map<Day, std::string> window;
     try {
-        // The loader's own instants (build_futures_bar_query's predicate), with their text.
+        // The loader's own instants (build_futures_bar_query's predicate), with their text; for
+        // MGC and SIL before their change, the full-size root's (grid_rows).
+        const GridRows grid = grid_rows(root, 3);
+        pqxx::params params{start_ts, end_ts};
+        params.append(grid.params);
         const pqxx::result rows = txn.exec(
             "SELECT t.time::text, ((t.time AT TIME ZONE 'UTC')::date)::text FROM ("
-            "SELECT DISTINCT time FROM futures_data.ohlcv_1d"
-            " WHERE symbol = $1 AND time BETWEEN $2 AND $3) AS t ORDER BY t.time",
-            pqxx::params{root + ".v.0", start_ts, end_ts});
+            "SELECT DISTINCT o.time FROM futures_data.ohlcv_1d o"
+            " WHERE " + grid.predicate + " AND o.time BETWEEN $1 AND $2) AS t ORDER BY t.time",
+            params);
         std::vector<std::pair<std::string, std::string>> instants;
         instants.reserve(rows.size());
         for (const auto& row : rows) {

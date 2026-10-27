@@ -219,13 +219,20 @@ struct HeldSeries {
  *        the series reads the full-size root's contracts and the vendor's id names one of them; from
  *        it, the micro's own. The change is one roll (trigger ALIAS) between the two contracts of the
  *        same expiry, on the first trading-day bar on or after `change` where both print.
+ *
+ * MM (HD 2026-10-27): the gold and silver micros read the same way before their listing dates,
+ * MGC the GC contracts before 2010-10-04 and SIL the SI contracts before 2013-06-17. Their own .v.0
+ * starts at the listing, so before the change their vendor's grid is the full-size root's .v.0.
  */
 struct MicroAlias {
     std::string full_root;  ///< "ES"
     Day change{};           ///< the first date the vendor names the micro's own contract
+    /// Before `change` the grid is `full_root`.v.0 (MGC, SIL); false: the micro's own .v.0 already
+    /// carries the full-size contracts' bars (MES, MNQ, MYM, M2K).
+    bool full_size_grid{false};
 };
 
-/// The micro alias of `root` ("MES" -> ES, 2026-02-22), or nullopt.
+/// The micro alias of `root` ("MES" -> ES, 2026-02-22; "MGC" -> GC, 2010-10-04), or nullopt.
 std::optional<MicroAlias> micro_alias(const std::string& root);
 
 /// The inputs of one root's series.
