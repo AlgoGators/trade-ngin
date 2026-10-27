@@ -1133,6 +1133,16 @@ int main(int argc, char* argv[]) {
             }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
+                // MM: a predecessor with stored rows of its own (GC.v.0, SI.v.0) is not in the
+                // run's universe while its listed contract is stored; the guard judges the rest.
+                std::vector<std::string> carried;
+                symbols = ListingDates::instance().run_universe(symbols, &carried);
+                if (!carried.empty()) {
+                    std::string carried_line =
+                        "LISTING_DATES stored rows not an instrument of this run (the listed contract carries them):";
+                    for (const auto& s : carried) carried_line += " " + s;
+                    INFO(carried_line);
+                }
                 // each sleeve's stored book on its own (one sleeve's zero row must not hide
                 // another's holding), every non-zero row kept
                 std::unordered_map<std::string, Position> listing_book;

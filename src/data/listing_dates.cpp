@@ -189,6 +189,26 @@ std::vector<std::string> ListingDates::stored_symbols(const std::vector<std::str
     return out;
 }
 
+std::vector<std::string> ListingDates::run_universe(const std::vector<std::string>& symbols,
+                                                    std::vector<std::string>* dropped) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    for (const auto& symbol : symbols) {
+        const std::string root = root_of(symbol);
+        const bool carried = std::any_of(entries_.begin(), entries_.end(), [&](const Entry& entry) {
+            if (root != entry.contract.before) return false;
+            const std::string listed = entry.contract.symbol + suffix_of(symbol);
+            return std::find(symbols.begin(), symbols.end(), listed) != symbols.end();
+        });
+        if (carried) {
+            if (dropped) dropped->push_back(symbol);
+        } else {
+            out.push_back(symbol);
+        }
+    }
+    return out;
+}
+
 std::vector<ListingConversion> ListingDates::conversions_due(
     const std::vector<Bar>& signal_feed) const {
     std::lock_guard<std::mutex> lock(mutex_);

@@ -14,6 +14,7 @@
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/live/live_listing_guard.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/optimization/one_pass.hpp"
 
@@ -233,6 +234,34 @@ TEST(ListingDates, PredecessorsAreAddedOnlyToAWindowThatStartsBeforeTheListing) 
               (std::vector<std::string>{"NQ.v.0"}));
     with.push_back("NQ.v.0");
     EXPECT_EQ(rule.stored_symbols(with), symbols);
+}
+
+// MM (HD 2026-10-27): GC.v.0 and SI.v.0 keep stored rows of their own (the gold and silver micros'
+// grid before the listing). While MGC.v.0 and SIL.v.0 are stored, the pair is one instrument and the
+// predecessor is not in the run's universe; a window starting before the listing adds it back. A
+// predecessor whose listed contract is not stored stays, and with nothing declared nothing moves.
+TEST(ListingDates, AStoredPredecessorIsCarriedByItsStoredListedContract) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    const std::vector<std::string> stored = {"6A.v.0", "GC.v.0", "MES.v.0", "MGC.v.0", "SI.v.0", "SIL.v.0"};
+    EXPECT_EQ(rule.run_universe(stored), stored);
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"MGC", "GC", "2010-10-04", 10.0}, {"SIL", "SI", "2013-06-17", 5.0}});
+    std::vector<std::string> dropped;
+    const auto universe = rule.run_universe(stored, &dropped);
+    EXPECT_EQ(universe, (std::vector<std::string>{"6A.v.0", "MES.v.0", "MGC.v.0", "SIL.v.0"}));
+    EXPECT_EQ(dropped, (std::vector<std::string>{"GC.v.0", "SI.v.0"}));
+    using std::chrono::sys_days;
+    using namespace std::chrono_literals;
+    EXPECT_EQ(rule.predecessor_symbols(universe, sys_days{2010y / 10 / 23}),
+              (std::vector<std::string>{"ES.v.0", "SI.v.0"}));  // MGC listed before the window
+    EXPECT_TRUE(rule.predecessor_symbols(universe, sys_days{2024y / 8 / 21}).empty());
+    // SIL not stored: SI stays, GC still goes
+    const std::vector<std::string> no_sil = {"GC.v.0", "MGC.v.0", "SI.v.0"};
+    EXPECT_EQ(rule.run_universe(no_sil), (std::vector<std::string>{"MGC.v.0", "SI.v.0"}));
+    // the guard judges the run's universe: no refusal for the carried GC.v.0, one for a lone SI.v.0
+    const std::unordered_map<std::string, Position> none;
+    EXPECT_TRUE(live_listing_refusals(rule.contracts(), universe, none, "2026-10-22").empty());
+    EXPECT_EQ(live_listing_refusals(rule.contracts(), rule.run_universe(no_sil), none, "2026-10-22").size(), 1u);
 }
 
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,

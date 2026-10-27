@@ -205,6 +205,11 @@ int main() {
                         c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
                     if (!wrong.empty()) throw std::runtime_error(wrong);
                 }
+                // MM: a predecessor with stored rows of its own (GC.v.0, SI.v.0) is not an
+                // instrument of the run while its listed contract is stored; it comes back below
+                // only for a window that starts before the listing.
+                std::vector<std::string> carried;
+                symbols = ListingDates::instance().run_universe(symbols, &carried);
                 const auto predecessors = ListingDates::instance().predecessor_symbols(
                     symbols, config.strategy_config.start_date);
                 std::string line = std::string("LISTING_DATES in force, switch rule ") +
@@ -222,6 +227,10 @@ int main() {
                     symbols.push_back(p);
                 }
                 if (predecessors.empty()) line += " none";
+                if (!carried.empty()) {
+                    line += "; stored rows not an instrument of this run (the listed contract carries them):";
+                    for (const auto& s : carried) line += " " + s;
+                }
                 WARN(line);
             }
             config.strategy_config.symbols = symbols;

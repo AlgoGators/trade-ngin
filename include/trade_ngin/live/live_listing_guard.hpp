@@ -24,7 +24,9 @@ namespace trade_ngin {
  *     would have to trade the predecessor).
  * One line per finding, each starting "LISTING_DATE_REFUSAL"; none when nothing is declared or
  * nothing is found. `signal_date` is Day T-1 as YYYY-MM-DD; `universe` is the symbol list as the
- * database gives it, before any symbol is filtered by name; a stored row of quantity 0 is no
+ * database gives it, before any symbol is filtered by name, less each predecessor whose listed
+ * contract is stored too (ListingDates::run_universe, MM: GC.v.0 and SI.v.0 keep their own rows,
+ * the gold and silver micros' grid before the listing); a stored row of quantity 0 is no
  * position. Whose stored book a run continues is not judged here (live/stored_book_ownership.hpp).
  */
 inline std::vector<std::string> live_listing_refusals(

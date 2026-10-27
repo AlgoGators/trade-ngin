@@ -167,6 +167,16 @@ public:
     /// `symbols` without the predecessors (they have no stored rows of their own), order kept.
     std::vector<std::string> stored_symbols(const std::vector<std::string>& symbols) const;
 
+    /// MM (HD 2026-10-27): the run's universe from the database's symbol list: `symbols` without
+    /// each predecessor whose listed contract is in `symbols` too, order kept. GC.v.0 and SI.v.0
+    /// keep stored rows of their own (the gold and silver micros' grid before their listing), but
+    /// while MGC.v.0 and SIL.v.0 are stored the pair is one instrument, the listed contract; a
+    /// window that starts before the listing adds the predecessor back (predecessor_symbols). A
+    /// predecessor whose listed contract is not stored stays. `dropped` (optional) receives the
+    /// symbols left out. With no contract set: `symbols` itself.
+    std::vector<std::string> run_universe(const std::vector<std::string>& symbols,
+                                          std::vector<std::string>* dropped = nullptr) const;
+
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
     void add_predecessor_bars(const std::vector<std::string>& symbols, std::vector<Bar>& bars) const;
