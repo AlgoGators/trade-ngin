@@ -136,6 +136,29 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         configs_[config.symbol] = config;
     }
 
+    // Micro Gold (MGC) and Micro Silver (SIL), MM (HD 2026-10-27). The purchase (daily bars,
+    // definitions, statistics) holds no quotes, so the spread in ticks is the full-size contract's
+    // (the same tick in price, 0.10 and 0.005); the impact model reads the micro's own volume
+    // (ImpactModel::get_adv), which is what makes a thin micro's fill cost more.
+    {
+        AssetCostConfig config;
+        config.symbol = "MGC";
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.max_impact_bps = 50.0;
+        configs_[config.symbol] = config;
+    }
+    {
+        AssetCostConfig config;
+        config.symbol = "SIL";
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.max_impact_bps = 60.0;
+        configs_[config.symbol] = config;
+    }
+
     // Corn (ZC)
     {
         AssetCostConfig config;
