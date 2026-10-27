@@ -551,7 +551,7 @@ DayResult rebalance(const DayInputs& in) {
         out.searched = true;
         if (in.opt_carver) {
             // Strategy 25's covariance over the free rows: the overlay window's returns and each
-            // row's 32-day EWMA sd annualised by 16. No stale rule.
+            // row's blended sd (strategy three's method) annualised by 16. No stale rule.
             const double nan = std::numeric_limits<double>::quiet_NaN();
             Matrix returns(in.returns.size(), Vector(f, nan));
             for (std::size_t d = 0; d < in.returns.size(); ++d) {

@@ -47,7 +47,7 @@ public:
         std::vector<double> day;      ///< the overlay window's dates (whole day numbers)
         std::vector<double> returns;  ///< its adjusted percentage returns
         double jump_sigma_daily{0.0};  ///< the jump sigma as a daily standard deviation
-        double ewma_sigma{0.0};        ///< the 32-day EWMA sd x 16 (strategy 25's covariance)
+        double opt_sigma{0.0};         ///< strategy three's blended sd x 16 (strategy 25's covariance)
         /// The optimiser's closes, when a test gives them itself (dates, raw closes; the adjusted
         /// level is the raw close). Empty: built from the window, one close per window date.
         std::vector<double> opt_day;
@@ -110,7 +110,7 @@ public:
         out->close = row.close;
         out->multiplier = row.multiplier;
         out->jump_sigma_daily = row.jump_sigma_daily;
-        out->ewma_sigma = row.ewma_sigma;
+        out->opt_sigma = row.opt_sigma;
         out->optimal_position = row.optimal;
         out->forecast = row.forecast;
         out->signalling = row.signalling;

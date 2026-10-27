@@ -478,7 +478,7 @@ TEST_F(OnePassBookTest, AWrongSignedRowIsBufferedWhenTheConfigSaysSo) {
     EXPECT_EQ(count_of(out, "band_holds=[-]"), 1u) << out;
 }
 
-// The book's optimiser_covariance "carver" reaches the pass with the sleeve's ewma_sigma: 0 -> 5 on
+// The book's optimiser_covariance "carver" reaches the pass with the sleeve's opt_sigma: 0 -> 5 on
 // a sigma of 0.25 is a one-contract risk of 0.05, which sets B_sigma (a = (0.25 - 0.05) / 0.25 =
 // 0.8, 4 stored); today the guarded 0.01 variance (no window) sets 0.02. The log names the rule.
 TEST_F(OnePassBookTest, TheOptimisersCovarianceOfTheConfigIsThePasss) {
@@ -486,7 +486,7 @@ TEST_F(OnePassBookTest, TheOptimisersCovarianceOfTheConfigIsThePasss) {
     pc.optimiser_carver = true;
     make_pm(true, pc);
     a_->rows["AAA"] = row(5.0);
-    a_->rows["AAA"].ewma_sigma = 0.25;
+    a_->rows["AAA"].opt_sigma = 0.25;
     ::testing::internal::CaptureStdout();
     ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
     const std::string out = ::testing::internal::GetCapturedStdout();

@@ -74,7 +74,6 @@ struct Estimate {
     bool valid = false;            // false when the window has fewer than two bars
     double factor = kFixedAnnualisation;  // sqrt(bars a year) at the signal bar
     double sigma_short = 0.0;
-    double sigma_short_fixed = 0.0;  // the same daily sd annualised by 16 (strategy 25's sigma)
     double sigma_long = 0.0;
     double sigma = 0.0;            // the volatility the position is sized on
     double forecast_sigma = 0.0;   // the volatility the forecast divides by

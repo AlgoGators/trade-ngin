@@ -75,7 +75,7 @@ produce `m`, the day is refused and the held book is kept on every row (`DayResu
 | Floor of `B_sigma` as a ratio to the risk target | `optimization.b_sigma_floor` | `config/defaults.json` |
 | How `B_sigma` is set: `granularity` (default), `fixed` (the floor alone, Carver's strategy 25 buffer) or `minimal` (granularity without the held-only names) | `optimization.b_sigma_rule` | `config/defaults.json` |
 | A position held against its forecast's sign: `close` (default: closed before the search, or held by the deferral band) or `buffer` (neither; the buffer moves it like any row, Carver's strategy 25) | `optimization.wrong_sign_rule` | `config/defaults.json` |
-| The search's covariance: `sample` (default: the sample covariance of the last 756 closes) or `carver` (Carver's strategy 25: the 32-day standard deviation x 16 with exponentially weighted weekly correlations, the overlay's carver estimator) | `optimization.optimiser_covariance` | `config/defaults.json` |
+| The search's covariance: `sample` (default: the sample covariance of the last 756 closes) or `carver` (Carver's strategy 25: strategy three's standard deviation, 0.7 x the 32-day EWMA + 0.3 x its long-run mean, x 16, with exponentially weighted weekly correlations, the overlay's carver estimator) | `optimization.optimiser_covariance` | `config/defaults.json` |
 | Floor on the search's pass cap | `optimization.max_iterations` | `config/defaults.json` |
 | Per-name cap, trim cap, the five overlay limits | `per_name_cap`, `trim_max`, `R_max`, `R_jump_max`, `R_shock_max`, `max_gross_leverage`, `max_net_leverage` on the carver module | `config/portfolios/<name>/risk.json` |
 

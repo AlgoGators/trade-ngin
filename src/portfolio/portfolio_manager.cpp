@@ -2304,7 +2304,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
             in.first_signalling[i] = own[i].signalling;
             in.jump_sigma_daily[i] = own[i].jump_sigma_daily;
             in.sizing_sigma[i] = own[i].sizing_sigma;
-            in.opt_sigma[i] = own[i].ewma_sigma;
+            in.opt_sigma[i] = own[i].opt_sigma;
             slow_zeroed[i] = own[i].slow_rule_zeroed;
             in.has_bar[i] = fed.count(symbol) > 0;
             // Section 6.1: the hold applies on sized days only (in warm-up the book follows the

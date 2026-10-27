@@ -220,7 +220,7 @@ inline KeptLines kept_lines(const std::vector<std::string>& symbols, const DayIn
         const std::string& symbol = symbols[r.free_rows[a]];
         if (r.covariance.carver) {
             out.warn.push_back("COVARIANCE_NO_SIGMA symbol=" + symbol +
-                               ": no 32-day standard deviation from its sleeve for strategy 25's "
+                               ": no standard deviation from its sleeve for strategy 25's "
                                "covariance; its column is the guarded 0.01 variance with zero "
                                "covariances");
         } else if (a < r.stale.size() && r.stale[a]) {

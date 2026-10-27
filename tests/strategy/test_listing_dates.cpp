@@ -332,6 +332,43 @@ TEST(ListingDates, SleeveWithTheRuleOffSignalsEverySymbolOnEveryDay) {
     }
 }
 
+// AFTS strategy 25's sigma for the optimiser (fix round 1, HD 2026-10-27): "the standard method
+// introduced in strategy three" (p.417), the blend 0.7 x the 32-day EWMA sd + 0.3 x its long-run
+// mean (p.90), annualised by 16: the forecast's own sigma. Three hundred and seventy calm days, then
+// thirty volatile ones: the 32-day sd alone is well above the blend, so neither it nor the sizing
+// sigma (the blend on the counted annualisation) is what the sleeve hands the pass.
+TEST(ListingDates, TheOptimisersSigmaIsStrategyThreesBlendAnnualisedBySixteen) {
+    Guard guard;
+    StateManager::reset_instance();
+    Sleeve sleeve("OPT_SIGMA");
+    std::vector<Bar> bars;
+    double p = 100.0;
+    unsigned state = 11u;
+    for (int k = 0; k < 400; ++k) {
+        state = state * 1103515245u + 12345u;
+        const double u = static_cast<double>(state % 1000u) / 1000.0 - 0.5;
+        p *= 1.0 + (k < 370 ? 0.004 : 0.04) * u + 0.0005;
+        Bar b;
+        b.symbol = kOther;
+        b.timestamp = day(k) + std::chrono::hours(5);
+        b.open = Decimal(p);
+        b.high = Decimal(p * 1.002);
+        b.low = Decimal(p * 0.998);
+        b.close = Decimal(p);
+        b.volume = 100000.0;
+        b.instrument_id = "A";
+        bars.push_back(b);
+    }
+    ASSERT_TRUE(sleeve.strategy->on_data(bars).is_ok());
+    const auto& estimate = sleeve.strategy->get_all_instrument_data().at(kOther).estimate;
+    ASSERT_TRUE(estimate.valid);
+    const auto series = sleeve.series(kOther);
+    const double short_by_16 = estimate.sigma_short / estimate.factor * 16.0;  // the 32-day sd alone
+    EXPECT_EQ(series.opt_sigma, estimate.forecast_sigma);
+    EXPECT_GT(short_by_16, 1.2 * series.opt_sigma) << "the blend, not the 32-day sd alone";
+    EXPECT_NE(series.opt_sigma, series.sizing_sigma) << "16, not the counted annualisation";
+}
+
 // On: before the listing date the predecessor signals and the micro publishes nothing; from the
 // listing date the micro signals, at exactly the target the same sleeve gives a symbol that was
 // never restricted (its history was kept), and the predecessor publishes nothing.
@@ -371,11 +408,11 @@ TEST(ListingDates, SleeveSwitchesContractOnTheListingDateAndKeepsTheHistory) {
     EXPECT_EQ(sleeve.series(kMicro).multiplier, 5.0);
     EXPECT_EQ(sleeve.series(kBig).multiplier, 50.0) << "the predecessor is still weighed for its close";
     EXPECT_GT(sleeve.series(kBig).close, 0.0);
-    // strategy 25's sigma for the optimiser: the estimator's short-run sd annualised by 16
+    // strategy 25's sigma for the optimiser: the forecast's own sigma, strategy three's blend x 16
     const auto& estimate = sleeve.strategy->get_all_instrument_data().at(kOther).estimate;
-    ASSERT_GT(estimate.sigma_short_fixed, 0.0);
-    EXPECT_EQ(sleeve.series(kOther).ewma_sigma, estimate.sigma_short_fixed);
-    EXPECT_NE(sleeve.series(kOther).ewma_sigma, sleeve.series(kOther).sizing_sigma);
+    ASSERT_GT(estimate.forecast_sigma, 0.0);
+    EXPECT_EQ(sleeve.series(kOther).opt_sigma, estimate.forecast_sigma);
+    EXPECT_NE(sleeve.series(kOther).opt_sigma, sleeve.series(kOther).sizing_sigma);
 
     // the day after
     sleeve.feed_day(kListedBar + 1);

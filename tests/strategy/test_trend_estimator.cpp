@@ -157,7 +157,6 @@ TEST(TrendEstimator, ThreeThousandBarsAgainstThePlainDefinition) {
     }
     EXPECT_EQ(e.long_values, 2520u);
     EXPECT_NEAR(e.sigma_short, sizing[last], 1e-13);
-    EXPECT_NEAR(e.sigma_short_fixed, forecast[last], 1e-13) << "the same daily sd x 16, unblended";
     EXPECT_NEAR(e.sigma_long, sum / 2520.0, 1e-13);
     EXPECT_NEAR(e.sigma, 0.7 * sizing[last] + 0.3 * sum / 2520.0, 1e-13);
     EXPECT_NEAR(e.forecast_sigma, 0.7 * forecast[last] + 0.3 * fsum / 2520.0, 1e-13);

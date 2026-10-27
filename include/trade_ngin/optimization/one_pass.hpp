@@ -58,8 +58,9 @@ Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, cons
 
 /**
  * Section 5.1 under defaults.json optimization.optimiser_covariance "carver": AFTS strategy 25's
- * covariance (p.417; Appendix B p.641), sigma_i sigma_j rho_ij with sigma_i the symbol's 32-day
- * EWMA standard deviation of daily returns annualised by 16 (`sigma`, per symbol) and rho_ij the
+ * covariance (p.417; Appendix B p.641), sigma_i sigma_j rho_ij with sigma_i the symbol's standard
+ * deviation by strategy three's method (0.7 x the 32-day EWMA + 0.3 x its long-run mean, p.90)
+ * annualised by 16 (`sigma`, per symbol) and rho_ij the
  * exponentially weighted correlation of weekly returns, six-month (26-week) span, no shrinkage: the
  * overlay's carver estimator (overlay::carver_matrix) on `returns`, the symbols' daily percentage
  * returns on the dates `ordinals`. A symbol whose sigma is not a positive number is on the 0.01
@@ -222,7 +223,7 @@ struct DayInputs {
     Vector opt_ordinals;
     /// defaults.json optimization.optimiser_covariance "carver" (AFTS strategy 25): the optimiser's
     /// covariance is strategy25_covariance on `returns` and `ordinals` (the overlay's window) with
-    /// `opt_sigma` (per symbol, the 32-day EWMA sd annualised by 16); false ("sample", today):
+    /// `opt_sigma` (per symbol, strategy three's blended sd annualised by 16); false ("sample"):
     /// optimiser_covariance on the closes above.
     bool opt_carver{false};
     Vector opt_sigma;

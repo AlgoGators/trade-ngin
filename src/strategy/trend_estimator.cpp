@@ -289,7 +289,6 @@ Estimate estimate(const Window& window, int vol_span, const std::vector<std::pai
     const std::size_t lo_last = long_lo(last);
     out.long_values = last - lo_last + 1;
     out.sigma_short = sizing_short[last];
-    out.sigma_short_fixed = forecast_short[last];
     out.sigma_long = mean_of(sizing_short, lo_last, last);
     out.sigma = sizing_sigma[last];
     out.forecast_sigma = forecast_sigma[last];
