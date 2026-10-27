@@ -46,6 +46,19 @@ inline const std::vector<int>& default_spans() {
     return spans;
 }
 
+/**
+ * The speed limit for the carry spans (#185; AFTS strategy ten, table 40; fix round 1, audit A S5).
+ * A rule's yearly cost on a contract is (its turnover + 2 x rolls a year) x the contract's cost per
+ * trade, so it rises with the turnover: a carry span that turns over no faster than a trend speed the
+ * contract keeps (that speed passed the 0.15 limit, trading_rule_removals' recipe) passes it too. The
+ * sleeve refuses carry when that bound does not hold on a contract (TrendFollowingStrategy).
+ */
+/// Table 40: a carry span's turnover a year (5 5.75, 20 3.12, 60 1.82, 120 1.22); 0 for any other span.
+double carry_span_turnover(int span);
+/// Table 35: an EWMAC speed's turnover a year by its fast span (2 98.5, 4 50.2, 8 25.4, 16 13.2,
+/// 32 7.6, 64 5.2), the figures scripts/trading_rule_costs.py uses; 0 for any other.
+double trend_speed_turnover(int fast);
+
 /// nearer - held (months < 0), held - further (months > 0); 0 for months 0.
 double raw_carry(const CarryQuote& quote);
 /// |months| / 12.

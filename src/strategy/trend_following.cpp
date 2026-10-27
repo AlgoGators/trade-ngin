@@ -228,6 +228,50 @@ Result<void> TrendFollowingStrategy::validate_trend_config(
                     "TrendFollowingStrategy");
             }
         }
+        // The speed limit (#185; tables 35 and 40): every carry span must turn over no faster than
+        // the fastest trend speed each contract keeps, which passed the 0.15 limit; a span without
+        // a table 40 turnover cannot be checked. Otherwise the span's cost is unbounded on that
+        // contract and carry is refused until it is measured and the span removed.
+        int fastest_span = 0;
+        double fastest_turnover = 0.0;
+        for (int span : trend_config.carry_spans) {
+            const double turnover = carry_estimator::carry_span_turnover(span);
+            if (!(turnover > 0.0)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Carry span " + std::to_string(span) +
+                        " has no turnover in Carver's table 40 (5, 20, 60, 120): its cost cannot "
+                        "be checked against the speed limit",
+                    "TrendFollowingStrategy");
+            }
+            if (turnover > fastest_turnover) {
+                fastest_turnover = turnover;
+                fastest_span = span;
+            }
+        }
+        auto bounded = [&](const std::string& contract,
+                           const std::vector<std::pair<int, int>>& kept) -> Result<void> {
+            const int fast = kept.empty() ? 0 : kept.front().first;
+            const double kept_turnover = carry_estimator::trend_speed_turnover(fast);
+            if (kept_turnover >= fastest_turnover) return Result<void>();
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Carry is on and the speed limit does not bound carry span " +
+                    std::to_string(fastest_span) + " on " + contract + ": it turns over " +
+                    std::to_string(fastest_turnover) + " a year (table 40), more than the fastest "
+                    "trend speed the contract keeps, EWMAC" + std::to_string(fast) + " (" +
+                    std::to_string(kept_turnover) +
+                    ", table 35); measure its cost (scripts/trading_rule_costs.py) first",
+                "TrendFollowingStrategy");
+        };
+        if (auto every = bounded("every contract", trend_config.ema_windows); every.is_error()) {
+            return every;
+        }
+        for (const auto& [removal_symbol, removed] : trend_config.rule_removals) {
+            auto kept = bounded(removal_symbol,
+                                trend_estimator::pairs_after_removal(trend_config.ema_windows, removed));
+            if (kept.is_error()) return kept;
+        }
     }
 
     // The two contracts of a listing-date pair run one price history as one instrument: the same

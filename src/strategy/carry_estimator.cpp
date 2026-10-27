@@ -10,6 +10,40 @@
 namespace trade_ngin {
 namespace carry_estimator {
 
+double carry_span_turnover(int span) {
+    switch (span) {
+        case 5:
+            return 5.75;
+        case 20:
+            return 3.12;
+        case 60:
+            return 1.82;
+        case 120:
+            return 1.22;
+        default:
+            return 0.0;
+    }
+}
+
+double trend_speed_turnover(int fast) {
+    switch (fast) {
+        case 2:
+            return 98.5;
+        case 4:
+            return 50.2;
+        case 8:
+            return 25.4;
+        case 16:
+            return 13.2;
+        case 32:
+            return 7.6;
+        case 64:
+            return 5.2;
+        default:
+            return 0.0;
+    }
+}
+
 double raw_carry(const CarryQuote& quote) {
     if (quote.months < 0) return quote.other_close - quote.held_close;
     if (quote.months > 0) return quote.held_close - quote.other_close;

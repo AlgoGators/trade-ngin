@@ -23,6 +23,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #undef private
+#include "trade_ngin/strategy/carry_estimator.hpp"
 #include "trade_ngin/strategy/carry_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 
@@ -443,4 +444,54 @@ TEST(CarryConfig, ABacktestStoresItsCarryOnlyWhenCarryIsOn) {
         EXPECT_EQ(n, 1u) << runner;
         EXPECT_LT(source.find(guarded), source.find("coordinator->save_portfolio_results_to_db(")) << runner;
     }
+}
+
+// The speed limit as a check (fix round 1, audit A S5; #185, tables 35 and 40): a carry span may run
+// only where a trend speed the contract keeps turns over at least as fast, so the span's cost is
+// bounded by a cost that passed 0.15. The committed list keeps EWMAC16 everywhere (13.2 >= 5.75).
+TEST(CarryConfig, TheSpeedLimitBoundsEveryCarrySpanOrCarryIsRefused) {
+    EXPECT_EQ(carry_estimator::carry_span_turnover(5), 5.75);
+    EXPECT_EQ(carry_estimator::carry_span_turnover(20), 3.12);
+    EXPECT_EQ(carry_estimator::carry_span_turnover(60), 1.82);
+    EXPECT_EQ(carry_estimator::carry_span_turnover(120), 1.22);
+    EXPECT_EQ(carry_estimator::carry_span_turnover(40), 0.0);
+    EXPECT_EQ(carry_estimator::trend_speed_turnover(16), 13.2);
+    EXPECT_EQ(carry_estimator::trend_speed_turnover(64), 5.2);
+    using Pairs = std::vector<std::pair<int, int>>;
+    const Pairs six = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
+    TrendFollowingConfig c;
+    c.carry_weight = 0.4;
+    // the committed list's deepest removal (ZR: the three fastest) keeps EWMAC16
+    c.rule_removals = {{"ZR", Pairs(six.begin(), six.begin() + 3)}};
+    EXPECT_TRUE(TrendFollowingStrategy::validate_trend_config(c).is_ok());
+    // keeping EWMAC32 and 64 still bounds Carry5 (7.6 >= 5.75)
+    c.rule_removals = {{"ZR", Pairs(six.begin(), six.begin() + 4)}};
+    EXPECT_TRUE(TrendFollowingStrategy::validate_trend_config(c).is_ok());
+    // keeping EWMAC64 alone does not (5.2 < 5.75): refused, naming the contract and the span
+    c.rule_removals = {{"ZR", Pairs(six.begin(), six.begin() + 5)}};
+    auto refused = TrendFollowingStrategy::validate_trend_config(c);
+    ASSERT_TRUE(refused.is_error());
+    EXPECT_NE(std::string(refused.error()->what()).find("does not bound carry span 5 on ZR"), std::string::npos)
+        << refused.error()->what();
+    // without Carry5 the slower spans are bounded by EWMAC64 (5.2 >= 3.12)
+    c.carry_spans = {20, 60, 120};
+    EXPECT_TRUE(TrendFollowingStrategy::validate_trend_config(c).is_ok());
+    // a sleeve of EWMAC64 alone does not bound Carry5 on any contract
+    TrendFollowingConfig slow;
+    slow.carry_weight = 0.4;
+    slow.ema_windows = {{64, 256}};
+    auto every = TrendFollowingStrategy::validate_trend_config(slow);
+    ASSERT_TRUE(every.is_error());
+    EXPECT_NE(std::string(every.error()->what()).find("on every contract"), std::string::npos);
+    // a span table 40 does not have cannot be checked
+    TrendFollowingConfig odd;
+    odd.carry_weight = 0.4;
+    odd.carry_spans = {5, 40};
+    auto unknown = TrendFollowingStrategy::validate_trend_config(odd);
+    ASSERT_TRUE(unknown.is_error());
+    EXPECT_NE(std::string(unknown.error()->what()).find("Carry span 40 has no turnover"), std::string::npos);
+    // carry off checks nothing
+    TrendFollowingConfig off = slow;
+    off.carry_weight = 0.0;
+    EXPECT_TRUE(TrendFollowingStrategy::validate_trend_config(off).is_ok());
 }
