@@ -81,9 +81,9 @@ protected:
         TestBase::TearDown();
     }
 
-    void make_pm(bool backtest = true) {
+    void make_pm(bool backtest = true, PortfolioConfig pc = one_pass_config("A")) {
         static int n = 0;
-        pm_ = std::make_unique<PortfolioManager>(one_pass_config("A"), "PM_LS_" + std::to_string(++n));
+        pm_ = std::make_unique<PortfolioManager>(pc, "PM_LS_" + std::to_string(++n));
         pm_->set_backtest_mode(backtest);
         a_ = make_overlay_stub("A", 500000.0, db_);
         ASSERT_TRUE(a_->initialize().is_ok());
@@ -254,6 +254,26 @@ TEST_F(ListingSwitchPassTest, AHoldingInsideTheDeferralBandIsCarriedAndHeldThenS
     const auto ordinary = fills("EX-");
     ASSERT_EQ(ordinary.size(), 2u);
     EXPECT_NE(ordinary[1].find("TMIC.v.0 -20"), std::string::npos) << ordinary[1];
+}
+
+// Under wrong_sign_rule "buffer" there is no deferral band, at the listing switch as in the pass:
+// the holding against a forecast of -1 (inside today's band, carried there as 20 micros) is exited
+// and the listed contract entered at its rounded target, -3.
+TEST_F(ListingSwitchPassTest, UnderTheBufferRuleTheSwitchHasNoBand) {
+    ListingDates::instance().set(the_pair());
+    PortfolioConfig pc = one_pass_config("A");
+    pc.wrong_sign_buffer = true;
+    make_pm(true, pc);
+    before(3.0);
+    ASSERT_TRUE(rebalance(kBefore).is_ok());
+    ASSERT_EQ(quantity(kBig), 2.0);
+    listed(-3.4, -1.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(kListed).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 -3"}));
+    EXPECT_EQ(quantity(kBig), 0.0);
+    EXPECT_EQ(out.find("deferral band: carried"), std::string::npos) << out;
 }
 
 // A target beyond the per-name cap is entered at the cap, never above it.

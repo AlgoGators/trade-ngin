@@ -2570,7 +2570,8 @@ Result<void> PortfolioManager::rebalance_book(
                 }
                 // the deferral band (section 5.2) on the predecessor's holding: the listed
                 // contract's first-sleeve forecast is weaker than the band and against the holding
-                const bool in_band = in.first_signalling[i_to] &&
+                // (none under wrong_sign_rule "buffer", which has no band)
+                const bool in_band = !in.wrong_sign_buffer && in.first_signalling[i_to] &&
                                      in.held[i_from] * in.first_forecast[i_to] < 0.0 &&
                                      std::abs(in.first_forecast[i_to]) < in.sign_band;
                 due.push_back({c, i_from, i_to, in_band});
