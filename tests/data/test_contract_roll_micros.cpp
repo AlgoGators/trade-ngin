@@ -126,6 +126,54 @@ TEST(ContractRollMicros, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirList
     EXPECT_EQ(gold.params.size(), 3);
 }
 
+// The three reads of a root's grid, without a database: any root but MGC and SIL reads its own .v.0
+// over the range with the same SQL as before; MGC and SIL read the full-size .v.0 to the day before
+// their change and their own from it, each side left out when the range does not reach it.
+TEST(ContractRollMicros, TheGridReadsSplitAtTheChangeForTheGoldAndSilverMicrosOnly) {
+    const auto mes = root_grid_reads("MES", d("2010-06-07"), d("2026-10-23"));
+    ASSERT_EQ(mes.size(), 1u);
+    EXPECT_EQ(mes[0].symbol, "MES.v.0");
+    EXPECT_EQ(ymd(mes[0].from), "2010-06-07");
+    EXPECT_EQ(ymd(mes[0].to), "2026-10-23");
+    const auto gold = root_grid_reads("MGC", d("2010-06-07"), d("2026-10-23"));
+    ASSERT_EQ(gold.size(), 2u);
+    EXPECT_EQ(gold[0].symbol, "GC.v.0");
+    EXPECT_EQ(ymd(gold[0].from), "2010-06-07");
+    EXPECT_EQ(ymd(gold[0].to), "2010-10-03");
+    EXPECT_EQ(gold[1].symbol, "MGC.v.0");
+    EXPECT_EQ(ymd(gold[1].from), "2010-10-04");
+    EXPECT_EQ(ymd(gold[1].to), "2026-10-23");
+    const auto before = root_grid_reads("SIL", d("2012-01-02"), d("2013-06-14"));
+    ASSERT_EQ(before.size(), 1u);
+    EXPECT_EQ(before[0].symbol, "SI.v.0");
+    EXPECT_EQ(ymd(before[0].to), "2013-06-14");
+    const auto after = root_grid_reads("SIL", d("2013-06-17"), d("2014-01-02"));
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after[0].symbol, "SIL.v.0");
+
+    // series_start's query: the predicate after the three CASE parameters
+    const auto [own_sql, own_params] = series_start_query("GC");
+    EXPECT_NE(own_sql.find(" WHERE o.symbol = $4 AND EXISTS"), std::string::npos) << own_sql;
+    EXPECT_EQ(own_params.size(), 4);
+    const auto [gold_sql, gold_params] = series_start_query("MGC");
+    EXPECT_NE(gold_sql.find(" WHERE ((o.symbol = $4 AND (o.time AT TIME ZONE 'UTC')::date >= $5::date) OR "
+                            "(o.symbol = $6 AND (o.time AT TIME ZONE 'UTC')::date < $5::date)) AND EXISTS"),
+              std::string::npos)
+        << gold_sql;
+    EXPECT_EQ(gold_params.size(), 6);
+
+    // the source's window query: unchanged text for any other root
+    const auto [zn_sql, zn_params] = grid_window_query("ZN", "2026-01-01 00:00:00", "2026-02-01 00:00:00");
+    EXPECT_EQ(zn_sql,
+              "SELECT t.time::text, ((t.time AT TIME ZONE 'UTC')::date)::text FROM (SELECT DISTINCT o.time "
+              "FROM futures_data.ohlcv_1d o WHERE o.symbol = $3 AND o.time BETWEEN $1 AND $2) AS t ORDER BY t.time");
+    EXPECT_EQ(zn_params.size(), 3);
+    const auto [sil_sql, sil_params] = grid_window_query("SIL", "2013-01-01 00:00:00", "2014-01-01 00:00:00");
+    EXPECT_NE(sil_sql.find("WHERE ((o.symbol = $3 AND"), std::string::npos) << sil_sql;
+    EXPECT_NE(sil_sql.find("(o.symbol = $5 AND"), std::string::npos) << sil_sql;
+    EXPECT_EQ(sil_params.size(), 5);
+}
+
 // MGC across its listing: GCZ0 is held on GC's grid to Friday 2010-10-01, and on Monday 10-04 the
 // change rolls once into MGCZ0 (same expiry 2010-12-29), trigger alias, read like R6's change.
 TEST(ContractRollMicros, MgcReadsGcZ0UntilItsListingAndChangesOnceIntoMgcZ0) {

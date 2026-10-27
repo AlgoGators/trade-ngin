@@ -75,10 +75,25 @@ struct GridRows {
 };
 GridRows grid_rows(const std::string& root, int first_param);
 
-/// The vendor's grid of `root` over [start, end]: its own .v.0, or with a full-size grid before the
-/// change, `<full_root>.v.0` before it and `<root>.v.0` from it. Read only; throws what pqxx throws.
+/// One read of the vendor's grid: the rows of `symbol` over [from, to].
+struct GridRead {
+    std::string symbol;
+    Day from{};
+    Day to{};
+};
+/// The reads of `root`'s grid over [start, end], in date order: `<root>.v.0` over the range, or for a
+/// micro whose alias reads the full-size grid before its change, `<full_root>.v.0` to the day before
+/// the change and `<root>.v.0` from it (the second left out when the range ends before the change).
+std::vector<GridRead> root_grid_reads(const std::string& root, Day start, Day end);
+
+/// The vendor's grid of `root` over [start, end]: root_grid_reads, each read with read_vendor_grid.
+/// Read only; throws what pqxx throws.
 std::vector<VendorBar> read_root_grid(pqxx::transaction_base& txn, const std::string& root,
                                       Day start, Day end);
+
+/// series_start's SELECT and its parameters: $1 to $3 the root the contracts are read under before the
+/// change, the change date and the root itself; grid_rows from $4.
+std::pair<std::string, pqxx::params> series_start_query(const std::string& root);
 
 /// The first grid date of `root`'s vendor series on which the contracts the series reads that day
 /// have a row (for a micro before its change, its full-size root's). Read only.

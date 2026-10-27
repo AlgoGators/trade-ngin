@@ -219,6 +219,12 @@ Result<std::map<Day, std::string>> grid_window(
 size_t drop_before_series_start(const std::string& root, std::map<Day, std::string>& window,
                                 Day start);
 
+/// per_contract_bars' read of the grid's instants of `root` over [start_ts, end_ts]: the SELECT and its
+/// parameters ($1, $2 the range; grid_rows from $3).
+std::pair<std::string, pqxx::params> grid_window_query(const std::string& root,
+                                                       const std::string& start_ts,
+                                                       const std::string& end_ts);
+
 /**
  * @brief Reads and builds `root`'s bars over the vendor grid's instants in [start_ts, end_ts]
  *        (the loader's predicate `time BETWEEN $1 AND $2`, timestamps as the loader formats them),

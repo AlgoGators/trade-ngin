@@ -534,22 +534,28 @@ size_t drop_before_series_start(const std::string& root, std::map<Day, std::stri
     return before_start;
 }
 
+std::pair<std::string, pqxx::params> grid_window_query(const std::string& root,
+                                                       const std::string& start_ts,
+                                                       const std::string& end_ts) {
+    // The loader's own instants (build_futures_bar_query's predicate), with their text; for MGC and
+    // SIL before their change, the full-size root's (grid_rows).
+    const GridRows grid = grid_rows(root, 3);
+    pqxx::params params{start_ts, end_ts};
+    params.append(grid.params);
+    return {"SELECT t.time::text, ((t.time AT TIME ZONE 'UTC')::date)::text FROM ("
+            "SELECT DISTINCT o.time FROM futures_data.ohlcv_1d o"
+            " WHERE " + grid.predicate + " AND o.time BETWEEN $1 AND $2) AS t ORDER BY t.time",
+            params};
+}
+
 Result<std::vector<SourceBar>> per_contract_bars(
     pqxx::transaction_base& txn, const std::string& root, const std::string& start_ts,
     const std::string& end_ts, const FuturesCalendar& calendars, SwitchBar switch_bar) {
     using Bars = std::vector<SourceBar>;
     std::map<Day, std::string> window;
     try {
-        // The loader's own instants (build_futures_bar_query's predicate), with their text; for
-        // MGC and SIL before their change, the full-size root's (grid_rows).
-        const GridRows grid = grid_rows(root, 3);
-        pqxx::params params{start_ts, end_ts};
-        params.append(grid.params);
-        const pqxx::result rows = txn.exec(
-            "SELECT t.time::text, ((t.time AT TIME ZONE 'UTC')::date)::text FROM ("
-            "SELECT DISTINCT o.time FROM futures_data.ohlcv_1d o"
-            " WHERE " + grid.predicate + " AND o.time BETWEEN $1 AND $2) AS t ORDER BY t.time",
-            params);
+        const auto [sql, params] = grid_window_query(root, start_ts, end_ts);
+        const pqxx::result rows = txn.exec(sql, params);
         std::vector<std::pair<std::string, std::string>> instants;
         instants.reserve(rows.size());
         for (const auto& row : rows) {
