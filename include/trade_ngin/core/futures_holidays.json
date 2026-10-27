@@ -45,7 +45,9 @@
           "GC",
           "SI",
           "HG",
-          "PL"
+          "PL",
+          "MGC",
+          "SIL"
         ],
         "grains": [
           "ZC",
