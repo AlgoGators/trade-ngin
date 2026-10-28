@@ -101,7 +101,7 @@ struct SymbolDayVerdict {
     bool has_bar{false};
     double volume{0.0};
     double close{0.0};
-    std::optional<double> norm;  ///< trailing weekday median; empty while the symbol has none
+    std::optional<double> norm;  ///< weekday median from its last source change; empty if none
     int norm_bars{0};            ///< how many weekday bars the norm was taken over
     std::optional<double> ratio; ///< volume / norm
     std::string last_bar_date;   ///< no bar: the symbol's latest bar strictly before `date`
@@ -221,10 +221,10 @@ public:
     SymbolDayVerdict classify_symbol_day(const std::string& symbol, Day date,
                                          const HolidayLookup& holidays) const;
 
-    /// Median volume of the symbol's trailing weekday SESSION bars strictly before `date` (all its
-    /// weekday bars while it has no SESSION one); empty when it has no weekday bar before `date`
-    /// or when that median is 0. `bars_used` receives how many bars it was taken
-    /// over. Each earlier bar's own verdict is computed forward in date order and cached; adding
+    /// Median volume of the symbol's trailing weekday SESSION bars strictly before `date` and on or
+    /// after its latest change of price source before `date` (all such weekday bars while none is
+    /// SESSION); empty when it has none or when that median is 0. `bars_used` receives the count
+    /// of bars. Each earlier bar's own verdict is computed forward in date order and cached; adding
     /// a bar drops the cached verdicts from its date on. Not safe for concurrent calls (the
     /// runners and the backtest coordinator use one classifier from one thread).
     std::optional<double> norm(const std::string& symbol, Day date, int* bars_used = nullptr) const;
