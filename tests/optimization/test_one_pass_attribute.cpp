@@ -111,6 +111,23 @@ TEST(OnePassAttribute, RoundingIsRounding) {
     EXPECT_EQ(moved(r), "rounding");
 }
 
+// buffer_step_rule edge: the same row as RoundingIsRounding, but the buffer's book is the edge
+// book, whole contracts (0), so the buffer moved it 0.6 and the rounding nothing: never "rounding".
+TEST(OnePassAttribute, AnEdgeBookIsTheBuffersAndNeverTheRoundings) {
+    Row r = passthrough(1.0, 0.0);
+    r.out.search_book = {0.6};
+    r.out.a = 0.8;
+    r.out.edge = true;
+    r.out.edge_book = {0.0};
+    r.out.pre_trim = {0.0};
+    r.out.book = {0.0};
+    EXPECT_EQ(moved(r), "buffer");
+    r.out.edge_book = {1.0};  // the edge book is the ask: the row is stored where it was asked
+    r.out.pre_trim = {1.0};
+    r.out.book = {1.0};
+    EXPECT_EQ(moved(r), "none");
+}
+
 TEST(OnePassAttribute, ARoundingBackToTheAskIsNone) {
     Row r = passthrough(3.0, 2.0);
     r.out.a = 0.9;  // buffered 2.9, rounded 3: stored == asked

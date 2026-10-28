@@ -38,6 +38,15 @@ inline long count(const Mask& mask) {
     return n;
 }
 
+// buffer_step_rule edge: the buffer's steps as SYMBOL+1 or SYMBOL-1, in the order taken.
+inline std::string edge_order(const std::vector<std::string>& symbols, const DayResult& r) {
+    std::string out;
+    for (const auto& [symbol, step] : r.edge_steps) {
+        out += (out.empty() ? "" : " ") + symbols[symbol] + (step > 0.0 ? "+1" : "-1");
+    }
+    return out.empty() ? std::string("-") : out;
+}
+
 }  // namespace log_detail
 
 /// The OVERLAY line: m, the binding term, the five readings of the capped target (the three risk
@@ -90,7 +99,8 @@ inline std::string overlay_line(const std::vector<std::string>& symbols, const D
 /// The OPTIMISER line: the search's tracking error with its cost term, its passes and whether the
 /// pass cap ended it, TE_h, B_sigma and the symbol that sets it ("floor" when the floor governs),
 /// a, whether the buffer traded and whether the rounding returned the book to the held one, the
-/// forecast-sign closes, the cap clips, the close-outs and the free rows on the 0.01 diagonal.
+/// forecast-sign closes, the cap clips, the close-outs and the free rows on the 0.01 diagonal; on
+/// buffer_step_rule edge, the buffer's steps, its book's TE, why it stopped and the steps in order.
 inline std::string optimiser_line(const std::vector<std::string>& symbols, const DayResult& r) {
     using log_detail::num;
     Mask stale(symbols.size(), 0);
@@ -107,7 +117,12 @@ inline std::string optimiser_line(const std::vector<std::string>& symbols, const
            " sign_closes=[" + log_detail::names(symbols, r.sign_closed) + "] cap_clips=[" +
            log_detail::names(symbols, r.clipped) + "] close_outs=[" +
            log_detail::names(symbols, r.closeout) + "] stale=[" + log_detail::names(symbols, stale) +
-           "]" + (r.returned_to_held ? " buffer traded, rounding returned to held" : "");
+           "]" + (r.returned_to_held ? " buffer traded, rounding returned to held" : "") +
+           (r.edge ? " buffer_step_rule=edge edge_steps=" + std::to_string(r.edge_steps.size()) +
+                         " edge_te=" + num(r.edge_te) + " edge_stop=" +
+                         (!r.traded ? "-" : (r.edge_inside ? "inside" : "no_lower")) +
+                         " edge_order=[" + log_detail::edge_order(symbols, r) + "]"
+                   : std::string());
 }
 
 /// The BOOK line: the gross weights on the sizing capital of the raw target N*, the capped target,

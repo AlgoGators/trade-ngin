@@ -2073,7 +2073,8 @@ bool PortfolioManager::one_pass_book() const {
 
 void PortfolioManager::record_no_pass(const std::string& signal_date, Timestamp cycle,
                                       bool is_warmup) const {
-    one_pass::append_no_pass_record(id_, signal_date, core::format_utc_date(cycle), is_warmup);
+    one_pass::append_no_pass_record(id_, signal_date, core::format_utc_date(cycle), is_warmup,
+                                    config_.buffer_step_rule == one_pass::BufferStepRule::kEdge);
 }
 
 OnePassDay PortfolioManager::last_one_pass() const {
@@ -2265,6 +2266,7 @@ PortfolioManager::OnePassBuild PortfolioManager::build_one_pass_inputs(
         in.b_sigma_rule = config_.b_sigma_rule;
         in.wrong_sign_buffer = config_.wrong_sign_buffer;
         in.opt_carver = config_.optimiser_carver;
+        in.buffer_step_rule = config_.buffer_step_rule;
         in.trim_max = config_.trim_max;
         in.max_iterations = config_.opt_config.max_iterations;
         {

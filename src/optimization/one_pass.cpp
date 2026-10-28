@@ -293,7 +293,7 @@ std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const
 }
 
 Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
-                const Matrix& covariance, double b) {
+                const Matrix& covariance, double b, BufferStepRule rule, const Vector& cost) {
     Buffered out;
     Vector delta(held.size(), 0.0);
     for (std::size_t i = 0; i < held.size(); ++i) delta[i] = (held[i] - searched[i]) * u[i];
@@ -305,6 +305,45 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
     }
     out.a = (out.te_held - b) / out.te_held;
     out.traded = true;
+    if (rule == BufferStepRule::kEdge) {
+        // One contract at a time toward the answer, the lowest tracking error first, to the edge.
+        // Every candidate is scored on the same quadratic as TE_h, recomputed in full.
+        Vector current = held;
+        double te = out.te_held;
+        while (te > b) {
+            double best_te = kInf;
+            double best_cost = kInf;
+            long best = -1;
+            double best_step = 0.0;
+            for (std::size_t i = 0; i < held.size(); ++i) {
+                const double gap = searched[i] - current[i];
+                if (std::abs(gap) < 1.0) continue;  // at the answer: never passes or leaves it
+                const double step = sign(gap);
+                delta[i] = (current[i] + step - searched[i]) * u[i];
+                const double candidate = std::sqrt(std::max(quadratic(delta, covariance), 0.0));
+                delta[i] = (current[i] - searched[i]) * u[i];
+                const double c = i < cost.size() ? cost[i] : 0.0;
+                if (candidate < best_te || (candidate == best_te && c < best_cost)) {
+                    best_te = candidate;
+                    best_cost = c;
+                    best = static_cast<long>(i);
+                    best_step = step;
+                }
+            }
+            if (best < 0 || !(best_te < te)) break;  // no move lowers the error
+            const std::size_t i = static_cast<std::size_t>(best);
+            current[i] += best_step;
+            delta[i] = (current[i] - searched[i]) * u[i];
+            out.steps.emplace_back(i, best_step);
+            te = best_te;
+        }
+        out.book = current;
+        out.unrounded = current;
+        out.te_book = te;
+        out.inside = te <= b;
+        out.returned_to_held = out.steps.empty();
+        return out;
+    }
     out.unrounded.assign(held.size(), 0.0);
     out.book.assign(held.size(), 0.0);
     bool same = true;
@@ -617,11 +656,22 @@ DayResult rebalance(const DayInputs& in) {
                                           in.b_sigma_floor, in.b_sigma_rule);
         out.b_sigma = b;
         out.b_symbol = b_index < 0 ? -1 : static_cast<long>(out.free_rows[static_cast<std::size_t>(b_index)]);
-        const Buffered buffered = buffer(found.book, hf, uf, out.covariance.matrix, b);
+        const Buffered buffered =
+            buffer(found.book, hf, uf, out.covariance.matrix, b, in.buffer_step_rule, cost);
         out.te_held = buffered.te_held;
         out.a = buffered.a;
         out.traded = buffered.traded;
         out.returned_to_held = buffered.returned_to_held;
+        if (in.buffer_step_rule == BufferStepRule::kEdge) {
+            out.edge = true;
+            out.edge_book = closed_held;
+            for (std::size_t a = 0; a < f; ++a) out.edge_book[out.free_rows[a]] = buffered.book[a];
+            for (const auto& [row, step] : buffered.steps) {
+                out.edge_steps.emplace_back(out.free_rows[row], step);
+            }
+            out.edge_te = buffered.te_book;
+            out.edge_inside = buffered.inside;
+        }
         const auto [clipped_book, clipped] = clip_to_cap(buffered.book, uf, in.cap, Mask(f, 1));
         for (std::size_t a = 0; a < f; ++a) {
             const std::size_t i = out.free_rows[a];
@@ -744,8 +794,11 @@ std::vector<std::string> attribute(const DayInputs& in, const DayResult& out) {
         const double capped = at(out.capped_target, i, asked);
         const double scaled = at(out.scaled_target, i, capped);
         const double searched = at(out.search_book, i, scaled);
-        const double buffered = out.traded ? closed + out.a * (searched - closed) : closed;
-        const double rounded = out.traded ? round_half_away(buffered) : closed;
+        // Under buffer_step_rule edge the buffer's book is whole contracts: nothing to round.
+        const double buffered = !out.traded ? closed
+                                : out.edge  ? at(out.edge_book, i, closed)
+                                            : closed + out.a * (searched - closed);
+        const double rounded = out.traded && !out.edge ? round_half_away(buffered) : buffered;
         const double clipped = at(out.pre_trim, i, rounded);
         const std::vector<std::pair<const char*, double>> chain = {
             {"cap", capped},     {"overlay", scaled},   {"search", searched}, {"buffer", buffered},

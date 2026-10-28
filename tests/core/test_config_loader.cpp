@@ -1414,6 +1414,34 @@ TEST_F(ConfigLoaderTest, TheOptimiserCovarianceIsOptionalAndNamed) {
     }
 }
 
+// buffer_step_rule (STEP), the same way: optional, "fraction" or "edge", anything else refused.
+TEST_F(ConfigLoaderTest, TheBufferStepRuleIsOptionalAndNamed) {
+    write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().buffer_step_rule, "");
+    for (const char* value : {"fraction", "edge"}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["buffer_step_rule"] = value;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_ok()) << value;
+        EXPECT_EQ(r.value().buffer_step_rule, value);
+    }
+    for (const nlohmann::json& bad : {nlohmann::json("Edge"), nlohmann::json("fractional"),
+                                      nlohmann::json(1)}) {
+        nlohmann::json defaults = loop_defaults();
+        defaults["optimization"]["buffer_step_rule"] = bad;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        r = ConfigLoader::load(base_, "base");
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what())
+                      .find("optimization.buffer_step_rule must be one of \"fraction\", \"edge\""),
+                  std::string::npos)
+            << r.error()->what();
+    }
+}
+
 // LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
 // is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
 // optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.

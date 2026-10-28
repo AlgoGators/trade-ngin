@@ -125,8 +125,23 @@ std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const
                                 const Vector& held, double tau, double floor_ratio,
                                 BSigmaRule rule);
 
+/**
+ * How the buffer moves a book whose TE_h is above B (defaults.json optimization.buffer_step_rule;
+ * absent: fraction). The no-trade check is the same under both.
+ *   - kFraction (today, AFTS strategy 25 as written): every row moves the one shared fraction
+ *     a = (TE_h - B) / TE_h of the way to the search's answer and is rounded to nearest.
+ *   - kEdge (Carver's stated aim, "trade until the tracking error is equal to the buffer"): from
+ *     the held book, one contract at a time toward the search's answer in the row whose move gives
+ *     the lowest tracking error against the answer (ties: the lower cost per contract, then the
+ *     row order), stopping as soon as the error is at or below B or when no move lowers it. A row
+ *     never passes or leaves its answer.
+ */
+enum class BufferStepRule { kFraction, kEdge };
+
 /// Section 5.3: TE_h = sqrt((h - y)' Sigma (h - y)) in weights. At or below B: no trade. Otherwise
-/// the book is h + a (y - h), a = (TE_h - B) / TE_h, rounded to nearest.
+/// the book is h + a (y - h), a = (TE_h - B) / TE_h, rounded to nearest (kFraction), or the held
+/// book stepped toward y one contract at a time to the buffer's edge (kEdge, where `a` is still
+/// set, as the fraction the book would have used, and `unrounded` is the book itself).
 struct Buffered {
     Vector book;
     Vector unrounded;
@@ -134,10 +149,16 @@ struct Buffered {
     double a{0.0};
     bool traded{false};
     bool returned_to_held{false};  ///< it traded and the rounding gave the held book back
+    // kEdge only (empty or zero under kFraction):
+    std::vector<std::pair<std::size_t, double>> steps;  ///< (row, +1 or -1) in the order taken
+    double te_book{0.0};    ///< TE of the returned book against y
+    bool inside{false};     ///< it stopped at or below B (false: no move lowered the error)
 };
 
+/// `cost` (per row, one contract's cost; empty reads as zero) breaks kEdge's ties only.
 Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
-                const Matrix& covariance, double b);
+                const Matrix& covariance, double b,
+                BufferStepRule rule = BufferStepRule::kFraction, const Vector& cost = {});
 
 /// Section 5.2: a held position on the opposite side of the forecast's sign is closed to flat
 /// before the search. Returns the closed book and the rows closed.
@@ -188,6 +209,8 @@ struct DayInputs {
     /// the deferral band; it is a free row like any other and the buffer moves it a of the way to
     /// the search's answer. false ("close", today): the forecast-sign close and the band.
     bool wrong_sign_buffer{false};
+    /// defaults.json optimization.buffer_step_rule: how the buffer reaches its edge (Buffered).
+    BufferStepRule buffer_step_rule{BufferStepRule::kFraction};
     int trim_max{5};
     long max_iterations{100};
     overlay::Limits limits;         ///< the overlay's five limits, in reading units
@@ -261,6 +284,14 @@ struct DayResult {
     double a{0.0};
     bool traded{false};
     bool returned_to_held{false};
+    /// buffer_step_rule edge: the buffer's book per symbol (the held quantity off the free rows),
+    /// its one-contract steps as (symbol, +1 or -1) in the order taken, the TE of its book against
+    /// the search's answer and whether it stopped at or below B. Empty or zero under fraction.
+    bool edge{false};
+    Vector edge_book;
+    std::vector<std::pair<std::size_t, double>> edge_steps;
+    double edge_te{0.0};
+    bool edge_inside{false};
     Mask clipped;           ///< free rows clipped to the cap after the rounding
     Covariance covariance;  ///< over the free rows, in their order
     std::vector<std::size_t> free_rows;
@@ -316,7 +347,9 @@ DayResult rebalance(const DayInputs& in);
  *     flat against a non-zero ask.
  *   - otherwise the step whose own change to the row was largest, ties to the earlier step, along
  *     the chain asked -> capped (cap) -> scaled (overlay) -> searched (search) -> buffered
- *     unrounded (buffer) -> rounded (rounding) -> clipped (clip) -> trimmed (trim).
+ *     unrounded (buffer) -> rounded (rounding) -> clipped (clip) -> trimmed (trim). Under
+ *     buffer_step_rule edge the buffered book is the edge book, whole contracts, so the rounding
+ *     never moves a row.
  */
 std::vector<std::string> attribute(const DayInputs& in, const DayResult& out);
 

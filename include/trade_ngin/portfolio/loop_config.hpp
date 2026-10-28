@@ -22,6 +22,8 @@ inline void apply_loop_config(const AppConfig& app, PortfolioConfig& portfolio) 
                                                              : one_pass::BSigmaRule::kGranularity;
     portfolio.wrong_sign_buffer = app.wrong_sign_rule == "buffer";
     portfolio.optimiser_carver = app.optimiser_covariance == "carver";
+    portfolio.buffer_step_rule = app.buffer_step_rule == "edge" ? one_pass::BufferStepRule::kEdge
+                                                                : one_pass::BufferStepRule::kFraction;
     portfolio.sizing_mode = app.sizing_mode;
     portfolio.equity_slow_symbols = app.equity_slow_rule.symbols;
     portfolio.equity_slow_pairs = app.equity_slow_rule.pairs;

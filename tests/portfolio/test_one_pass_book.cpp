@@ -449,6 +449,35 @@ TEST_F(OnePassBookTest, TheBufferRuleOfTheConfigIsThePasss) {
     EXPECT_EQ(count_of(out, " b_symbol=floor"), 1u) << out;
 }
 
+// The book's buffer_step_rule reaches the pass: AAA from 0 to a search answer of 5 at a one-contract
+// risk of 0.02 (TE_h 0.1) inside the fixed buffer 0.26 x 0.20 = 0.052. Fraction moves a = 0.48 of
+// the way, 2.4, rounded to 2 (TE 0.06, outside the buffer); edge steps one contract at a time and
+// stops at 3, the first book inside it (TE 0.04). The log names the steps under edge only.
+TEST_F(OnePassBookTest, TheBufferStepRuleOfTheConfigIsThePasss) {
+    PortfolioConfig pc = one_pass_config("A");
+    pc.b_sigma_rule = one_pass::BSigmaRule::kFixed;
+    pc.b_sigma_floor = 0.26;
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 2.0);
+    EXPECT_EQ(count_of(out, "buffer_step_rule"), 0u) << out;
+
+    pc.buffer_step_rule = one_pass::BufferStepRule::kEdge;
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 3.0);
+    EXPECT_EQ(count_of(out, " buffer_step_rule=edge edge_steps=3 edge_te=0.04 edge_stop=inside "
+                            "edge_order=[AAA+1 AAA+1 AAA+1]"),
+              1u)
+        << out;
+}
+
 // The book's wrong_sign_rule "buffer" reaches the pass: the flip of
 // AForecastSignCloseIsItsOwnFillBeforeTheSearch is ONE fill (4 -> -4, a = 0.889 of the way from 4
 // to -5), and a forecast of -1.99 inside today's band is not held: 4 moves a = 0.75 of the way to

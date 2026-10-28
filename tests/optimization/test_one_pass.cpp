@@ -4,8 +4,12 @@
 // book.py) gives on the same inputs. The closes come from one deterministic generator written the
 // same way on both sides.
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -13,6 +17,7 @@
 
 #include "trade_ngin/optimization/one_pass.hpp"
 #include "trade_ngin/optimization/one_pass_log.hpp"
+#include "trade_ngin/optimization/one_pass_record.hpp"
 
 using namespace trade_ngin::one_pass;
 namespace overlay = trade_ngin::overlay;
@@ -620,4 +625,249 @@ TEST(OnePass, TheCarverReadingsAreRecordedOnEitherRule) {
     EXPECT_EQ(sample.carver_readings.shock, carver.readings.shock);
     EXPECT_GT(std::abs(sample.readings.risk - carver.readings.risk), 1e-6)
         << "the sample covariance of these returns is not the sleeve's sigmas";
+}
+
+namespace {
+
+// sigma_i sigma_j rho off the diagonal, sigma_i^2 on it
+Matrix correlated(const Vector& sigma, double rho) {
+    Matrix m(sigma.size(), Vector(sigma.size(), 0.0));
+    for (std::size_t i = 0; i < sigma.size(); ++i) {
+        for (std::size_t j = 0; j < sigma.size(); ++j) {
+            m[i][j] = sigma[i] * sigma[j] * (i == j ? 1.0 : rho);
+        }
+    }
+    return m;
+}
+
+using Steps = std::vector<std::pair<std::size_t, double>>;
+
+}  // namespace
+
+// buffer_step_rule (STEP): five one-contract moves with one-contract risks u sigma = 0.03, 0.02,
+// 0.03, 0.03, 0.03 at rho 0.2; TE_h = 0.05. Under fraction, a shared a near 0.5 decides every move
+// together: at B = 0.024 (a = 0.52) rows 0, 1, 2 and 3 all move, at B = 0.0255 (a = 0.49) none
+// does. Under edge the same two buffers take the moves one at a time, the largest drop in the error
+// first: row 0 up (error 0.04123), row 3 down (0.03), row 2 up (0.02, inside either buffer); row 1,
+// the smallest risk, stays held. Hand computation: evidence/STEP/tooling/hand_edge.py.
+TEST(OnePass, TheEdgeRuleTakesTheMovesOneAtATime) {
+    const Vector u = {0.02, 0.01, 0.04, 0.01, 0.03};
+    const Matrix c = correlated({1.5, 2.0, 0.75, 3.0, 1.0}, 0.2);
+    const Vector held = {0.0, 1.0, -1.0, 2.0, 0.0};
+    const Vector searched = {1.0, 0.0, 0.0, 1.0, 0.0};
+    const Vector cost(5, 1.0);
+
+    Buffered f = buffer(searched, held, u, c, 0.024);
+    expect_rel(f.te_held, 0.05);
+    expect_rel(f.a, 0.52);
+    EXPECT_EQ(f.book, (Vector{1.0, 0.0, 0.0, 1.0, 0.0})) << "a = 0.52: four rows move together";
+    EXPECT_TRUE(f.steps.empty());
+    f = buffer(searched, held, u, c, 0.0255);
+    expect_rel(f.a, 0.49);
+    EXPECT_EQ(f.book, held) << "a = 0.49: the same four rows stay together";
+    EXPECT_TRUE(f.returned_to_held);
+
+    for (const double b : {0.024, 0.0255}) {
+        const Buffered e = buffer(searched, held, u, c, b, BufferStepRule::kEdge, cost);
+        EXPECT_TRUE(e.traded);
+        expect_rel(e.te_held, 0.05);
+        expect_rel(e.a, (0.05 - b) / 0.05);  // recorded as the fraction the book would have used
+        EXPECT_EQ(e.book, (Vector{1.0, 1.0, 0.0, 1.0, 0.0})) << b;
+        EXPECT_EQ(e.unrounded, e.book);
+        EXPECT_EQ(e.steps, (Steps{{0, 1.0}, {3, -1.0}, {2, 1.0}})) << b;
+        expect_rel(e.te_book, 0.02);
+        EXPECT_TRUE(e.inside);
+        EXPECT_FALSE(e.returned_to_held);
+    }
+}
+
+// The edge rule stops as soon as the error is at or below B: four uncorrelated rows of risk 0.01,
+// each held 3 short of its answer (TE_h = 0.01 x sqrt(36) = 0.06). Each step lowers the largest
+// gap (ties to the row order); at B = 0.031 the gaps 1, 1, 2, 2 still read 0.01 sqrt(10) = 0.0316,
+// so it takes one more step and stops at 1, 1, 1, 2: 0.01 sqrt(7) = 0.02646, one step short of the
+// answer on rows 0 to 2 and two on row 3.
+TEST(OnePass, TheEdgeRuleStopsInsideTheBuffer) {
+    const Vector u(4, 0.01);
+    const Matrix c = correlated({1.0, 1.0, 1.0, 1.0}, 0.0);
+    const Vector held(4, 0.0);
+    const Vector searched(4, 3.0);
+    const Buffered e = buffer(searched, held, u, c, 0.031, BufferStepRule::kEdge, Vector(4, 1.0));
+    expect_rel(e.te_held, 0.06);
+    // the gaps go 3333 -> 2333 -> 2233 -> 2223 -> 2222 -> 1222 -> 1122 -> 1112
+    EXPECT_EQ(e.book, (Vector{2.0, 2.0, 2.0, 1.0}));
+    EXPECT_EQ(e.steps, (Steps{{0, 1.0}, {1, 1.0}, {2, 1.0}, {3, 1.0}, {0, 1.0}, {1, 1.0}, {2, 1.0}}));
+    expect_rel(e.te_book, 0.01 * std::sqrt(7.0));
+    EXPECT_TRUE(e.inside);
+    EXPECT_LE(e.te_book, 0.031);
+}
+
+// No move lowers the error: two rows at rho 0.99, held +1 and -1 against answers of 0 (their errors
+// offset: TE_h = 0.01 x sqrt(2 x 0.01) = 0.001414). Either one-contract move leaves the other's
+// error unhedged (TE 0.01), so the book is held although TE_h is above B, and it is recorded so.
+TEST(OnePass, TheEdgeRuleStopsWhenNoMoveLowersTheError) {
+    const Vector u(2, 0.01);
+    const Matrix c = correlated({1.0, 1.0}, 0.99);
+    const Vector held = {1.0, -1.0};
+    const Buffered e = buffer({0.0, 0.0}, held, u, c, 0.001, BufferStepRule::kEdge, {1.0, 1.0});
+    expect_rel(e.te_held, 0.0014142135623730951);
+    EXPECT_TRUE(e.traded);
+    EXPECT_EQ(e.book, held);
+    EXPECT_TRUE(e.steps.empty());
+    EXPECT_FALSE(e.inside);
+    EXPECT_TRUE(e.returned_to_held);
+    expect_rel(e.te_book, e.te_held);
+    EXPECT_EQ(buffer({0.0, 0.0}, held, u, c, 0.001).book, held) << "fraction: a = 0.29 rounds back";
+}
+
+// Ties in the error go to the lower cost per contract, then to the row order: four uncorrelated
+// rows of equal risk 0.01, each one short of its answer, costs 3, 1, 2, 1. The order is row 1
+// (cost 1, before row 3), row 3, row 2; at B = 0.0101 the error 0.01 of row 0 alone is inside.
+TEST(OnePass, TheEdgeRulesTiesGoToTheCheaperContractThenTheRowOrder) {
+    const Vector u(4, 0.01);
+    const Matrix c = correlated({1.0, 1.0, 1.0, 1.0}, 0.0);
+    const Buffered e = buffer(Vector(4, 1.0), Vector(4, 0.0), u, c, 0.0101, BufferStepRule::kEdge,
+                              {3.0, 1.0, 2.0, 1.0});
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}, {3, 1.0}, {2, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{0.0, 1.0, 1.0, 1.0}));
+    // equal costs: the row order alone
+    EXPECT_EQ(buffer(Vector(4, 1.0), Vector(4, 0.0), u, c, 0.0101, BufferStepRule::kEdge).steps,
+              (Steps{{0, 1.0}, {1, 1.0}, {2, 1.0}}));
+}
+
+// A move never passes or leaves the search's answer. Row 0 is at its answer (0); at rho 0.9 a step
+// of row 0 to -1 would hedge rows 1 and 2 and lower the error (by 0.0001 - 0.00072 in squares), but
+// it is not a candidate. Row 2 is held on the wrong side (+1 against -1): it crosses zero and stops
+// at -1, never beyond. No position the search did not ask for appears.
+TEST(OnePass, TheEdgeRuleNeverPassesOrLeavesTheAnswer) {
+    const Vector u(3, 0.01);
+    const Matrix c = correlated({1.0, 1.0, 1.0}, 0.9);
+    const Vector held = {0.0, 2.0, 1.0};
+    const Vector searched = {0.0, 0.0, -1.0};
+    const Buffered e = buffer(searched, held, u, c, 0.0, BufferStepRule::kEdge, Vector(3, 1.0));
+    EXPECT_EQ(e.book, searched);
+    EXPECT_EQ(e.steps, (Steps{{1, -1.0}, {2, -1.0}, {1, -1.0}, {2, -1.0}}));
+    for (const auto& [row, step] : e.steps) EXPECT_NE(row, 0u);
+    EXPECT_TRUE(e.inside) << "B = 0: the answer's error 0 is at B";
+    EXPECT_DOUBLE_EQ(e.te_book, 0.0);
+}
+
+// The no-trade case is today's under both rules: TE_h at or below B holds the book, no step, a 0.
+TEST(OnePass, TheNoTradeCaseIsTheSameUnderBothRules) {
+    const Vector u(2, 0.01);
+    const Matrix c = correlated({1.0, 1.0}, 0.0);
+    for (const BufferStepRule rule : {BufferStepRule::kFraction, BufferStepRule::kEdge}) {
+        const Buffered e = buffer({1.0, 0.0}, {0.0, 0.0}, u, c, 0.01, rule, {1.0, 1.0});
+        EXPECT_FALSE(e.traded);
+        EXPECT_EQ(e.book, (Vector{0.0, 0.0}));
+        EXPECT_EQ(e.unrounded, (Vector{0.0, 0.0}));
+        EXPECT_DOUBLE_EQ(e.a, 0.0);
+        expect_rel(e.te_held, 0.01);
+        EXPECT_TRUE(e.steps.empty());
+        EXPECT_FALSE(e.returned_to_held);
+    }
+}
+
+// The rule reaches the pass: the day of AWrongSignedRowIsBufferedLikeAnyOther (free rows 0 to 2
+// held 0, 4, 4 and searched 5, -5, 0, one-contract risk 0.2 x 0.1 = 0.02) with B_sigma's floor at
+// 0.25 tau = 0.05. TE_h = 0.02 sqrt(25 + 81 + 16) = 0.2209. Fraction (a = 0.7737) stores 4, -3, 1;
+// edge steps the largest gap first (row 1 four times, then the gaps of rows 0 and 1 tie at 5 and go
+// to row 0, and so on) until the squared gaps sum to 6 (TE 0.02 sqrt 6 = 0.04899): 4, -4, 2. The
+// record carries the steps, the log names them, and the stored opt_config is unchanged.
+TEST(OnePass, TheRebalanceUsesTheBufferStepRule) {
+    DayInputs in = four_symbols();
+    in.wrong_sign_buffer = true;
+    in.b_sigma_floor = 0.25;
+    DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_NEAR(r.b_sigma, 0.05, 1e-12);
+    EXPECT_NEAR(r.a, 0.7736606348937036, 1e-12);
+    EXPECT_EQ(r.book, (Vector{4.0, -3.0, 1.0, 3.0}));
+    EXPECT_FALSE(r.edge);
+    EXPECT_TRUE(r.edge_steps.empty());
+    const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+    EXPECT_EQ(optimiser_line(symbols, r).find("buffer_step_rule"), std::string::npos);
+
+    in.buffer_step_rule = BufferStepRule::kEdge;
+    r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_TRUE(r.edge);
+    EXPECT_NEAR(r.te_held, 0.22090722034374524, 1e-12);
+    EXPECT_NEAR(r.a, 0.7736606348937036, 1e-12) << "a is recorded as the fraction would have used";
+    EXPECT_EQ(r.search_book, (Vector{5.0, -5.0, 0.0, 3.0}));
+    EXPECT_EQ(r.edge_book, (Vector{4.0, -4.0, 2.0, 3.0}));
+    EXPECT_EQ(r.book, (Vector{4.0, -4.0, 2.0, 3.0}));
+    EXPECT_EQ(r.rest_fill, (Vector{4.0, -8.0, -2.0, 0.0}));
+    EXPECT_EQ(r.edge_steps,
+              (Steps{{1, -1.0}, {1, -1.0}, {1, -1.0}, {1, -1.0}, {0, 1.0}, {1, -1.0}, {0, 1.0},
+                     {1, -1.0}, {2, -1.0}, {0, 1.0}, {1, -1.0}, {2, -1.0}, {0, 1.0}, {1, -1.0}}));
+    EXPECT_NEAR(r.edge_te, 0.04898979485566357, 1e-12);
+    EXPECT_TRUE(r.edge_inside);
+    const std::string optimiser = optimiser_line(symbols, r);
+    EXPECT_NE(optimiser.find(" buffer_step_rule=edge edge_steps=14 edge_te=0.04898979486 "
+                             "edge_stop=inside edge_order=[BBB-1 BBB-1 BBB-1 BBB-1 AAA+1 BBB-1 "
+                             "AAA+1 BBB-1 CCC-1 AAA+1 BBB-1 CCC-1 AAA+1 BBB-1]"),
+              std::string::npos)
+        << optimiser;
+    EXPECT_EQ(attribute(in, r), (std::vector<std::string>{"buffer", "buffer", "buffer", "hold"}));
+}
+
+// The one-pass record under each rule: a fraction book's day file is today's (no edge column); an
+// edge book's day rows, the no-pass row included, end with edge_steps, edge_order, edge_te and
+// edge_stop, every row as wide as its header.
+TEST(OnePass, TheRecordCarriesTheEdgeColumnsOnAnEdgeBookOnly) {
+    const std::filesystem::path dir =
+        std::filesystem::current_path() / ("onepass_edge_record_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    ::setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+    DayInputs in = four_symbols();
+    in.wrong_sign_buffer = true;
+    in.b_sigma_floor = 0.25;
+    append_one_pass_record("FRACTION_BOOK", "2026-01-02", "2026-01-02", false, symbols, in,
+                           rebalance(in));
+    in.buffer_step_rule = BufferStepRule::kEdge;
+    append_one_pass_record("EDGE_BOOK", "2026-01-02", "2026-01-02", false, symbols, in, rebalance(in));
+    append_no_pass_record("EDGE_BOOK", "2026-01-05", "2026-01-05", false, true);
+    ::unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    auto lines = [&](const std::string& name) {
+        std::ifstream f(dir / name);
+        std::vector<std::string> out;
+        for (std::string line; std::getline(f, line);) out.push_back(line);
+        return out;
+    };
+    auto cells = [](const std::string& line) {  // every cell, the empty ones at the end too
+        std::vector<std::string> out(1);
+        for (const char ch : line) {
+            if (ch == ',') {
+                out.emplace_back();
+            } else {
+                out.back() += ch;
+            }
+        }
+        return out;
+    };
+    const auto fraction = lines("onepass_days_FRACTION_BOOK.csv");
+    ASSERT_EQ(fraction.size(), 2u);
+    EXPECT_EQ(fraction[0], record_detail::days_header(false));
+    EXPECT_EQ(fraction[0].find("edge"), std::string::npos);
+    EXPECT_EQ(cells(fraction[1]).size(), cells(fraction[0]).size());
+
+    const auto edge = lines("onepass_days_EDGE_BOOK.csv");
+    ASSERT_EQ(edge.size(), 3u) << "the header, the day and the no-pass day";
+    const auto header = cells(edge[0]);
+    ASSERT_EQ(header.size(), cells(fraction[0]).size() + 4);
+    EXPECT_EQ(std::vector<std::string>(header.end() - 4, header.end()),
+              (std::vector<std::string>{"edge_steps", "edge_order", "edge_te", "edge_stop"}));
+    const auto day = cells(edge[1]);
+    ASSERT_EQ(day.size(), header.size());
+    EXPECT_EQ(day[header.size() - 4], "14");
+    EXPECT_EQ(day[header.size() - 3],
+              "BBB-1;BBB-1;BBB-1;BBB-1;AAA+1;BBB-1;AAA+1;BBB-1;CCC-1;AAA+1;BBB-1;CCC-1;AAA+1;BBB-1");
+    EXPECT_NEAR(std::stod(day[header.size() - 2]), 0.04898979485566357, 1e-15);
+    EXPECT_EQ(day[header.size() - 1], "inside");
+    const auto no_pass = cells(edge[2]);
+    EXPECT_EQ(no_pass.size(), header.size());
+    EXPECT_EQ(no_pass[4], "no_pass");
+    std::filesystem::remove_all(dir);
 }

@@ -26,29 +26,49 @@ namespace one_pass {
  * overlay's window. A cycle that runs no pass (every bar of its signal group withheld) has a day
  * row too, with mode `no_pass` and no other value, and no symbol row. The files are written the way
  * record_file.hpp states.
+ *
+ * A book on buffer_step_rule "edge" adds four day columns at the end (a fraction book's record is
+ * unchanged): edge_steps (the buffer's one-contract steps), edge_order (each step as
+ * SYMBOL+1 or SYMBOL-1, in the order taken, ";" between), edge_te (the TE of the buffer's book
+ * against the search's answer) and edge_stop ("inside": at or below B_sigma; "no_lower": no step
+ * lowered the error; "-": the buffer did not trade).
  */
 namespace record_detail {
 
-inline const char* days_header() {
-    return "date,cycle_date,warmup,capital,mode,window_dates,complete_dates,R,R_jump,"
-           "R_shock,L,L_net,m,binding,searched,te,passes,pass_capped,te_h,B_sigma,"
-           "B_symbol,a,traded,returned_to_held,stored_R,stored_R_jump,stored_R_shock,"
-           "stored_L,stored_L_net,over_limit,over_limit_excess_units,by_hold_terms,"
-           "trim_capped,target_gross,stored_gross,risk_scale,opt_bars_per_year,carver_R,"
-           "carver_stored_R";
+inline std::string days_header(bool edge) {
+    return std::string(
+               "date,cycle_date,warmup,capital,mode,window_dates,complete_dates,R,R_jump,"
+               "R_shock,L,L_net,m,binding,searched,te,passes,pass_capped,te_h,B_sigma,"
+               "B_symbol,a,traded,returned_to_held,stored_R,stored_R_jump,stored_R_shock,"
+               "stored_L,stored_L_net,over_limit,over_limit_excess_units,by_hold_terms,"
+               "trim_capped,target_gross,stored_gross,risk_scale,opt_bars_per_year,carver_R,"
+               "carver_stored_R") +
+           (edge ? ",edge_steps,edge_order,edge_te,edge_stop" : "");
+}
+
+/// The edge columns' order string: SYMBOL+1 or SYMBOL-1 per step, ";" between ("-": none).
+inline std::string edge_order(const std::vector<std::string>& symbols, const DayResult& r) {
+    std::string out;
+    for (const auto& [symbol, step] : r.edge_steps) {
+        out += (out.empty() ? "" : ";") + symbols[symbol] + (step > 0.0 ? "+1" : "-1");
+    }
+    return out.empty() ? std::string("-") : out;
 }
 
 }  // namespace record_detail
 
-/// The day row of a cycle that ran no pass: its two dates, the warm-up flag and mode `no_pass`.
+/// The day row of a cycle that ran no pass: its two dates, the warm-up flag and mode `no_pass`
+/// (`edge`: the book is on buffer_step_rule edge, so the row has the edge columns, empty).
 inline void append_no_pass_record(const std::string& id, const std::string& signal_date,
-                                  const std::string& cycle_date, bool warmup) {
+                                  const std::string& cycle_date, bool warmup, bool edge = false) {
     const char* dir = std::getenv("TRADE_NGIN_SERIES_DUMP_DIR");
     if (dir == nullptr || *dir == '\0') return;
     const std::string name = "onepass_days_" + id + ".csv";
-    if (std::FILE* days = record_file::open_rows(dir, name, record_detail::days_header())) {
-        std::fprintf(days, "%s,%s,%d,,no_pass,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n", signal_date.c_str(),
-                     cycle_date.c_str(), warmup ? 1 : 0);
+    if (std::FILE* days =
+            record_file::open_rows(dir, name, record_detail::days_header(edge).c_str())) {
+        std::fprintf(days, "%s,%s,%d,,no_pass,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,%s\n",
+                     signal_date.c_str(), cycle_date.c_str(), warmup ? 1 : 0,
+                     edge ? ",,,," : "");
         record_file::close_rows(days, dir, name);
     }
 }
@@ -61,7 +81,9 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
     if (dir == nullptr || *dir == '\0') return;
     const std::string days_name = "onepass_days_" + id + ".csv";
     const std::string book_name = "onepass_book_" + id + ".csv";
-    if (std::FILE* days = record_file::open_rows(dir, days_name, record_detail::days_header())) {
+    const bool edge = in.buffer_step_rule == BufferStepRule::kEdge;
+    if (std::FILE* days =
+            record_file::open_rows(dir, days_name, record_detail::days_header(edge).c_str())) {
         std::string over, by_hold;
         for (const auto& [term, excess] : r.over_limit) {
             (void)excess;
@@ -71,7 +93,7 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
         std::fprintf(days,
                      "%s,%s,%d,%.17g,%s,%zu,%zu,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%s,%d,%.17g,%ld,%d,"
                      "%.17g,%.17g,%s,%.17g,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%s,%.17g,%s,%d,%.17g,%.17g,"
-                     "%.17g,%.17g,%.17g,%.17g\n",
+                     "%.17g,%.17g,%.17g,%.17g",
                      signal_date.c_str(), cycle_date.c_str(), warmup ? 1 : 0, in.capital,
                      overlay::GateWindow::name(r.window.mode), r.window.window_dates,
                      r.window.complete_dates, r.readings.risk, r.readings.jump, r.readings.shock,
@@ -84,6 +106,12 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
                      by_hold.empty() ? "-" : by_hold.c_str(), r.trim_capped ? 1 : 0, r.target_gross,
                      r.stored_gross, r.risk_scale, r.covariance.bars_per_year,
                      r.carver_readings.risk, r.carver_stored_readings.risk);
+        if (edge) {
+            std::fprintf(days, ",%zu,%s,%.17g,%s", r.edge_steps.size(),
+                         record_detail::edge_order(symbols, r).c_str(), r.edge_te,
+                         !r.traded ? "-" : (r.edge_inside ? "inside" : "no_lower"));
+        }
+        std::fputc('\n', days);
         record_file::close_rows(days, dir, days_name);
     }
     if (std::FILE* book = record_file::open_rows(
