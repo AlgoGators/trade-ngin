@@ -811,6 +811,30 @@ TEST(OnePass, TheRebalanceUsesTheBufferStepRule) {
     EXPECT_EQ(attribute(in, r), (std::vector<std::string>{"buffer", "buffer", "buffer", "hold"}));
 }
 
+// The edge steps are named by symbol, not by free row: with row 0 held (not free) the free rows are
+// 1, 2 and 3, and every step names one of them, each symbol's steps summing to its move from the
+// held book to the buffer's book (the held row's book is its held quantity).
+TEST(OnePass, TheEdgeStepsNameTheSymbolsOfTheFreeRows) {
+    DayInputs in = four_symbols();
+    in.hold = {1, 0, 0, 0};
+    in.held = {2.0, 4.0, 4.0, 0.0};
+    in.wrong_sign_buffer = true;
+    in.b_sigma_floor = 0.25;
+    in.buffer_step_rule = BufferStepRule::kEdge;
+    const DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    ASSERT_EQ(r.free_rows, (std::vector<std::size_t>{1, 2, 3}));
+    ASSERT_FALSE(r.edge_steps.empty());
+    Vector moved(4, 0.0);
+    for (const auto& [symbol, step] : r.edge_steps) {
+        ASSERT_LT(symbol, 4u);
+        EXPECT_NE(symbol, 0u) << "row 0 is held";
+        moved[symbol] += step;
+    }
+    EXPECT_EQ(r.edge_book[0], 2.0);
+    for (std::size_t i = 1; i < 4; ++i) EXPECT_EQ(moved[i], r.edge_book[i] - in.held[i]) << i;
+}
+
 // The one-pass record under each rule: a fraction book's day file is today's (no edge column); an
 // edge book's day rows, the no-pass row included, end with edge_steps, edge_order, edge_te and
 // edge_stop, every row as wide as its header.
