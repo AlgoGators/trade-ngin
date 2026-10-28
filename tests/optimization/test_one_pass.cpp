@@ -749,6 +749,18 @@ TEST(OnePass, TheEdgeRuleNeverPassesOrLeavesTheAnswer) {
     for (const auto& [row, step] : e.steps) EXPECT_NE(row, 0u);
     EXPECT_TRUE(e.inside) << "B = 0: the answer's error 0 is at B";
     EXPECT_DOUBLE_EQ(e.te_book, 0.0);
+
+    // Where leaving the answer would lower the error most: row 0 is lumpy (u 0.02) and at its
+    // answer, rows 1 and 2 are fine (u 0.001) and 20 contracts long of theirs, all at rho 0.9
+    // (TE_h 0.03899). Row 0 to -1 would read 0.02191, a toward step of row 1 or 2 0.03801; row 0
+    // stays at 0 and rows 1 and 2 step in turn to 10 each (0.01949, inside B = 0.02).
+    const Vector fine = {0.02, 0.001, 0.001};
+    const Buffered lumpy = buffer({0.0, 0.0, 0.0}, {0.0, 20.0, 20.0}, fine, c, 0.02,
+                                  BufferStepRule::kEdge, Vector(3, 1.0));
+    EXPECT_EQ(lumpy.book, (Vector{0.0, 10.0, 10.0}));
+    EXPECT_EQ(lumpy.steps.size(), 20u);
+    for (const auto& [row, step] : lumpy.steps) EXPECT_NE(row, 0u);
+    expect_rel(lumpy.te_book, 0.019493588689617928);
 }
 
 // The no-trade case is today's under both rules: TE_h at or below B holds the book, no step, a 0.
@@ -809,6 +821,15 @@ TEST(OnePass, TheRebalanceUsesTheBufferStepRule) {
               std::string::npos)
         << optimiser;
     EXPECT_EQ(attribute(in, r), (std::vector<std::string>{"buffer", "buffer", "buffer", "hold"}));
+
+    // The pass hands the buffer each row's cost per contract: BBB at 4 a contract against 5 takes
+    // the ties (gaps 5 and 5, then 4, 4 and 4, ...); the book is the same, the order is not.
+    in.cost = {5.0, 4.0, 5.0, 5.0};
+    r = rebalance(in);
+    EXPECT_EQ(r.book, (Vector{4.0, -4.0, 2.0, 3.0}));
+    EXPECT_EQ(r.edge_steps,
+              (Steps{{1, -1.0}, {1, -1.0}, {1, -1.0}, {1, -1.0}, {1, -1.0}, {0, 1.0}, {1, -1.0},
+                     {0, 1.0}, {2, -1.0}, {1, -1.0}, {0, 1.0}, {2, -1.0}, {1, -1.0}, {0, 1.0}}));
 }
 
 // The edge steps are named by symbol, not by free row: with row 0 held (not free) the free rows are
