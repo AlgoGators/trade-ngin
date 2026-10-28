@@ -817,7 +817,8 @@ TEST(OnePass, TheRebalanceUsesTheBufferStepRule) {
     const std::string optimiser = optimiser_line(symbols, r);
     EXPECT_NE(optimiser.find(" buffer_step_rule=edge edge_steps=14 edge_te=0.04898979486 "
                              "edge_stop=inside edge_order=[BBB-1 BBB-1 BBB-1 BBB-1 AAA+1 BBB-1 "
-                             "AAA+1 BBB-1 CCC-1 AAA+1 BBB-1 CCC-1 AAA+1 BBB-1]"),
+                             "AAA+1 BBB-1 CCC-1 AAA+1 BBB-1 CCC-1 AAA+1 BBB-1] buffer traded, edge "
+                             "took 14 steps and stopped at or within the buffer"),
               std::string::npos)
         << optimiser;
     EXPECT_EQ(attribute(in, r), (std::vector<std::string>{"buffer", "buffer", "buffer", "hold"}));
@@ -988,4 +989,34 @@ TEST(OnePass, TheEdgeRuleNeverLeavesTheAnswerUpward) {
         EXPECT_NE(row, 0u);
         EXPECT_EQ(step, 1.0);
     }
+}
+
+// The OPTIMISER line under edge says what edge did and never "rounding returned to held"; a
+// fraction book's line keeps that phrase.
+TEST(OnePass, TheOptimiserLineSaysWhatEdgeDid) {
+    const std::vector<std::string> symbols = {"AAA", "BBB"};
+    DayResult r;
+    r.traded = true;
+    r.returned_to_held = true;
+    std::string line = optimiser_line(symbols, r);
+    EXPECT_NE(line.find(" buffer traded, rounding returned to held"), std::string::npos) << line;
+    EXPECT_EQ(line.find("edge"), std::string::npos) << line;
+    r.edge = true;
+    line = optimiser_line(symbols, r);
+    EXPECT_EQ(line.find("rounding"), std::string::npos) << line;
+    EXPECT_NE(line.find(" edge_stop=no_lower edge_order=[-] buffer traded, edge took no step: no move "
+                        "lowers the error"),
+              std::string::npos)
+        << line;
+    r.returned_to_held = false;
+    r.edge_inside = true;
+    r.edge_steps = {{1, -1.0}};
+    line = optimiser_line(symbols, r);
+    EXPECT_NE(line.find(" edge_order=[BBB-1] buffer traded, edge took 1 step and stopped at or within "
+                        "the buffer"),
+              std::string::npos)
+        << line;
+    r.traded = false;
+    r.edge_steps.clear();
+    EXPECT_EQ(optimiser_line(symbols, r).find("buffer traded"), std::string::npos);
 }
