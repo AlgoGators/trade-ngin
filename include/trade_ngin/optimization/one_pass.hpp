@@ -134,7 +134,9 @@ std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const
  *     the held book, one contract at a time toward the search's answer in the row whose move gives
  *     the lowest tracking error against the answer (ties: the lower cost per contract, then the
  *     row order), stopping as soon as the error is at or below B or when no move lowers it. A row
- *     never passes or leaves its answer.
+ *     never passes or leaves its answer. Two errors within 1e-12 of each other (relative) are
+ *     equal: a tie, a move that does not lower the error, an error at B. Under kEdge a TE_h within
+ *     that of B is at the buffer (no trade); kFraction's no-trade check is TE_h <= B exactly.
  */
 enum class BufferStepRule { kFraction, kEdge };
 

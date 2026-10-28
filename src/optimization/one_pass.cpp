@@ -20,6 +20,19 @@ double sign(double v) {
     return v > 0.0 ? 1.0 : (v < 0.0 ? -1.0 : 0.0);
 }
 
+// buffer_step_rule edge: two tracking errors within this relative distance are equal. The
+// candidates, TE_h and B come from different sums (a quadratic in another order, u sqrt(Sigma_ii)),
+// so errors that are equal in exact arithmetic can differ in the last bits.
+constexpr double kEdgeTolerance = 1e-12;
+
+bool edge_equal(double x, double y) {
+    return std::abs(x - y) <= kEdgeTolerance * std::max(std::abs(x), std::abs(y));
+}
+
+bool edge_at_or_below(double te, double b) {
+    return te <= b || edge_equal(te, b);
+}
+
 // (n u - x)' Sigma (n u - x) for the error vector e
 double quadratic(const Vector& e, const Matrix& covariance) {
     double total = 0.0;
@@ -298,7 +311,7 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
     Vector delta(held.size(), 0.0);
     for (std::size_t i = 0; i < held.size(); ++i) delta[i] = (held[i] - searched[i]) * u[i];
     out.te_held = std::sqrt(std::max(quadratic(delta, covariance), 0.0));
-    if (out.te_held <= b) {
+    if (out.te_held <= b || (rule == BufferStepRule::kEdge && edge_at_or_below(out.te_held, b))) {
         out.book = held;
         out.unrounded = held;
         return out;
@@ -307,10 +320,11 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
     out.traded = true;
     if (rule == BufferStepRule::kEdge) {
         // One contract at a time toward the answer, the lowest tracking error first, to the edge.
-        // Every candidate is scored on the same quadratic as TE_h, recomputed in full.
+        // Every candidate is scored on the same quadratic as TE_h, recomputed in full; errors within
+        // kEdgeTolerance of each other are equal (a tie, a move that does not lower, at the buffer).
         Vector current = held;
         double te = out.te_held;
-        while (te > b) {
+        while (!edge_at_or_below(te, b)) {
             double best_te = kInf;
             double best_cost = kInf;
             long best = -1;
@@ -323,14 +337,15 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
                 const double candidate = std::sqrt(std::max(quadratic(delta, covariance), 0.0));
                 delta[i] = (current[i] - searched[i]) * u[i];
                 const double c = i < cost.size() ? cost[i] : 0.0;
-                if (candidate < best_te || (candidate == best_te && c < best_cost)) {
+                const bool tied = best >= 0 && edge_equal(candidate, best_te);
+                if (best < 0 || (!tied && candidate < best_te) || (tied && c < best_cost)) {
                     best_te = candidate;
                     best_cost = c;
                     best = static_cast<long>(i);
                     best_step = step;
                 }
             }
-            if (best < 0 || !(best_te < te)) break;  // no move lowers the error
+            if (best < 0 || !(best_te < te) || edge_equal(best_te, te)) break;  // no move lowers it
             const std::size_t i = static_cast<std::size_t>(best);
             current[i] += best_step;
             delta[i] = (current[i] - searched[i]) * u[i];
@@ -340,7 +355,7 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
         out.book = current;
         out.unrounded = current;
         out.te_book = te;
-        out.inside = te <= b;
+        out.inside = edge_at_or_below(te, b);
         out.returned_to_held = out.steps.empty();
         return out;
     }

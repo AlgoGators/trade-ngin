@@ -916,3 +916,61 @@ TEST(OnePass, TheRecordCarriesTheEdgeColumnsOnAnEdgeBookOnly) {
     EXPECT_EQ(no_pass[4], "no_pass");
     std::filesystem::remove_all(dir);
 }
+
+// Ties within 1e-12 of the error (STEP fix round, audit A S-1): auditor A's fuzz cases
+// (adjudications/STEP_A_work/logs/fuzz_edge.txt), identity covariance, u 0.01, integer costs. Equal
+// gaps are equal errors in exact arithmetic but their quadratics sum in another order; the steps
+// must follow the exact rule (the lower cost, then the row), as A's integer reference does.
+TEST(OnePass, TheEdgeRulesTiesHoldWithinTheTolerance) {
+    const Matrix c8 = correlated(Vector(8, 1.0), 0.0);
+    const Buffered e8 = buffer({-4, -3, 1, 4, -5, -4, 3, -5}, {-4, 1, 6, 0, -1, -4, 6, 3}, Vector(8, 0.01),
+                               c8, 0.035335502153785066, BufferStepRule::kEdge, {2, 3, 3, 3, 2, 3, 1, 3});
+    EXPECT_EQ(e8.steps, (Steps{{7, -1}, {7, -1}, {7, -1}, {2, -1}, {7, -1}, {4, -1}, {1, -1}, {2, -1},
+                               {3, 1}, {7, -1}, {6, -1}, {4, -1}, {1, -1}, {2, -1}, {3, 1}, {7, -1},
+                               {6, -1}, {4, -1}, {1, -1}, {2, -1}}))
+        << "the row 6 contract at cost 1 before the row 1 contract at cost 3";
+    const Matrix c10 = correlated(Vector(10, 1.0), 0.0);
+    const Buffered e10 =
+        buffer({1, 5, -5, 2, 2, -2, 1, 5, -1, -5}, {-5, 5, 4, 5, -3, -2, -3, 1, -1, 5}, Vector(10, 0.01), c10,
+               0.070542503955278071, BufferStepRule::kEdge, {3, 1, 1, 1, 1, 2, 3, 2, 3, 3});
+    EXPECT_EQ(e10.steps, (Steps{{9, -1}, {2, -1}, {9, -1}, {2, -1}, {9, -1}, {2, -1}, {9, -1}, {2, -1},
+                                {0, 1}, {9, -1}, {2, -1}, {4, 1}, {0, 1}, {9, -1}, {2, -1}, {4, 1},
+                                {7, 1}, {0, 1}, {6, 1}, {9, -1}, {2, -1}, {3, -1}, {4, 1}}));
+}
+
+// The buffer's edge under edge (STEP fix round, audits B S-2 and A S-3): an error that lands
+// exactly on B stops there; an error one ulp above B (the two formulas rounding apart, as on
+// g3_edge_aligned_2y 2026-04-12) is at the buffer; a move that leaves the error equal is not taken.
+TEST(OnePass, TheEdgeRulesBoundariesAreInclusiveWithinTheTolerance) {
+    const Vector one4(4, 1.0);
+    const Matrix i4 = correlated(one4, 0.0);
+    // TE_h = sqrt(4) = 2; after three steps sqrt(1) = 1 = B exactly: it stops, one row short
+    const Buffered exact = buffer(one4, Vector(4, 0.0), one4, i4, 1.0, BufferStepRule::kEdge);
+    EXPECT_EQ(exact.steps.size(), 3u);
+    EXPECT_EQ(exact.book, (Vector{1.0, 1.0, 1.0, 0.0}));
+    EXPECT_TRUE(exact.inside);
+
+    // TE_h one ulp above B: edge holds the book; fraction trades a = 1e-16 and rounds back
+    const double ulp_under_one = std::nextafter(1.0, 0.0);
+    const Buffered at_b = buffer({1.0}, {0.0}, {1.0}, {{1.0}}, ulp_under_one, BufferStepRule::kEdge);
+    EXPECT_FALSE(at_b.traded);
+    EXPECT_EQ(at_b.book, (Vector{0.0}));
+    EXPECT_DOUBLE_EQ(at_b.a, 0.0);
+    const Buffered fraction_at_b = buffer({1.0}, {0.0}, {1.0}, {{1.0}}, ulp_under_one);
+    EXPECT_TRUE(fraction_at_b.traded) << "fraction's no-trade check is exact, as today";
+    EXPECT_TRUE(fraction_at_b.returned_to_held);
+
+    // after one step the error is 1, one ulp above B: the stop is at the buffer, no second step
+    const Buffered one_step = buffer({1.0, 1.0}, {0.0, 0.0}, {1.0, 1.0}, correlated({1.0, 1.0}, 0.0),
+                                     ulp_under_one, BufferStepRule::kEdge);
+    EXPECT_EQ(one_step.steps, (Steps{{0, 1.0}}));
+    EXPECT_TRUE(one_step.inside);
+
+    // rho -0.5, both rows one long of their answers: TE_h = 1 and either step leaves exactly 1
+    const Buffered equal = buffer({0.0, 0.0}, {1.0, 1.0}, {1.0, 1.0}, {{1.0, -0.5}, {-0.5, 1.0}}, 0.5,
+                                  BufferStepRule::kEdge);
+    EXPECT_TRUE(equal.traded);
+    EXPECT_TRUE(equal.steps.empty()) << "a move that only equals the error does not lower it";
+    EXPECT_FALSE(equal.inside);
+    EXPECT_EQ(equal.book, (Vector{1.0, 1.0}));
+}
