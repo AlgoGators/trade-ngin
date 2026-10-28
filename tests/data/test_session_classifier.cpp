@@ -233,6 +233,59 @@ TEST(SessionClassifierRule, TheFloorIsConjunctiveSoASmallContractKeepsItsSession
               SessionVerdict::SESSION);
 }
 
+// MM (HD 2026-10-28, ruling (b)): a change of price source restarts the symbol's norm. MGC.v.0
+// reads GC's contracts (about 150,000 lots a day) until its listing and its own (a few hundred)
+// from it. The change bar is judged against the norm before it; every later bar against the
+// micro's own bars from the change, as a new symbol is (no SESSION bar yet: all its weekday bars).
+// The same volume step with no change of source stays judged against the old norm.
+TEST(SessionClassifierRule, AChangeOfPriceSourceRestartsTheNorm) {
+    auto change_bar = [](const std::string& date, double v, RollFromKind kind, const std::string& named) {
+        Bar b = bar_on("MGC.v.0", date, v);
+        RollFrom from;
+        from.close = 100.5;
+        from.instrument_id = "gcz0";
+        from.kind = kind;
+        from.date = named;
+        b.roll_from = from;
+        return b;
+    };
+    SessionClassifier c;
+    add_weekdays_before(c, "MGC.v.0", "2010-10-04", 20, 150000);
+    c.add_bar(change_bar("2010-10-04", 64, RollFromKind::SOURCE_CHANGE, "2010-10-04"));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-05", 300));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-06", 300));
+    auto v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-04"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 150000.0) << "the change bar is judged against the norm before it";
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 64.0) << "no SESSION bar since the change: its weekday bars bootstrap it";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-06"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 300.0) << "the micro's own SESSION bars from the change";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+
+    // A consumer that withheld the change bar learns the change from the next bar's field.
+    SessionClassifier after;
+    add_weekdays_before(after, "MGC.v.0", "2010-10-04", 20, 150000);
+    after.add_bar(change_bar("2010-10-05", 300, RollFromKind::AFTER_SOURCE_CHANGE, "2010-10-04"));
+    v = after.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    EXPECT_FALSE(v.norm.has_value()) << "nothing on or after the change before this bar: the floor alone";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+
+    // No change of source: the same step is judged against the old norm, as before.
+    SessionClassifier same;
+    add_weekdays_before(same, "MGC.v.0", "2010-10-04", 20, 150000);
+    same.add_bar(bar_on("MGC.v.0", "2010-10-04", 64));
+    same.add_bar(bar_on("MGC.v.0", "2010-10-05", 300));
+    v = same.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 150000.0);
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+}
+
 TEST(SessionClassifierRule, WithNoNormYetTheFloorAppliesOnItsOwn) {
     SessionClassifier c;
     c.add_bar(bar_on("NEW", "2026-03-04", 49));
