@@ -974,3 +974,18 @@ TEST(OnePass, TheEdgeRulesBoundariesAreInclusiveWithinTheTolerance) {
     EXPECT_FALSE(equal.inside);
     EXPECT_EQ(equal.book, (Vector{1.0, 1.0}));
 }
+
+// The mirror of TheEdgeRuleNeverPassesOrLeavesTheAnswer's lumpy case (STEP fix round, audit A
+// S-2): rows 1 and 2 held 20 short of their answers at rho 0.9, so the hedge that would lower the
+// error most is row 0 up to +1; row 0 stays at its answer and rows 1 and 2 step up to -10 each.
+TEST(OnePass, TheEdgeRuleNeverLeavesTheAnswerUpward) {
+    const Matrix c = correlated({1.0, 1.0, 1.0}, 0.9);
+    const Buffered lumpy = buffer({0.0, 0.0, 0.0}, {0.0, -20.0, -20.0}, {0.02, 0.001, 0.001}, c, 0.02,
+                                  BufferStepRule::kEdge, Vector(3, 1.0));
+    EXPECT_EQ(lumpy.book, (Vector{0.0, -10.0, -10.0}));
+    EXPECT_EQ(lumpy.steps.size(), 20u);
+    for (const auto& [row, step] : lumpy.steps) {
+        EXPECT_NE(row, 0u);
+        EXPECT_EQ(step, 1.0);
+    }
+}
