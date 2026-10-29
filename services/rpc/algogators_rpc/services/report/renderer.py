@@ -1,46 +1,23 @@
-"""Render a DailyReport to an email: HTML from the template plus inline PNG charts."""
+"""Lay the engine's report out as the fund's e-mail: HTML from the template, a plain-text part."""
 
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
-from . import charts, daily
+from .engine_report import Banner, Callout, Caption, Figures, Image, Paragraph, Report, Section
+from .engine_report import Subheading, Table, TONE_COLOR
 
 HERE = Path(__file__).resolve().parent
 
-# Mail clients show only the first ~90 characters of the body next to the subject.
-_FMT = SimpleNamespace(
-    money=daily.money,
-    signed_money=daily.signed_money,
-    quantity=daily.quantity,
-    price=daily.price,
-    percent=daily.percent,
+# The key numbers over the report: (tile label, the engine's figure labels, in preference order).
+# Each value is the engine's own text; a figure the report does not carry has no tile.
+TILES = (
+    ("Portfolio value", ("Current Portfolio Value",)),
+    ("Previous day PnL", ("Daily Total PnL (Net)",)),
+    ("Total PnL", ("Total PnL (Net)",)),
+    ("Positions", ("Sleeve Positions", "Active Positions", "Total Positions")),
 )
-
-
-def _tone(value):
-    return "down" if value < 0 else "up"
-
-
-def _stats(report):
-    stats = [
-        {"label": "Positions", "value": f"{len(report.positions)}", "tone": "up"},
-        {"label": "Notional", "value": daily.compact_money(report.total_notional), "tone": "up"},
-    ]
-    if report.realized:
-        stats.append(
-            {
-                "label": "Realized PnL",
-                "value": daily.signed_money(report.total_realized_pnl),
-                "tone": _tone(report.total_realized_pnl),
-            }
-        )
-    else:
-        stats.append({"label": "Realized PnL", "value": "n/a", "tone": "up"})
-    stats.append({"label": "Trades", "value": f"{len(report.executions)}", "tone": "up"})
-    return stats
 
 
 @dataclass(frozen=True)
@@ -49,6 +26,51 @@ class RenderedEmail:
     html: str
     text: str
     images: dict  # content-id -> PNG/JPEG bytes
+
+
+def _tiles(report: Report) -> list:
+    out = []
+    for label, keys in TILES:
+        fig = report.figure(*keys)
+        if fig is not None and fig.value:
+            out.append({"label": label, "value": fig.value.text, "tone": fig.tone})
+    return out
+
+
+def _text(report: Report, preheader: str) -> str:
+    lines = [
+        f"AlgoGators daily trading report - {report.portfolio_name}",
+        report.report_date.isoformat(),
+        "",
+    ]
+    if preheader:
+        lines += [preheader, ""]
+    for b in report.blocks:
+        if isinstance(b, Section):
+            lines += ["", b.title.upper(), "-" * min(len(b.title), 60)]
+        elif isinstance(b, Subheading):
+            lines += ["", b.title]
+        elif isinstance(b, Caption):
+            lines.append(b.text)
+        elif isinstance(b, Banner):
+            lines += [b.title, *(ln.text for ln in b.lines), ""]
+        elif isinstance(b, (Callout, Paragraph)):
+            lines += [b.body.text, ""]
+        elif isinstance(b, Figures):
+            for g in b.groups:
+                lines += [f"  {f.label}: {f.value.text}" if f.label else f"  {f.value.text}" for f in g]
+                lines.append("")
+        elif isinstance(b, Table):
+            if b.header:
+                lines.append("  " + " | ".join(b.header))
+            lines += ["  " + " | ".join(c.body.text for c in row) for row in b.rows]
+            lines.append("")
+        elif isinstance(b, Image):
+            lines.append(f"[chart: {b.alt or b.cid}]")
+    text = "\n".join(lines)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip() + "\n"
 
 
 class HtmlReportRenderer:
@@ -61,80 +83,18 @@ class HtmlReportRenderer:
             lstrip_blocks=True,
         )
 
-    def render_daily(self, report):
-        images = {"brandmark": (HERE / "assets" / "brandmark.jpg").read_bytes()}
-        chart_rows = []
-        for cid, title, data, draw in (
-            ("equity", "Equity curve", report.equity, charts.equity_curve),
-            ("drawdown", "Drawdown from the peak", report.drawdown, charts.drawdown),
-            (
-                "leverage",
-                "Leverage",
-                report.leverage,
-                lambda pts: charts.leverage(pts, report.net_leverage),
-            ),
-            ("margin", "Margin posted", report.margin_history, charts.margin_posted),
-            ("daily_pnl", "Daily PnL", report.daily_pnl, charts.daily_pnl),
-            (
-                "contracts",
-                "Contracts traded per day",
-                report.contracts_per_day,
-                charts.contracts_per_day,
-            ),
-            ("pnl_by_symbol", "PnL by symbol", report.pnl_by_symbol, charts.pnl_by_symbol),
-            ("composition", "Portfolio composition", report.composition, charts.composition),
-        ):
-            if data:
-                images[cid] = draw(data)
-                chart_rows.append({"cid": cid, "title": title})
-
-        subject = daily.subject(report)
-        pnl = (
-            f"Realized {daily.signed_money(report.total_realized_pnl)}. " if report.realized else ""
-        )
-        preheader = (
-            f"{pnl}{len(report.positions)} positions, "
-            f"{daily.money(report.total_notional)} notional, "
-            f"{len(report.executions)} trades."
-        )
+    def render(self, report: Report) -> RenderedEmail:
+        images = {"brandmark": (HERE / "assets" / "brandmark.jpg").read_bytes(), **report.images}
+        tiles = _tiles(report)
+        preheader = " · ".join(f"{t['label']} {t['value']}" for t in tiles)
         html = self.env.get_template("daily_report.html").render(
             report=report,
-            subject=subject,
+            subject=report.subject,
             preheader=preheader,
-            fmt=_FMT,
-            stats=_stats(report),
-            charts=chart_rows,
+            tiles=tiles,
+            tone_color=TONE_COLOR,
             date_long=report.report_date.strftime("%A, %B %d, %Y").replace(" 0", " "),
         )
         return RenderedEmail(
-            subject=subject, html=html, text=self._text(report, preheader), images=images
+            subject=report.subject, html=html, text=_text(report, preheader), images=images
         )
-
-    @staticmethod
-    def _text(report, preheader):
-        lines = [
-            f"AlgoGators daily trading report - {report.portfolio_name}",
-            report.report_date.isoformat(),
-            "",
-            preheader,
-            "",
-        ]
-        for n in report.notices:
-            lines += [n.title, n.body, ""]
-        if report.positions:
-            lines.append("Positions")
-            lines += [
-                f"  {p.symbol}: {daily.quantity(p.quantity)} @ {daily.price(p.price)} "
-                f"({daily.money(p.notional)})"
-                for p in report.positions
-            ]
-            lines.append("")
-        if report.executions:
-            lines.append("Executions")
-            lines += [
-                f"  {e.side} {daily.quantity(e.quantity)} {e.symbol} @ {daily.price(e.price)}"
-                for e in report.executions
-            ]
-            lines.append("")
-        lines += list(report.footnotes)
-        return "\n".join(lines).strip() + "\n"

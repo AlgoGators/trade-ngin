@@ -220,6 +220,26 @@ Result<void> EmailSender::load_config() {
     }
 }
 
+std::vector<std::pair<std::string, std::string>> EmailSender::chart_images() const {
+    const std::pair<const char*, const std::string*> all[] = {
+        {"equity_chart", &chart_base64_},
+        {"pnl_by_symbol", &pnl_by_symbol_base64_},
+        {"drawdown", &drawdown_base64_},
+        {"gross_leverage", &gross_leverage_base64_},
+        {"daily_pnl", &daily_pnl_base64_},
+        {"total_transaction_costs", &total_transaction_costs_base64_},
+        {"contracts_per_day", &contracts_per_day_base64_},
+        {"margin_posted", &margin_posted_base64_},
+        {"portfolio_composition", &portfolio_composition_base64_},
+        {"cumulative_pnl_by_symbol", &cumulative_pnl_by_symbol_base64_},
+    };
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto& [cid, data] : all) {
+        if (!data->empty()) out.emplace_back(cid, *data);
+    }
+    return out;
+}
+
 Result<void> EmailSender::send_email(const std::string& subject, const std::string& body,
                                      bool is_html,
                                      const std::vector<std::string>& attachment_paths) {

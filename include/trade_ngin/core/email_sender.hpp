@@ -77,6 +77,10 @@ public:
      */
     Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true, const std::vector<std::string>& attachment_paths = {});
 
+    /// The charts the last report body drew, as {Content-ID, base64 PNG}, in the order
+    /// send_email embeds them. A chart that was not drawn is left out.
+    std::vector<std::pair<std::string, std::string>> chart_images() const;
+
     /**
      * @brief Generate trading results email body
      * @param positions Current portfolio positions

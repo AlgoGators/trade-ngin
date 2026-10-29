@@ -1,10 +1,9 @@
-"""Who the book e-mail goes to, and the history/symbol readers' output shape."""
+"""Who the book e-mail goes to, and the command line the engine runs."""
 
 import json
 from types import SimpleNamespace
 
-from algogators_rpc.services.report import data
-from algogators_rpc.services.report.__main__ import book_recipients
+from algogators_rpc.services.report.__main__ import book_recipients, main
 
 
 def _settings(tmp_path, to_emails, approvers="vp=vp@x.org,president=pres@x.org"):
@@ -40,32 +39,40 @@ def test_missing_approvers_or_book_file_does_not_raise(tmp_path):
     assert (to, cc) == ([], [])
 
 
-class _Cur:
-    def __init__(self, *results):
-        self.results = list(results)
-        self.sql = []
-
-    def execute(self, sql, params=None):
-        self.sql.append(sql)
-
-    def fetchall(self):
-        return self.results.pop(0)
-
-
-def test_history_is_oldest_first_skips_nulls_and_scopes_the_book():
-    import datetime as dt
-
-    d = lambda n: dt.date(2026, 10, n)  # noqa: E731
-    cur = _Cur([(d(3), 1.5, 1.0, 100.0), (d(2), None, 0.9, 90.0)], [(d(2), 4), (d(3), 6)])
-    h = data.fetch_history(cur, "P", "S")
-    assert [p["date"] for p in h["net_leverage"]] == ["2026-10-02", "2026-10-03"]
-    assert [p["date"] for p in h["leverage"]] == ["2026-10-03"]  # the NULL gross is skipped
-    assert [p["value"] for p in h["contracts_per_day"]] == [4.0, 6.0]
-    assert "portfolio_type" in cur.sql[0] and "'qt'" in cur.sql[0]
+def _manifest(tmp_path, **over):
+    m = {
+        "version": 1,
+        "portfolio_id": "QT_CONSERVATIVE",
+        "date": "2026-10-23",
+        "subject": "[QT QT_CONSERVATIVE] Daily Trading Report - 2026-10-23",
+        "body_html": '<div class="container"><h2>Today\'s Positions</h2><p>No positions.</p></div>',
+        "images": [],
+        "attachments": [],
+        **over,
+    }
+    p = tmp_path / "manifest.json"
+    p.write_text(json.dumps(m), encoding="utf-8")
+    return str(p)
 
 
-def test_symbols_lists_rows_and_names_the_roots_with_no_metadata():
-    cur = _Cur([("ES", "ES", "E-mini S&P", "HMUZ")])
-    s = data.fetch_symbols(cur, ["ES", "ZZ"])
-    assert s["rows"] == [{"db": "ES", "ib": "ES", "name": "E-mini S&P", "months": "HMUZ"}]
-    assert s["missing"] == ["ZZ"]
+def test_preview_writes_the_rendered_report_and_sends_nothing(tmp_path, capsys):
+    out = tmp_path / "out"
+    rc = main(["--portfolio-id", "QT_CONSERVATIVE", "--date", "2026-10-23",
+               "--manifest", _manifest(tmp_path), "--preview-dir", str(out)])
+    assert rc == 0
+    assert "No positions." in (out / "report.html").read_text(encoding="utf-8")
+    assert (out / "report.txt").exists() and (out / "brandmark.jpg").exists()
+
+
+def test_a_manifest_for_another_day_is_refused(tmp_path, capsys):
+    rc = main(["--portfolio-id", "QT_CONSERVATIVE", "--date", "2026-10-24",
+               "--manifest", _manifest(tmp_path), "--preview-dir", str(tmp_path / "o")])
+    assert rc == 1
+    assert "not QT_CONSERVATIVE 2026-10-24" in capsys.readouterr().err
+
+
+def test_an_unreadable_manifest_is_a_failure_with_one_line(tmp_path, capsys):
+    rc = main(["--portfolio-id", "P", "--date", "2026-10-23",
+               "--manifest", str(tmp_path / "absent.json")])
+    assert rc == 1
+    assert capsys.readouterr().err.startswith("report: the manifest could not be read")

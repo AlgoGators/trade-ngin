@@ -1,12 +1,14 @@
-"""Send (or preview) one portfolio's daily book e-mail.
+"""Send (or preview) one portfolio's daily book e-mail from the engine's report.
 
-    python -m algogators_rpc.services.report --portfolio-id QT_CONSERVATIVE --date 2026-10-23
+    python -m algogators_rpc.services.report --portfolio-id QT_CONSERVATIVE --date 2026-10-23 \\
+        --manifest /tmp/tn_mail_1/manifest.json
     ... --to me@example.org            send to that address only (no Cc)
-    ... --preview-dir /tmp/out         write the HTML and charts there, send nothing
+    ... --preview-dir /tmp/out         write the HTML and images there, send nothing
 
-Exit status: 0 sent (or previewed), 1 not sent (one line on stderr, never a password), 2 bad
-arguments. Database settings are the engine's (DB_* or defaults.json), SMTP settings the
-portfolio's email.json (desk/override_mail.load_smtp); QT_EMAIL_DISABLED=1 sends nothing and fails.
+The engine writes the manifest (live/python_mail.hpp): the subject, the HTML body, the charts and
+the CSV files of the day it built. Exit status: 0 sent (or previewed), 1 not sent (one line on
+stderr, never a password), 2 bad arguments. SMTP settings are the portfolio's email.json
+(desk/override_mail.load_smtp); QT_EMAIL_DISABLED=1 sends nothing and fails.
 """
 
 from __future__ import annotations
@@ -17,16 +19,10 @@ import os
 import sys
 from pathlib import Path
 
-import psycopg
-from psycopg.rows import dict_row
-
 from ..desk.config import ConfigError, load_settings
 from ..desk.override_mail import ApproverError, load_smtp, parse_approvers
 from ..desk.portfolios import PortfolioConfigError, resolve_portfolio_dir
-from . import data
-from .builder import build_daily_payload
-from .calc import build_strategy_detail
-from .daily import parse_daily_report
+from .engine_report import ReportInputError, build_report, load_manifest
 from .mailer import send_message
 from .renderer import HtmlReportRenderer
 
@@ -61,57 +57,47 @@ def book_recipients(settings, portfolio_dir: str, extra_cc: str = ""):
     return to, _clean(cc_raw, seen)
 
 
-def build_email(conn, portfolio_id: str, day):
-    """The rendered e-mail for the portfolio's day, from the database."""
-    with conn.cursor() as cur:
-        cfg = data.fetch_registry(cur, portfolio_id)
-        rows = data.fetch_detail_rows(cur, cfg["strategy_type"], portfolio_id)
-    detail = build_strategy_detail(cfg, rows)
-    if detail is None:
-        raise data.ReportDataError(f"no results stored yet for {portfolio_id}")
-    roots = [p["symbol"].replace(".v.0", "") for p in detail["positions"]]
-    with conn.cursor(row_factory=psycopg.rows.tuple_row) as cur:
-        symbols = data.fetch_symbols(cur, roots)
-        try:
-            history = data.fetch_history(cur, portfolio_id, cfg["strategy_type"])
-        except psycopg.Error:
-            history = None  # a failed history read costs the charts, never the report
-    payload = build_daily_payload(detail, portfolio_id, cfg["name"], day,
-                                  symbols=symbols, history=history)
-    return HtmlReportRenderer().render_daily(parse_daily_report(payload))
+def build_email(manifest: dict, portfolio_id: str, day: str):
+    """The rendered e-mail of the engine's report for the portfolio's day."""
+    if manifest["portfolio_id"] != portfolio_id or manifest["date"] != day:
+        raise ReportInputError(
+            f"the manifest is for {manifest['portfolio_id']} {manifest['date']}, "
+            f"not {portfolio_id} {day}"
+        )
+    report = build_report(manifest)
+    return report, HtmlReportRenderer().render(report)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--portfolio-id", required=True)
     ap.add_argument("--date", required=True)
+    ap.add_argument("--manifest", required=True, help="the engine's report (live/python_mail.hpp)")
     ap.add_argument("--to", help="send to this address only (no Cc)")
     ap.add_argument("--preview-dir", help="write the HTML and images here and send nothing")
     args = ap.parse_args(argv)
 
     try:
-        day = data.report_day(args.date)
-        settings = load_settings()
-        with psycopg.connect(**settings.db.conninfo_kwargs(), row_factory=dict_row) as conn:
-            email = build_email(conn, args.portfolio_id, day)
-    except (data.ReportDataError, ConfigError, psycopg.Error) as exc:
-        print(f"report: {type(exc).__name__}: {exc}", file=sys.stderr)
+        report, email = build_email(load_manifest(args.manifest), args.portfolio_id, args.date)
+    except ReportInputError as exc:
+        print(f"report: {exc}", file=sys.stderr)
         return 1
 
     if args.preview_dir:
         out = Path(args.preview_dir)
         out.mkdir(parents=True, exist_ok=True)
         (out / "report.html").write_text(email.html, encoding="utf-8")
+        (out / "report.txt").write_text(email.text, encoding="utf-8")
         for cid, blob in email.images.items():
             ext = "jpg" if blob[:3] == b"\xff\xd8\xff" else "png"
             (out / f"{cid}.{ext}").write_bytes(blob)
         print(f"report: preview written to {out}")
         return 0
 
-    cmd = settings.commands
     try:
+        cmd = load_settings().commands
         pdir = resolve_portfolio_dir(cmd.config_dir, args.portfolio_id)
-    except PortfolioConfigError as exc:
+    except (ConfigError, PortfolioConfigError) as exc:
         print(f"report: {exc}", file=sys.stderr)
         return 1
     smtp, why = load_smtp(cmd, pdir)
@@ -126,7 +112,7 @@ def main(argv=None) -> int:
         print("report: no recipients", file=sys.stderr)
         return 1
     try:
-        send_message(smtp, to, cc, email)
+        send_message(smtp, to, cc, email, report.attachments)
     except Exception as exc:  # smtplib/ssl/OSError: the text never carries the password
         print(f"report: send failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
