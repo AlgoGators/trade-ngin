@@ -85,7 +85,8 @@ class DailyReport:
     portfolio_name: str
     notices: tuple = ()
     positions: tuple = ()
-    executions: tuple = ()
+    executions: tuple = ()  # the day's strategy fills
+    roll_legs: tuple = ()  # the day's roll legs: costs, never trades
     realized_label: str = ""
     realized: tuple = ()
     metrics: tuple = ()
@@ -116,7 +117,7 @@ class DailyReport:
 
     @property
     def total_cost(self):
-        return sum(e.cost for e in self.executions)
+        return sum(e.cost for e in (*self.executions, *self.roll_legs))
 
     @property
     def total_traded(self):
@@ -200,19 +201,24 @@ def parse_daily_report(payload):
             )
         )
 
-    executions = []
-    for i, r in enumerate(_rows(payload, "executions")):
-        where = f"executions[{i}]"
-        executions.append(
-            Execution(
-                _text(r, "symbol", where),
-                _text(r, "side", where).upper(),
-                _num(r, "quantity", where),
-                _num(r, "price", where),
-                _num(r, "notional", where),
-                _num(r, "cost", where),
+    def _fills(key):
+        out = []
+        for i, r in enumerate(_rows(payload, key)):
+            where = f"{key}[{i}]"
+            out.append(
+                Execution(
+                    _text(r, "symbol", where),
+                    _text(r, "side", where).upper(),
+                    _num(r, "quantity", where),
+                    _num(r, "price", where),
+                    _num(r, "notional", where),
+                    _num(r, "cost", where),
+                )
             )
-        )
+        return out
+
+    executions = _fills("executions")
+    roll_legs = _fills("roll_legs")
 
     realized_block = _object(payload, "realized")
     realized = []
@@ -280,6 +286,7 @@ def parse_daily_report(payload):
         notices=tuple(notices),
         positions=tuple(positions),
         executions=tuple(executions),
+        roll_legs=tuple(roll_legs),
         realized_label=str(realized_block.get("label", "")),
         realized=tuple(realized),
         metrics=metrics,

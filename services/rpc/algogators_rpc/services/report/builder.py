@@ -1,29 +1,58 @@
 """Build the daily-report payload (schema_version 1) from a portfolio's detail.
 
-AlgoLens already assembles a portfolio's detail for its own screens (build_strategy_detail:
-positions, executions, the equity curve, the finalized lots and the run metrics), so the report is
-a different view of the same numbers: nothing is recomputed here and nothing is read from the
-database. The weekend and holiday notices are decided here from the date, as trade-ngin's email
-did, so the wording is in one place.
+The detail (calc.build_strategy_detail) carries the day's stored figures; nothing is recomputed
+here and nothing is read from the database. What only the run knows about the day (no session
+the day before, a risk module that held the book) comes from the engine as flags (ReportFlags);
+the calendar only names a closed day in a banner's title, it never decides that there is one.
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import pairwise
 from typing import Any
 
 from .cme_calendar import CLOSURES, GROUP_OF_ROOT
-from .daily import SCHEMA_VERSION, money, percent, signed_money
+from .daily import SCHEMA_VERSION, money, signed_money
 
 DAILY_CHART_DAYS = 30
 COMPOSITION_TOP = 7
 
-FOOTNOTES = (
-    "This strategy is based on daily OHLCV data. Only the front-month contract is covered.",
-    "All values reflect a trading start date of October 5th, 2025.",
+DATA_NOTE = "This strategy is based on daily OHLCV data. Only the front-month contract is covered."
+UNIVERSE_NOTE = (
     "As of March 1st, 2026 the tradeable universe also includes ZT (2-Year T-Note), ZF (5-Year "
-    "T-Note), 6A (Australian Dollar), 6L (Brazilian Real), HO (Heating Oil) and NG (Natural Gas).",
+    "T-Note), 6A (Australian Dollar), 6L (Brazilian Real), HO (Heating Oil) and NG (Natural Gas)."
 )
+
+
+@dataclass(frozen=True)
+class ReportFlags:
+    """What the engine's run knows about the day and the tables cannot say.
+
+    no_session: the run found no session on the day before and carried its book.
+    alert: the run's risk-module (or sizing) failure, in the engine's words; the book was held.
+    """
+
+    no_session: bool = False
+    alert: str = ""
+
+
+def long_date(iso: str) -> str:
+    """'2025-10-05' -> 'October 5th, 2025'; anything else as it is."""
+    try:
+        d = date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return str(iso)
+    n = d.day
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{d.strftime('%B')} {n}{suffix}, {d.year}"
+
+
+def footnotes(start_date: str | None) -> list[str]:
+    notes = [DATA_NOTE]
+    if start_date:
+        notes.append(f"All values reflect a trading start date of {long_date(start_date)}.")
+    return notes + [UNIVERSE_NOTE]
 
 
 def holiday_name(day: date, roots: Sequence[str] = ()) -> str | None:
@@ -50,70 +79,33 @@ def _notice(kind: str, title: str, body: str, footnote: str = "") -> dict[str, s
     return {"kind": kind, "title": title, "body": body, "footnote": footnote}
 
 
-def calendar_notices(
-    report_date: date, settled: bool = False, roots: Sequence[str] = ()
+def day_notices(
+    report_date: date, flags: ReportFlags = ReportFlags(), roots: Sequence[str] = ()
 ) -> list[dict[str, str]]:
-    """The day-before banners: why yesterday's PnL may be missing, in trade-ngin's wording.
-
-    Yesterday is the settled day. When it was a Saturday, a Sunday or a market holiday and the
-    book has no finalized positions (settled=False) the markets were closed and the report says
-    nothing was executed; when positions did settle (settled=True) only some contracts lack a
-    price, so only the first banner shows. An ordinary weekday gets no banner.
-    """
+    """The banners about the day, from the run's own flags. A day the run found a session for has
+    no banner whatever its weekday; the weekday and the CME calendar only name a closed day."""
+    notices = []
+    if flags.alert:
+        notices.append(_notice("alert", "Risk module failed - book held", flags.alert))
+    if not flags.no_session:
+        return notices
     day = report_date - timedelta(days=1)
     label = day.isoformat()
-    weekday = day.weekday()  # Monday is 0
     holiday = holiday_name(day, roots)
-    if weekday == 6:
+    name = holiday or {5: "Saturday", 6: "Sunday"}.get(day.weekday())
+    if name:
+        why = "due to a federal holiday" if holiday else f"due to it being a {name}"
         body = (
-            f"Agricultural futures settlement prices for Sunday ({label}) are not yet "
-            f"available, as these contracts begin trading Sunday evening. {_SETTLEMENT_PENDING}"
+            f"The latest futures settlement prices are not available, as futures markets were "
+            f"closed yesterday ({label}) {why}. {_SETTLEMENT_PENDING}"
         )
-        notices = [_notice("weekend", "Yesterday was Sunday", body, _MONITOR)]
-        if not settled:
-            notices += [
-                _notice(
-                    "info",
-                    "Note",
-                    "Yesterday's PnL data is not available for agricultural contracts.",
-                ),
-                _notice("alert", "No Executions", _no_session(label)),
-            ]
-        return notices
-    if weekday == 5:
-        name, why = "Saturday", "due to it being a Saturday"
-    elif holiday:
-        name, why = holiday, "due to a federal holiday"
-    else:
-        return []
-    kind = "holiday" if holiday else "weekend"
-    if settled:
-        body = (
-            f"Some futures settlement prices for {label} are not available, as these contracts "
-            f"did not trade. {_SETTLEMENT_PENDING}"
-        )
-        return [_notice(kind, f"Yesterday was {name}", body, _MONITOR)]
-    body = (
-        f"The latest futures settlement prices are not available, as futures markets were "
-        f"closed yesterday ({label}) {why}. {_SETTLEMENT_PENDING}"
-    )
-    if weekday == 5:
-        none = (
-            "Futures markets were closed yesterday, so no executions were generated and "
-            "portfolio holdings are unchanged. Updates will resume with the next trading "
-            "session\u2019s data."
-        )
-    else:
-        none = (
-            f"Since yesterday ({label}) was a market holiday, no new market data is available. "
-            "Positions remain unchanged from the previous trading day, and no executions were "
-            "generated."
-        )
-    return [
-        _notice(kind, f"Yesterday was {name}", body, _MONITOR_CLOSED),
+        kind = "holiday" if holiday else "weekend"
+        notices.append(_notice(kind, f"Yesterday was {name}", body, _MONITOR_CLOSED))
+    notices += [
+        _notice("alert", "No Executions", _no_session(label)),
         _notice("info", "Note", "Yesterday's PnL data is not available."),
-        _notice("alert", "No Executions", none),
     ]
+    return notices
 
 
 def _no_session(label: str) -> str:
@@ -154,7 +146,8 @@ def _positions(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _executions(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _executions(detail: Mapping[str, Any], roll: bool = False) -> list[dict[str, Any]]:
+    """The day's strategy fills, or (roll=True) its roll legs; a roll leg is never a trade."""
     return [
         {
             "symbol": _symbol(e["symbol"]),
@@ -165,6 +158,7 @@ def _executions(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
             "cost": float(e["commission"]),
         }
         for e in detail["executions"]
+        if (e.get("type", "STRATEGY") == "ROLL") == roll
     ]
 
 
@@ -227,14 +221,18 @@ def _tone(value: float) -> str:
 
 
 def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """trade-ngin's four Performance Metrics groups, in its order. A figure the screens do not
-    carry (Sortino, the cumulative cost split) is left out rather than invented."""
+    """The four Performance Metrics groups, in the engine's order; every figure is the stored one."""
     m = detail["metrics"]
     groups: list[list[tuple[str, str, str]]] = [
         [
             ("Unrealized PnL", signed_money(m["unrealizedPnL"], 2), _tone(m["unrealizedPnL"])),
             ("Realized PnL", signed_money(m["realizedPnL"], 2), _tone(m["realizedPnL"])),
             ("Transaction costs", money(m["totalCommissions"], 2), ""),
+            *(
+                [("Roll costs", money(m["totalRollCosts"], 2), "")]
+                if m.get("totalRollCosts") is not None
+                else []
+            ),
             ("Total PnL (net)", signed_money(m["netPnL"], 2), _tone(m["netPnL"])),
             ("Current portfolio value", money(m["currentPortfolioValue"], 2), ""),
         ],
@@ -246,6 +244,7 @@ def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
             ),
             ("Annualized return", f"{m['annualizedReturn']:.2f}%", _tone(m["annualizedReturn"])),
             ("Sharpe ratio", f"{m['sharpeRatio']:.2f}", ""),
+            ("Sortino ratio", f"{m['sortinoRatio']:.2f}", ""),
             ("Volatility", f"{m['volatility']:.2f}%", ""),
             ("Max drawdown", f"{m['maxDrawdown']:.2f}%", ""),
         ],
@@ -267,22 +266,31 @@ def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _previous_day(detail: Mapping[str, Any], report_date: date) -> dict[str, Any]:
-    """The settled day's box from what the detail holds: its return, realized and net PnL."""
-    curve = detail["historicalData"]
-    if len(curve) < 2:
+def _previous_day(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """The settled day's box: its stored daily figures (the previous live_results row)."""
+    prev = detail.get("previousDay")
+    if not prev:
         return {}
-    net = float(curve[-1]["value"]) - float(curve[-2]["value"])
-    realized = sum(float(r["realizedPnL"]) for r in detail["finalizedPositions"])
-    daily_return = detail["metrics"]["dailyReturn"]
-    rows = [
-        ("Total positions", f"{len(detail['positions'])}", ""),
-        ("Daily return", f"{daily_return:.2f}%", _tone(daily_return)),
-        ("Daily realized PnL (gross)", signed_money(realized, 2), _tone(realized)),
-        ("Daily total PnL (net)", signed_money(net, 2), _tone(net)),
-    ]
+    rows = [("Total positions", f"{len(detail['finalizedPositions'])}", "")]
+    for label, key, kind in (
+        ("Daily return", "dailyReturn", "pct"),
+        ("Daily unrealized PnL (gross)", "dailyUnrealizedPnL", "pnl"),
+        ("Daily realized PnL (gross)", "dailyRealizedPnL", "pnl"),
+        ("Daily transaction costs", "dailyTransactionCosts", "cost"),
+        ("Daily roll costs", "dailyRollCosts", "cost"),
+        ("Daily total PnL (net)", "dailyPnL", "pnl"),
+    ):
+        value = prev.get(key)
+        if value is None:
+            continue
+        if kind == "pct":
+            rows.append((label, f"{value:.2f}%", _tone(value)))
+        elif kind == "cost":
+            rows.append((label, money(abs(value), 2), ""))
+        else:
+            rows.append((label, signed_money(value, 2), _tone(value)))
     return {
-        "label": (report_date - timedelta(days=1)).isoformat(),
+        "label": prev["date"],
         "metrics": [
             {"label": label, "value": value, "group": 0, "tone": tone}
             for label, value, tone in rows
@@ -310,6 +318,7 @@ def build_daily_payload(
     rollovers: Sequence[Mapping[str, str]] = (),
     symbols: Mapping[str, Any] | None = None,
     history: Mapping[str, Any] | None = None,
+    flags: ReportFlags = ReportFlags(),
 ) -> dict[str, Any]:
     """The queue payload for one portfolio's report on report_date."""
     return {
@@ -317,20 +326,20 @@ def build_daily_payload(
         "report_date": report_date.isoformat(),
         "portfolio_id": portfolio_id,
         "portfolio_name": portfolio_name,
-        "notices": calendar_notices(
-            report_date, settled=bool(detail["finalizedPositions"]), roots=_roots(detail)
-        ),
+        "notices": day_notices(report_date, flags, roots=_roots(detail)),
         "positions": _positions(detail),
         "executions": _executions(detail),
-        "realized": _realized(detail, report_date),
+        "roll_legs": _executions(detail, roll=True),
+        # a carried day has no settled table: the run found no prices for it
+        "realized": {} if flags.no_session else _realized(detail, report_date),
         "metrics": _metrics(detail),
         "series": {**_series(detail), "drawdown": _drawdown(detail), **dict(history or {})},
         "summary": {"margin_posted": float(detail["metrics"]["marginPosted"])},
-        "previous_day": _previous_day(detail, report_date),
+        "previous_day": _previous_day(detail),
         "symbols": dict(symbols or {}),
         "rollovers": [dict(r) for r in rollovers],
-        "footnotes": list(FOOTNOTES),
+        "footnotes": footnotes(detail.get("startDate")),
     }
 
 
-__all__ = ["FOOTNOTES", "build_daily_payload", "calendar_notices", "holiday_name", "percent"]
+__all__ = ["ReportFlags", "build_daily_payload", "day_notices", "footnotes", "holiday_name"]

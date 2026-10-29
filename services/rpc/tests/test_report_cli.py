@@ -57,11 +57,50 @@ def test_history_is_oldest_first_skips_nulls_and_scopes_the_book():
 
     d = lambda n: dt.date(2026, 10, n)  # noqa: E731
     cur = _Cur([(d(3), 1.5, 1.0, 100.0), (d(2), None, 0.9, 90.0)], [(d(2), 4), (d(3), 6)])
-    h = data.fetch_history(cur, "P", "S")
+    h = data.fetch_history(cur, "P", "S", "qt", d(3))
     assert [p["date"] for p in h["net_leverage"]] == ["2026-10-02", "2026-10-03"]
     assert [p["date"] for p in h["leverage"]] == ["2026-10-03"]  # the NULL gross is skipped
     assert [p["value"] for p in h["contracts_per_day"]] == [4.0, 6.0]
-    assert "portfolio_type" in cur.sql[0] and "'qt'" in cur.sql[0]
+    # one book, through the day asked for
+    assert "portfolio_type = %(b)s" in cur.sql[0] and "date <= %(d)s" in cur.sql[0]
+
+
+class _DictCur:
+    """A dict-row cursor that answers each query in turn and records the parameters."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+
+    def fetchone(self):
+        return self.answers.pop(0)
+
+    def fetchall(self):
+        return self.answers.pop(0)
+
+
+def test_every_read_is_of_the_day_asked_for_and_of_one_book():
+    import datetime as dt
+
+    day = dt.date(2026, 10, 28)
+    cur = _DictCur(None, {"date": day}, None, {"start": dt.date(2025, 10, 5)}, [], [], [], [])
+    rows = data.fetch_detail_rows(cur, "S", "P", day)
+    assert rows["book"] == "system"  # the desk's book had no rows on the day
+    assert rows["start"] == dt.date(2025, 10, 5)
+    assert all(params["d"] == day for _, params in cur.calls)
+    assert all(params.get("b", "system") == "system" for _, params in cur.calls)
+
+
+def test_no_row_for_the_day_reads_nothing_else():
+    import datetime as dt
+
+    cur = _DictCur({"x": 1}, None)
+    rows = data.fetch_detail_rows(cur, "S", "P", dt.date(2026, 10, 28))
+    assert rows == {"latest": None, "book": "qt"}
+    assert len(cur.calls) == 2
 
 
 def test_symbols_lists_rows_and_names_the_roots_with_no_metadata():

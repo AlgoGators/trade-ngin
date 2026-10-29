@@ -2,13 +2,16 @@
 
 import smtplib
 import ssl
+import sys
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+from pathlib import Path
 
 
-
-def build_message(sender, to, cc, email):
-    """multipart/alternative (text, then HTML), with the charts inline on the HTML part."""
+def build_message(sender, to, cc, email, attachments=()):
+    """multipart/alternative (text, then HTML), with the charts inline on the HTML part and the
+    run's exported files attached. A file that cannot be read is left off with one line on
+    stderr, never a failed send: the report itself is the message."""
     msg = EmailMessage()
     msg["Subject"] = email.subject
     msg["From"] = sender
@@ -31,13 +34,22 @@ def build_message(sender, to, cc, email):
             filename=f"{cid}.{'jpg' if subtype == 'jpeg' else 'png'}",
             disposition="inline",
         )
+    for path in attachments:
+        p = Path(path)
+        try:
+            data = p.read_bytes()
+        except OSError as exc:
+            print(f"report: attachment {p.name} left off: {exc.strerror}", file=sys.stderr)
+            continue
+        maintype, subtype = ("text", "csv") if p.suffix.lower() == ".csv" else ("application", "octet-stream")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=p.name)
     return msg
 
 
-def send_message(cfg, to, cc, email):
+def send_message(cfg, to, cc, email, attachments=()):
     """Send over SMTP with an SmtpConfig (desk/override_mail.py: host, port, username, password,
     from_email, use_tls). Port 465 is implicit TLS; otherwise STARTTLS when use_tls."""
-    message = build_message(cfg.from_email, list(to), list(cc), email)
+    message = build_message(cfg.from_email, list(to), list(cc), email, attachments)
     context = ssl.create_default_context()
     server: smtplib.SMTP
     if cfg.port == 465:

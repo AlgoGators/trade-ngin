@@ -92,8 +92,9 @@
   {% endif %}
 
   <!-- executions -->
-  {% if report.executions %}
+  {% if report.executions or report.roll_legs %}
   {{ section("Daily executions") }}
+  {% if report.executions %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     <tr><td class="th mono">Symbol</td><td class="th mono">Side</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Notional</td><td class="th mono r">Cost</td></tr>
     {% for e in report.executions %}
@@ -107,6 +108,22 @@
     </tr>
     {% endfor %}
   </table>
+  {% endif %}
+  {% if report.roll_legs %}
+  <div class="mono label" style="margin:22px 0 8px 0;">Roll legs &middot; costs only, not trades</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td class="th mono">Symbol</td><td class="th mono">Side</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Cost</td></tr>
+    {% for e in report.roll_legs %}
+    <tr>
+      <td class="td" style="font-weight:600;color:#14141A;">{{ e.symbol }}</td>
+      <td class="td mono" style="font-size:11px;letter-spacing:0.1em;font-weight:600;">{{ e.side }}</td>
+      <td class="td num r">{{ fmt.quantity(e.quantity) }}</td>
+      <td class="td num r">{{ fmt.price(e.price) }}</td>
+      <td class="td num r muted">{{ fmt.money(e.cost, 2) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;">
     <tr><td class="mono label" style="padding:3px 0;">Total trades</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.executions|length }}</td></tr>
     <tr><td class="mono label" style="padding:3px 0;">Total notional traded</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_traded, 2) }}</td></tr>
