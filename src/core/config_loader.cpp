@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <ctime>
 #include <fstream>
@@ -54,6 +55,17 @@ void ConfigLoader::merge_json(nlohmann::json& target, const nlohmann::json& sour
         }
     }
 }
+
+namespace {
+// optimization.sample_cov_window set under carver: warned once per process, not once per load.
+std::atomic<bool> sample_cov_window_carver_warned{false};
+}  // namespace
+
+namespace config_loader_detail {
+void reset_sample_cov_window_warning() {
+    sample_cov_window_carver_warned = false;
+}
+}  // namespace config_loader_detail
 
 namespace {
 
@@ -234,7 +246,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                         "ConfigLoader");
                 }
                 config.sample_cov_window = v.get<std::size_t>();
-                if (config.optimiser_covariance == "carver") {
+                if (config.optimiser_covariance == "carver" &&
+                    !sample_cov_window_carver_warned.exchange(true)) {
                     WARN("config for " + config.portfolio_id +
                          ": defaults.json optimization.sample_cov_window " + v.dump() +
                          " applies only to the sample optimiser covariance; optimiser_covariance "

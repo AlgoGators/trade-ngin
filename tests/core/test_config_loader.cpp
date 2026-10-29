@@ -1417,8 +1417,10 @@ TEST_F(ConfigLoaderTest, TheOptimiserCovarianceIsOptionalAndNamed) {
 
 // sample_cov_window (LEVERS): optional, a whole number of bars from 40 to 756, anything else
 // refused with the range named. Set under optimiser_covariance "carver" it is kept but warned
-// about once (the carver covariance does not read it); set under sample, or absent, no warning.
+// about once per process (the carver covariance does not read it; a live run loads its config
+// more than once); set under sample, or absent, no warning.
 TEST_F(ConfigLoaderTest, TheSampleCovarianceWindowIsBoundedAndWarnedAboutUnderCarver) {
+    config_loader_detail::reset_sample_cov_window_warning();
     LoggerConfig lc;
     lc.destination = LogDestination::CONSOLE;
     lc.min_level = LogLevel::WARNING;
@@ -1472,6 +1474,12 @@ TEST_F(ConfigLoaderTest, TheSampleCovarianceWindowIsBoundedAndWarnedAboutUnderCa
     r = load({{"optimiser_covariance", "carver"}}, &out);
     ASSERT_TRUE(r.is_ok());
     EXPECT_EQ(out.find(needle), std::string::npos) << out;
+    // a second load in the same process (a live run's settings snapshot) warns no more
+    r = load({{"optimiser_covariance", "carver"}, {"sample_cov_window", 252}}, &out);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value().sample_cov_window, 252u);
+    EXPECT_EQ(out.find(needle), std::string::npos) << "warned twice in one process:\n" << out;
+    config_loader_detail::reset_sample_cov_window_warning();
 }
 
 // buffer_step_rule (STEP), the same way: optional, "fraction", "edge" or "edge_risk" (LEVERS),

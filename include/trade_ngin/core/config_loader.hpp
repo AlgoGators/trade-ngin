@@ -656,4 +656,10 @@ private:
     static void log_config_summary(const AppConfig& config);
 };
 
+namespace config_loader_detail {
+/// The sample_cov_window-under-carver warning prints once per process (a live run loads its config
+/// more than once); tests reset it.
+void reset_sample_cov_window_warning();
+}  // namespace config_loader_detail
+
 }  // namespace trade_ngin
