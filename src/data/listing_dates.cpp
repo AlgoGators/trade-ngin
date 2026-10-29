@@ -476,6 +476,26 @@ void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
     if (entries_.empty()) return;
     const auto pairs = pairs_in(symbols);
     const size_t stored = bars.size();
+    // MM fix round 1: the listed contract's own legs on its listing date's session (the bar dated on
+    // the listing date and a weekend stub right before it, which the cost feed merges into it) are
+    // priced on its own contract's volume where its series still carries the full-size contract's
+    // (the equity micros before 2026-02-22). Only where that volume is known.
+    for (const auto& [predecessor, listed] : pairs) {
+        for (const auto& entry : entries_) {
+            if (entry.contract.symbol + suffix_of(listed) != listed) continue;
+            const auto listed_day = std::chrono::floor<std::chrono::days>(entry.listed_at);
+            const bool weekday = std::chrono::weekday{listed_day}.iso_encoding() <= 5;
+            for (size_t i = 0; i < stored; ++i) {
+                Bar& row = bars[i];
+                if (row.symbol != listed || !row.own_contract_volume) continue;
+                const auto day = std::chrono::floor<std::chrono::days>(row.timestamp);
+                const unsigned wd = std::chrono::weekday{day}.iso_encoding();
+                const bool stub = weekday && wd >= 6 && day < listed_day &&
+                                  listed_day - day <= std::chrono::days{2};
+                if (day == listed_day || stub) row.cost_volume = row.own_contract_volume;
+            }
+        }
+    }
     for (const auto& [predecessor, listed] : pairs) {
         std::vector<size_t> rows;  // the listed contract's rows, appended in their stored order
         for (size_t i = 0; i < stored; ++i) {
@@ -512,6 +532,7 @@ void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
         for (size_t i : rows) {
             Bar copy = bars[i];
             copy.symbol = predecessor;
+            copy.own_contract_volume.reset();  // the listed contract's own, not the predecessor's
             auto cv = cost_volume.find(i);
             copy.cost_volume = cv == cost_volume.end() ? std::nullopt : cv->second;
             bars.push_back(std::move(copy));

@@ -175,6 +175,12 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             carry_other_symbol_array = os->chunk(0);
         }
 
+        // MM fix round 1: the per-contract source's own_contract_volume (Bar::own_contract_volume)
+        std::shared_ptr<arrow::Array> own_volume_array;
+        if (auto c = table->GetColumnByName("own_contract_volume"); c != nullptr) {
+            own_volume_array = c->chunk(0);
+        }
+
         // Prepare result vector
         std::vector<Bar> bars;
         bars.reserve(table->num_rows());
@@ -281,6 +287,16 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                     held_close.value(), other_close.value(),
                     std::static_pointer_cast<arrow::Int32Array>(carry_months_array)->Value(i),
                     held_symbol.value(), other_symbol.value()};
+            }
+            if (own_volume_array && !own_volume_array->IsNull(i)) {
+                auto own = extract_double(own_volume_array, i);
+                if (own.is_error()) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting own_contract_volume at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.own_contract_volume = own.value();
             }
 
             bars.push_back(bar);

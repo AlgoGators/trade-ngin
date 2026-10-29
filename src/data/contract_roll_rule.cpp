@@ -404,6 +404,16 @@ HeldSeries Rule::run() {
         if (vendor) last_known_vendor = vendor;
         day.held = key_of(*held);
         fill_bar(day, *held, vendor, vb);
+        // MM fix round 1: an equity micro before its change holds the full-size contract; its own
+        // contract of the same expiry, where it prints, prices its listing legs (Bar::own_contract_volume).
+        if (in_.alias && !in_.alias->full_size_grid && held->root == in_.alias->full_root) {
+            for (const Contract* c : book_.printing_on(in_.root, d)) {
+                if (key_of(*c).expiration == day.held.expiration &&
+                    key_of(*c).delivery_month == day.held.delivery_month) {
+                    day.micro_volume = c->bar_on(d)->volume;
+                }
+            }
+        }
         out_.days.push_back(std::move(day));
     }
     return out_;

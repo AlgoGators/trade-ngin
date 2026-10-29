@@ -187,6 +187,10 @@ struct HeldDay {
     Day left_roll_date{};
     /// R6: that roll was the micros' change (trigger ALIAS), a change of price source.
     bool left_by_alias{false};
+    /// MM fix round 1: an equity micro's alias before the change (full_size_grid false, the held
+    /// contract the full-size one): the micro's own contract of the held expiry, its volume on this
+    /// date where it prints (Bar::own_contract_volume).
+    std::optional<int64_t> micro_volume;
 };
 
 /// Counts and messages of one series, for the report and the measures.

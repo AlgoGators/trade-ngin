@@ -29,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <tuple>
 #include <vector>
 
 #include "trade_ngin/core/time_utils.hpp"
@@ -767,4 +768,30 @@ TEST(ListingCostVolume, WithNoCostVolumeTheFeedReadsTheBarsOwnVolume) {
             EXPECT_EQ(a.get_volatility_multiplier(x.symbol), b.get_volatility_multiplier(x.symbol));
         }
     }
+}
+
+// MM fix round 1 (the equity micros): on its 2019-05-06 listing MES.v.0's Monday bar and the Sunday
+// stub before it carry MESM9's own volume as cost_volume (ListingDates), so the LO- leg's participation
+// is MESM9's 162,154 + 787 lots, not ESM9's 1,865,666 + 137,577: the 40 bps tier, not the 10.
+TEST(ListingCostVolume, TheListedEquityMicrosEntryIsPricedOnItsOwnSession) {
+    ListingDates::instance().clear();
+    ListingDates::instance().set({{"MES", "ES", "2019-05-06", 10.0}});
+    std::vector<Bar> feed;
+    for (const auto& [date, close, v, own] : std::vector<std::tuple<std::string, double, double, std::optional<double>>>{
+             {"2019-05-02", 2919.25, 1779489.0, std::nullopt}, {"2019-05-03", 2949.25, 1229868.0, std::nullopt},
+             {"2019-05-05", 2895.25, 137577.0, 787.0}, {"2019-05-06", 2918.0, 1865666.0, 162154.0}}) {
+        Bar b(std::chrono::sys_days{contract_rolls::parse_ymd(date)}, close, close, close, close, v, "MES.v.0");
+        b.instrument_id = "736";
+        b.own_contract_volume = own;
+        feed.push_back(b);
+    }
+    ListingDates::instance().add_predecessor_bars({"MES.v.0", "ES.v.0"}, feed);
+    ListingDates::instance().clear();
+    TransactionCostManager tcm;
+    const Timestamp fill_day = std::chrono::sys_days{contract_rolls::parse_ymd("2019-05-07")};
+    const auto fed = feed_futures_cost_model(tcm, feed, fill_day);
+    EXPECT_EQ(tcm.get_adv("MES.v.0"), 162154.0 + 787.0) << "MESM9's own session";
+    EXPECT_EQ(tcm.get_adv("ES.v.0"), 1865666.0 + 137577.0) << "the predecessor on ESM9's own session";
+    EXPECT_EQ(k_bps(162154.0 + 787.0), 40.0);
+    EXPECT_EQ(k_bps(1865666.0 + 137577.0), 10.0);
 }

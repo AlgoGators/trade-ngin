@@ -145,6 +145,7 @@ struct SourceBar {
     std::string instrument_id;  ///< the held contract's id (the target's on a roll bar)
     std::optional<RollFrom> roll_from;
     std::optional<CarryQuote> carry;  ///< trade-ngin #185, with carry quotes on only
+    std::optional<double> own_contract_volume;  ///< MM fix round 1: HeldDay::micro_volume
 };
 
 /**
@@ -203,11 +204,12 @@ MarketDataEvent source_bar_event(const SourceBar& bar);
 
 /// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's five
 /// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date, roll_from_volume; NULL where it
-/// is absent; roll_from_volume also NULL where the field carries no volume). With `with_carry`
-/// (carry on) five more, Bar::carry's (carry_held_close, carry_other_close, carry_months,
-/// carry_held_symbol, carry_other_symbol; NULL where it is absent); without it the table is the
-/// thirteen columns. (Merged on tune2/final-base: MM's roll_from_volume is column 12 in every
-/// table, carry's columns follow it.)
+/// is absent; roll_from_volume also NULL where the field carries no volume) and own_contract_volume
+/// (Bar::own_contract_volume, NULL where absent). With `with_carry` (carry on) five more,
+/// Bar::carry's (carry_held_close, carry_other_close, carry_months, carry_held_symbol,
+/// carry_other_symbol; NULL where it is absent); without it the table is the fourteen columns.
+/// (Merged on tune2/final-base: MM's roll_from_volume and own_contract_volume are columns 12 and 13
+/// in every table, carry's columns follow them.)
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars,
                                                            bool with_carry = false);
 

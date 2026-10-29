@@ -343,6 +343,44 @@ TEST(ListingDates, TheEquityMicrosPredecessorReadsItsOwnVolumeUntilTheChangeAndN
     EXPECT_FALSE(bars[stored + 2].cost_volume.has_value()) << "TMIC has no micro alias";
 }
 
+// MM fix round 1 (the equity micros, R6's reverse case): MES.v.0 carries ESM9's bars at its
+// 2019-05-06 listing, with MESM9's own volume along (Bar::own_contract_volume). The listing date's
+// bar and the Sunday stub before it (the cost feed merges it into Monday) price MES's own legs on
+// MESM9's volume (cost_volume); no other bar, and none of the predecessor ES.v.0's copies, which are
+// ESM9's own bars. Without the predecessor in the run (a window starting after the listing) nothing.
+TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSession) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}});
+    auto with_own = [](Bar b, std::optional<double> own) {
+        b.own_contract_volume = own;
+        return b;
+    };
+    const std::vector<Bar> stored = {
+        with_own(dated("MES.v.0", "2019-05-03", 2949.25, 1229868.0), std::nullopt),  // Friday, no MESM9 yet
+        with_own(dated("MES.v.0", "2019-05-05", 2895.25, 137577.0), 787.0),          // the Sunday stub
+        with_own(dated("MES.v.0", "2019-05-06", 2918.0, 1865666.0), 162154.0),       // the listing date
+        with_own(dated("MES.v.0", "2019-05-07", 2884.75, 2702695.0), 245769.0),
+    };
+    std::vector<Bar> bars = stored;
+    rule.add_predecessor_bars({"MES.v.0"}, bars);  // the window starts after the listing: no ES
+    ASSERT_EQ(bars.size(), stored.size());
+    for (const auto& b : bars) EXPECT_FALSE(b.cost_volume.has_value()) << ymd(b.timestamp);
+    bars = stored;
+    rule.add_predecessor_bars({"MES.v.0", "ES.v.0"}, bars);
+    ASSERT_EQ(bars.size(), 2 * stored.size());
+    EXPECT_FALSE(bars[0].cost_volume.has_value());
+    EXPECT_EQ(bars[1].cost_volume, std::optional<double>(787.0)) << "the stub merged into the listing session";
+    EXPECT_EQ(bars[2].cost_volume, std::optional<double>(162154.0)) << "MESM9's own, not ESM9's 1,865,666";
+    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session R6's series volume stands";
+    for (size_t i = 0; i < stored.size(); ++i) EXPECT_EQ(bars[i].volume, stored[i].volume);
+    for (size_t i = stored.size(); i < bars.size(); ++i) {
+        EXPECT_EQ(bars[i].symbol, "ES.v.0");
+        EXPECT_FALSE(bars[i].cost_volume.has_value()) << "ES's legs on ESM9's own bar";
+        EXPECT_FALSE(bars[i].own_contract_volume.has_value());
+    }
+}
+
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,
 // handed on unchanged under its own symbol, after the stored rows and in their order.
 TEST(ListingDates, ThePredecessorReadsTheRowsStoredUnderTheListedSymbol) {

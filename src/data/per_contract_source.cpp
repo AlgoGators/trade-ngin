@@ -270,6 +270,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 }
             }
         }
+        if (d.micro_volume) b.own_contract_volume = static_cast<double>(*d.micro_volume);
         auto w = window.find(d.date);
         if (w != window.end()) {
             b.time_text = w->second;
@@ -408,6 +409,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::StringBuilder carry_held_symbol_builder(pool);
     arrow::StringBuilder carry_other_symbol_builder(pool);
     arrow::DoubleBuilder roll_volume_builder(pool);  // MM fix round 1: RollFrom::volume
+    arrow::DoubleBuilder own_volume_builder(pool);   // MM fix round 1: Bar::own_contract_volume
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",
@@ -431,6 +433,10 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                                 ? instrument_id_builder.AppendNull()
                                                 : instrument_id_builder.Append(bar.instrument_id);
             if (id_status != arrow::Status::OK()) return failed("append");
+            if ((bar.own_contract_volume ? own_volume_builder.Append(*bar.own_contract_volume)
+                                         : own_volume_builder.AppendNull()) != arrow::Status::OK()) {
+                return failed("append");
+            }
             if (bar.roll_from) {
                 if (roll_close_builder.Append(bar.roll_from->close) != arrow::Status::OK() ||
                     roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
@@ -466,7 +472,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                 return failed("append");
             }
         }
-        std::vector<std::shared_ptr<arrow::Array>> arrays(with_carry ? 18 : 13);
+        std::vector<std::shared_ptr<arrow::Array>> arrays(with_carry ? 19 : 14);
         if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
             symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
             open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
@@ -479,14 +485,15 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
             roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
             roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK() ||
             roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK() ||
-            roll_volume_builder.Finish(&arrays[12]) != arrow::Status::OK()) {
+            roll_volume_builder.Finish(&arrays[12]) != arrow::Status::OK() ||
+            own_volume_builder.Finish(&arrays[13]) != arrow::Status::OK()) {
             return failed("finish");
         }
-        if (with_carry && (carry_held_close_builder.Finish(&arrays[13]) != arrow::Status::OK() ||
-                           carry_other_close_builder.Finish(&arrays[14]) != arrow::Status::OK() ||
-                           carry_months_builder.Finish(&arrays[15]) != arrow::Status::OK() ||
-                           carry_held_symbol_builder.Finish(&arrays[16]) != arrow::Status::OK() ||
-                           carry_other_symbol_builder.Finish(&arrays[17]) != arrow::Status::OK())) {
+        if (with_carry && (carry_held_close_builder.Finish(&arrays[14]) != arrow::Status::OK() ||
+                           carry_other_close_builder.Finish(&arrays[15]) != arrow::Status::OK() ||
+                           carry_months_builder.Finish(&arrays[16]) != arrow::Status::OK() ||
+                           carry_held_symbol_builder.Finish(&arrays[17]) != arrow::Status::OK() ||
+                           carry_other_symbol_builder.Finish(&arrays[18]) != arrow::Status::OK())) {
             return failed("finish");
         }
         arrow::FieldVector fields{arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
@@ -501,7 +508,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                      arrow::field("roll_from_id", arrow::utf8()),
                                      arrow::field("roll_from_kind", arrow::int8()),
                                      arrow::field("roll_from_date", arrow::utf8()),
-                                     arrow::field("roll_from_volume", arrow::float64())};
+                                     arrow::field("roll_from_volume", arrow::float64()),
+                                     arrow::field("own_contract_volume", arrow::float64())};
         if (with_carry) {
             fields.push_back(arrow::field("carry_held_close", arrow::float64()));
             fields.push_back(arrow::field("carry_other_close", arrow::float64()));

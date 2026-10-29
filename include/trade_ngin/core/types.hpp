@@ -440,11 +440,18 @@ struct Bar {
     /// (CarryQuote); set only by the per-contract source with carry on.
     std::optional<CarryQuote> carry;
     /// MM fix round 1: the volume the futures cost feed prices this bar's fills on, in place of
-    /// `volume` (futures_cost_feed.hpp). Set only on a listing predecessor's copied bar from the
-    /// micro's change of price source on (the full-size contract's own volume); empty on every
-    /// other bar. Every other reader (the session classifier, the strategies, the stored and
+    /// `volume` (futures_cost_feed.hpp). Set only by ListingDates::add_predecessor_bars: on a
+    /// listing predecessor's copied bar from the micro's change of price source on (the full-size
+    /// contract's own volume), and on an equity micro's own bars of its listing date's session (its
+    /// own_contract_volume); empty on every other bar. Every other reader (the session classifier, the strategies, the stored and
     /// exported bars) reads `volume`.
     std::optional<double> cost_volume;
+    /// MM fix round 1: on an equity micro's bar before its change of price source (R6's alias, the
+    /// series carries the full-size contract: MES, MNQ, MYM, M2K before 2026-02-22), the micro's own
+    /// contract of the same expiry, its volume on this date where it prints; empty on every other
+    /// bar. Read only by ListingDates::add_predecessor_bars, which prices the listed contract's own
+    /// switch legs on it (the listed symbol's cost_volume on its listing date's session).
+    std::optional<double> own_contract_volume;
 
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)

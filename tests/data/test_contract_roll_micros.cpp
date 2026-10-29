@@ -268,6 +268,9 @@ TEST(ContractRollMicros, SilWithNoContractOfTheHeldExpiryChangesIntoItsCycleTarg
     EXPECT_EQ(rolls[0]->old->raw_symbol, "SIN3");
     EXPECT_EQ(*rolls[0]->old_close, 21.83);
     EXPECT_EQ(rolls[0]->close, 21.80);
+    // MM fix round 1: the full-size grid kind's series before the change is the full-size contract's
+    // own, and its micro is not listed then: nothing rides along
+    for (const auto& day : r.value().days) EXPECT_FALSE(day.micro_volume.has_value()) << ymd(day.date);
 }
 
 // R6 (HD 2026-10-26): the bar source hands the change bar out as a change of price source
@@ -319,6 +322,14 @@ TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
     EXPECT_EQ(on.at("2026-02-24")->roll_from->volume, std::optional<double>(1600000.0));
     EXPECT_FALSE(on.at("2025-12-15")->roll_from->volume.has_value());
     EXPECT_FALSE(on.at("2025-12-16")->roll_from->volume.has_value());
+    // MM fix round 1: before the change the series holds the full-size contract; where the micro's own
+    // contract of that expiry prints (MESH6 while ESH6 is held) its volume rides along for the
+    // listing legs; none while ESZ5 is held (no MESZ5 here), none from the change (the bar is MESH6's).
+    EXPECT_EQ(on.at("2026-01-15")->own_contract_volume, std::optional<double>(1700000.0)) << "ESH6 held";
+    EXPECT_EQ(on.at("2026-01-15")->volume, 1600000.0) << "the bar is still ESH6's";
+    EXPECT_FALSE(on.at("2025-12-10")->own_contract_volume.has_value()) << "ESZ5 held, no MESZ5";
+    EXPECT_FALSE(on.at("2026-02-23")->own_contract_volume.has_value()) << "the change: MESH6's own bar";
+    EXPECT_FALSE(on.at("2026-02-24")->own_contract_volume.has_value());
 }
 
 // R6 fix round 1 (audit A S1): the first REAL roll after the change is an ordinary roll. MES runs past the
