@@ -377,7 +377,7 @@ struct RollFrom {
     /// contract's own volume on this date, for the cost of a listing predecessor's legs (a
     /// predecessor still holds the full-size contract; ListingDates::add_predecessor_bars). Empty
     /// on every other kind.
-    std::optional<double> volume;
+    std::optional<double> volume{};
 
     bool operator==(const RollFrom& o) const {
         return close == o.close && instrument_id == o.instrument_id && kind == o.kind &&
