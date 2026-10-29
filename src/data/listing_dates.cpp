@@ -1,12 +1,16 @@
 // src/data/listing_dates.cpp
 #include "trade_ngin/data/listing_dates.hpp"
 
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/contract_roll_rule.hpp"
 #include "trade_ngin/optimization/one_pass.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <cstdio>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -473,10 +477,43 @@ void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
     const auto pairs = pairs_in(symbols);
     const size_t stored = bars.size();
     for (const auto& [predecessor, listed] : pairs) {
+        std::vector<size_t> rows;  // the listed contract's rows, appended in their stored order
         for (size_t i = 0; i < stored; ++i) {
-            if (bars[i].symbol != listed) continue;
+            if (bars[i].symbol == listed) rows.push_back(i);
+        }
+        // the cost volumes walk the rows in date order (the last full-size volume seen)
+        std::vector<size_t> by_date = rows;
+        std::stable_sort(by_date.begin(), by_date.end(), [&](size_t a, size_t b) {
+            return bars[a].timestamp < bars[b].timestamp;
+        });
+        std::map<size_t, std::optional<double>> cost_volume;
+        const auto alias = contract_rolls::micro_alias(root_of(listed));
+        std::optional<double> full_size_volume;
+        bool logged_stale = false;
+        for (size_t i : by_date) {
+            const Bar& row = bars[i];
+            const auto day = std::chrono::floor<std::chrono::days>(row.timestamp);
+            if (!alias || day < alias->change) {
+                full_size_volume = row.volume;  // the copied bar is the full-size contract's own
+                continue;
+            }
+            if (row.roll_from && is_price_source_change(row.roll_from->kind) && row.roll_from->volume) {
+                full_size_volume = *row.roll_from->volume;
+            } else if (full_size_volume && !logged_stale) {
+                logged_stale = true;
+                WARN("LISTING_COST_VOLUME " + predecessor + " " + contract_rolls::ymd(day) +
+                     ": this copy of " + listed + " carries no full-size bar; a leg of " +
+                     predecessor + " from here (it trades none after its listing switch) is priced "
+                     "on the last full-size volume of the load, " +
+                     std::to_string(*full_size_volume) + ", not on " + listed + "'s (logged once)");
+            }
+            cost_volume[i] = full_size_volume;
+        }
+        for (size_t i : rows) {
             Bar copy = bars[i];
             copy.symbol = predecessor;
+            auto cv = cost_volume.find(i);
+            copy.cost_volume = cv == cost_volume.end() ? std::nullopt : cv->second;
             bars.push_back(std::move(copy));
         }
     }

@@ -179,6 +179,13 @@ public:
 
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
+    /// MM fix round 1: each copy's cost_volume (the volume the cost feed prices the predecessor's
+    /// legs on) is the full-size contract's own volume. Before the listed root's micro change
+    /// (contract_roll_rule.hpp MicroAlias) the copied bar is the full-size contract's, so none is
+    /// set; from the change on it is the change marker's (RollFrom::volume), and on a copy with no
+    /// marker volume (the contract left printed nothing that day) the last full-size volume of
+    /// this load, stale by a bar or more (logged once per predecessor). A listed root with no
+    /// micro alias: none set.
     void add_predecessor_bars(const std::vector<std::string>& symbols, std::vector<Bar>& bars) const;
     void add_predecessor_ids(const std::vector<std::string>& symbols,
                              std::vector<market_data_utils::FuturesInstrumentId>& ids) const;

@@ -5,7 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/data/roll_calendar.hpp"
 #include "trade_ngin/live/live_listing_guard.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/optimization/one_pass.hpp"
@@ -262,6 +265,82 @@ TEST(ListingDates, AStoredPredecessorIsCarriedByItsStoredListedContract) {
     const std::unordered_map<std::string, Position> none;
     EXPECT_TRUE(live_listing_refusals(rule.contracts(), universe, none, "2026-10-22").empty());
     EXPECT_EQ(live_listing_refusals(rule.contracts(), rule.run_universe(no_sil), none, "2026-10-22").size(), 1u);
+}
+
+namespace {
+Bar dated(const std::string& symbol, const std::string& date, double close, double volume,
+          std::optional<RollFrom> roll_from = std::nullopt) {
+    Bar b(std::chrono::sys_days{contract_rolls::parse_ymd(date)}, close, close, close, close, volume,
+          symbol);
+    b.roll_from = std::move(roll_from);
+    return b;
+}
+}  // namespace
+
+// MM fix round 1 (audits A and B, MUST-FIX): a predecessor still holds the full-size contract, so
+// its copied bars carry the full-size contract's own volume for the cost feed (Bar::cost_volume).
+// SIL (the full-size grid kind, change 2013-06-17): before the change the copy IS SIN3's bar, so
+// none is set; the change bar and the bars after it carry SIN3's volume from the change marker;
+// a copy with no marker (SIN3 printed nothing) keeps the last full-size volume, stale. The listed
+// symbol's own rows and every other symbol's are untouched.
+TEST(ListingDates, APredecessorsCopiesCarryTheFullSizeContractsVolumeFromTheChangeOn) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"SIL", "SI", "2013-06-17", 5.0}});
+    std::vector<Bar> bars = {
+        dated("SIL.v.0", "2013-06-13", 21.90, 31000.0),  // SIN3's own bar (the full-size grid)
+        dated("SIL.v.0", "2013-06-14", 21.985, 33000.0),
+        dated("ZN.v.0", "2013-06-14", 126.0, 900000.0),
+        dated("SIL.v.0", "2013-06-17", 21.80, 20.0,
+              RollFrom{21.83, "113863", RollFromKind::SOURCE_CHANGE, "2013-06-17", 26000.0}),
+        dated("SIL.v.0", "2013-06-18", 21.60, 30.0,
+              RollFrom{21.625, "113863", RollFromKind::AFTER_SOURCE_CHANGE, "2013-06-17", 24211.0}),
+        dated("SIL.v.0", "2013-06-19", 19.61, 6.0),  // no marker: SIN3 printed nothing
+    };
+    const std::vector<Bar> stored = bars;
+    rule.add_predecessor_bars({"SIL.v.0", "SI.v.0", "ZN.v.0"}, bars);
+    ASSERT_EQ(bars.size(), stored.size() + 5);
+    for (size_t i = 0; i < stored.size(); ++i) {
+        EXPECT_FALSE(bars[i].cost_volume.has_value()) << "a stored row is not touched: " << i;
+        EXPECT_EQ(bars[i].volume, stored[i].volume);
+    }
+    std::map<std::string, const Bar*> copy;
+    for (size_t i = stored.size(); i < bars.size(); ++i) {
+        EXPECT_EQ(bars[i].symbol, "SI.v.0");
+        copy[ymd(bars[i].timestamp)] = &bars[i];
+    }
+    EXPECT_FALSE(copy.at("2013-06-13")->cost_volume.has_value()) << "SIN3's own bar: its own volume";
+    EXPECT_FALSE(copy.at("2013-06-14")->cost_volume.has_value());
+    EXPECT_EQ(copy.at("2013-06-17")->cost_volume, std::optional<double>(26000.0)) << "SIN3's, not SILU3's 20";
+    EXPECT_EQ(copy.at("2013-06-18")->cost_volume, std::optional<double>(24211.0)) << "SIN3's, not SILU3's 30";
+    EXPECT_EQ(copy.at("2013-06-19")->cost_volume, std::optional<double>(24211.0))
+        << "no full-size bar: the last full-size volume, one bar stale";
+    EXPECT_EQ(copy.at("2013-06-17")->volume, 20.0) << "the copied bar's own volume is not changed";
+    EXPECT_EQ(copy.at("2013-06-18")->volume, 30.0) << "the classifier and the strategies still read SILU3's own";
+}
+
+// The equity micros (R6, the micro's own .v.0 carries the full-size bars until 2026-02-22): the
+// predecessor's copy at the 2019 listing is ESM9's own bar, so none is set; from the vendor's change
+// the change marker's ESH6 volume. A pair whose listed root has no micro alias: none, ever.
+TEST(ListingDates, TheEquityMicrosPredecessorReadsItsOwnVolumeUntilTheChangeAndNoAliasSetsNone) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"TMIC", "TBIG", "2019-05-06", 10.0}});
+    std::vector<Bar> bars = {
+        dated("MES.v.0", "2019-05-06", 2950.0, 1500000.0),  // ESM9's own bar
+        dated("MES.v.0", "2026-02-23", 6857.25, 900000.0,
+              RollFrom{6857.25, "42140878", RollFromKind::SOURCE_CHANGE, "2026-02-23", 1600000.0}),
+        dated("TMIC.v.0", "2026-02-23", 100.0, 50.0,
+              RollFrom{100.0, "x", RollFromKind::SOURCE_CHANGE, "2026-02-23", 7000.0}),
+    };
+    const size_t stored = bars.size();
+    rule.add_predecessor_bars({"MES.v.0", "ES.v.0", "TMIC.v.0", "TBIG.v.0"}, bars);
+    ASSERT_EQ(bars.size(), stored + 3);
+    EXPECT_EQ(bars[stored].symbol, "ES.v.0");
+    EXPECT_FALSE(bars[stored].cost_volume.has_value()) << "2019: ESM9's own bar";
+    EXPECT_EQ(bars[stored + 1].cost_volume, std::optional<double>(1600000.0)) << "ESH6's, not MESH6's";
+    EXPECT_EQ(bars[stored + 2].symbol, "TBIG.v.0");
+    EXPECT_FALSE(bars[stored + 2].cost_volume.has_value()) << "TMIC has no micro alias";
 }
 
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,

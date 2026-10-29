@@ -181,6 +181,8 @@ struct HeldDay {
     /// bars after it (RollFromKind::AFTER_ROLL): it books the roll on its first consumed bar.
     std::optional<double> left_close;
     std::string left_id;
+    /// MM fix round 1: with left_close, the contract left's own volume on this date.
+    std::optional<int64_t> left_volume;
     /// Rolls step 4: the date of the roll the contract left was left on (with left_close).
     Day left_roll_date{};
     /// R6: that roll was the micros' change (trigger ALIAS), a change of price source.

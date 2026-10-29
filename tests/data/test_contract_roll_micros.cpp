@@ -312,6 +312,13 @@ TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
     EXPECT_EQ(on.at("2026-02-24")->roll_from->date, "2026-02-23");
     EXPECT_EQ(on.at("2025-12-15")->roll_from->kind, trade_ngin::RollFromKind::KNOWN) << "a real roll";
     EXPECT_EQ(on.at("2025-12-16")->roll_from->kind, trade_ngin::RollFromKind::AFTER_ROLL);
+    // MM fix round 1: the change's two kinds carry ESH6's own volume (a listing predecessor's legs
+    // are priced on it); the bar itself is MESH6's, with MESH6's volume; a real roll's kinds carry none.
+    EXPECT_EQ(on.at("2026-02-23")->volume, 1700000.0);
+    EXPECT_EQ(on.at("2026-02-23")->roll_from->volume, std::optional<double>(1600000.0));
+    EXPECT_EQ(on.at("2026-02-24")->roll_from->volume, std::optional<double>(1600000.0));
+    EXPECT_FALSE(on.at("2025-12-15")->roll_from->volume.has_value());
+    EXPECT_FALSE(on.at("2025-12-16")->roll_from->volume.has_value());
 }
 
 // R6 fix round 1 (audit A S1): the first REAL roll after the change is an ordinary roll. MES runs past the

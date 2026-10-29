@@ -130,8 +130,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         }
         // Rolls step 3: the per-contract source's roll field (Bar::roll_from), three columns that
         // only its table carries, NULL where the field is absent; step 4 adds roll_from_date.
+        // MM fix round 1 adds roll_from_volume (RollFrom::volume, NULL where absent).
         std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array,
-            roll_date_array;
+            roll_date_array, roll_volume_array;
         if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
             roll_close_array = c->chunk(0);
             auto i = table->GetColumnByName("roll_from_id");
@@ -146,6 +147,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             roll_kind_array = k->chunk(0);
             if (auto dc = table->GetColumnByName("roll_from_date"); dc != nullptr) {
                 roll_date_array = dc->chunk(0);
+            }
+            if (auto vc = table->GetColumnByName("roll_from_volume"); vc != nullptr) {
+                roll_volume_array = vc->chunk(0);
             }
         }
         // Carry (trade-ngin #185): the per-contract source's carry quote (Bar::carry), five
@@ -248,6 +252,16 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                             "DataConversionUtils");
                     }
                     bar.roll_from->date = date_from.value();
+                }
+                if (roll_volume_array && !roll_volume_array->IsNull(i)) {
+                    auto volume_from = extract_double(roll_volume_array, i);
+                    if (volume_from.is_error()) {
+                        return make_error<std::vector<Bar>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Error extracting the roll field's volume at row " + std::to_string(i),
+                            "DataConversionUtils");
+                    }
+                    bar.roll_from->volume = volume_from.value();
                 }
             }
             if (carry_held_close_array && !carry_held_close_array->IsNull(i)) {

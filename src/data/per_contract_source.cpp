@@ -225,6 +225,11 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                 from.kind = d.trigger == RollTrigger::ALIAS ? RollFromKind::SOURCE_CHANGE
                                                             : RollFromKind::KNOWN;
                 from.date = ymd(d.date);
+                // MM fix round 1: the full-size contract's own volume, for a listing
+                // predecessor's legs on this bar (ListingDates::add_predecessor_bars).
+                if (from.kind == RollFromKind::SOURCE_CHANGE && d.old_bar) {
+                    from.volume = static_cast<double>(d.old_bar->volume);
+                }
                 if (d.old_close) {
                     from.close = *d.old_close;
                     from.instrument_id = d.old_id;
@@ -260,6 +265,9 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                        d.left_by_alias ? RollFromKind::AFTER_SOURCE_CHANGE
                                                        : RollFromKind::AFTER_ROLL,
                                        ymd(d.left_roll_date)};
+                if (d.left_by_alias && d.left_volume) {
+                    b.roll_from->volume = static_cast<double>(*d.left_volume);
+                }
             }
         }
         auto w = window.find(d.date);
@@ -399,6 +407,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::Int32Builder carry_months_builder(pool);
     arrow::StringBuilder carry_held_symbol_builder(pool);
     arrow::StringBuilder carry_other_symbol_builder(pool);
+    arrow::DoubleBuilder roll_volume_builder(pool);  // MM fix round 1: RollFrom::volume
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",
@@ -427,13 +436,16 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                     roll_id_builder.Append(bar.roll_from->instrument_id) != arrow::Status::OK() ||
                     roll_kind_builder.Append(static_cast<int8_t>(bar.roll_from->kind)) !=
                         arrow::Status::OK() ||
-                    roll_date_builder.Append(bar.roll_from->date) != arrow::Status::OK()) {
+                    roll_date_builder.Append(bar.roll_from->date) != arrow::Status::OK() ||
+                    (bar.roll_from->volume ? roll_volume_builder.Append(*bar.roll_from->volume)
+                                           : roll_volume_builder.AppendNull()) != arrow::Status::OK()) {
                     return failed("append");
                 }
             } else if (roll_close_builder.AppendNull() != arrow::Status::OK() ||
                        roll_id_builder.AppendNull() != arrow::Status::OK() ||
                        roll_kind_builder.AppendNull() != arrow::Status::OK() ||
-                       roll_date_builder.AppendNull() != arrow::Status::OK()) {
+                       roll_date_builder.AppendNull() != arrow::Status::OK() ||
+                       roll_volume_builder.AppendNull() != arrow::Status::OK()) {
                 return failed("append");
             }
             if (!with_carry) continue;
@@ -454,7 +466,7 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                 return failed("append");
             }
         }
-        std::vector<std::shared_ptr<arrow::Array>> arrays(with_carry ? 17 : 12);
+        std::vector<std::shared_ptr<arrow::Array>> arrays(with_carry ? 18 : 13);
         if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
             symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
             open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
@@ -466,14 +478,15 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
             roll_close_builder.Finish(&arrays[8]) != arrow::Status::OK() ||
             roll_id_builder.Finish(&arrays[9]) != arrow::Status::OK() ||
             roll_kind_builder.Finish(&arrays[10]) != arrow::Status::OK() ||
-            roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK()) {
+            roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK() ||
+            roll_volume_builder.Finish(&arrays[12]) != arrow::Status::OK()) {
             return failed("finish");
         }
-        if (with_carry && (carry_held_close_builder.Finish(&arrays[12]) != arrow::Status::OK() ||
-                           carry_other_close_builder.Finish(&arrays[13]) != arrow::Status::OK() ||
-                           carry_months_builder.Finish(&arrays[14]) != arrow::Status::OK() ||
-                           carry_held_symbol_builder.Finish(&arrays[15]) != arrow::Status::OK() ||
-                           carry_other_symbol_builder.Finish(&arrays[16]) != arrow::Status::OK())) {
+        if (with_carry && (carry_held_close_builder.Finish(&arrays[13]) != arrow::Status::OK() ||
+                           carry_other_close_builder.Finish(&arrays[14]) != arrow::Status::OK() ||
+                           carry_months_builder.Finish(&arrays[15]) != arrow::Status::OK() ||
+                           carry_held_symbol_builder.Finish(&arrays[16]) != arrow::Status::OK() ||
+                           carry_other_symbol_builder.Finish(&arrays[17]) != arrow::Status::OK())) {
             return failed("finish");
         }
         arrow::FieldVector fields{arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
@@ -487,7 +500,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                      arrow::field("roll_from_close", arrow::float64()),
                                      arrow::field("roll_from_id", arrow::utf8()),
                                      arrow::field("roll_from_kind", arrow::int8()),
-                                     arrow::field("roll_from_date", arrow::utf8())};
+                                     arrow::field("roll_from_date", arrow::utf8()),
+                                     arrow::field("roll_from_volume", arrow::float64())};
         if (with_carry) {
             fields.push_back(arrow::field("carry_held_close", arrow::float64()));
             fields.push_back(arrow::field("carry_other_close", arrow::float64()));

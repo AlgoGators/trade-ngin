@@ -421,11 +421,12 @@ std::vector<SourceBar> every_kind() {
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
                        RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
             source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, ""),
-            // R6: the micros' change of price source, and a bar after it
+            // R6: the micros' change of price source, and a bar after it (MM fix round 1: each
+            // carrying the full-size contract's own volume)
             source_bar("MES.v.0", "2026-02-23 00:00:00+00", 6857.25, "m",
-                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"}),
+                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23", 1250000.0}),
             source_bar("MES.v.0", "2026-02-24 00:00:00+00", 6904.25, "m",
-                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"})};
+                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23", 980000.0})};
 }
 
 /// `table` with column `name` replaced by `column`.
@@ -483,7 +484,7 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     const std::vector<SourceBar> source = every_kind();
     auto table = source_bars_to_arrow(source);
     ASSERT_TRUE(table.is_ok()) << table.error()->what();
-    EXPECT_EQ(table.value()->num_columns(), 12);
+    EXPECT_EQ(table.value()->num_columns(), 13);
     EXPECT_EQ(table.value()->num_rows(), static_cast<int64_t>(source.size()));
     auto bars = DataConversionUtils::arrow_table_to_bars(table.value());
     ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
@@ -509,10 +510,23 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
     EXPECT_EQ(bars.value()[5].roll_from->kind, RollFromKind::SOURCE_CHANGE);
     EXPECT_EQ(bars.value()[6].roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
-    // An empty source is an empty table of the same twelve columns.
+    // MM fix round 1: the full-size contract's volume on the two change kinds, none elsewhere
+    EXPECT_EQ(bars.value()[5].roll_from->volume, std::optional<double>(1250000.0));
+    EXPECT_EQ(bars.value()[6].roll_from->volume, std::optional<double>(980000.0));
+    EXPECT_FALSE(bars.value()[2].roll_from->volume.has_value());
+    // An empty source is an empty table of the same thirteen columns.
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
-    EXPECT_EQ(empty.value()->num_columns(), 12);
+    EXPECT_EQ(empty.value()->num_columns(), 13);
+    // A table without the volume column (a field before MM's fix round) reads every field with
+    // no volume.
+    auto no_volume = table.value()
+                         ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_volume"))
+                         .ValueOrDie();
+    auto unvolumed = DataConversionUtils::arrow_table_to_bars(no_volume);
+    ASSERT_TRUE(unvolumed.is_ok()) << unvolumed.error()->what();
+    EXPECT_FALSE(unvolumed.value()[5].roll_from->volume.has_value());
+    EXPECT_EQ(unvolumed.value()[5].roll_from->close, 6857.25);
     // A table without the date column (a field of step 3) reads every field with no date.
     auto no_date = table.value()
                        ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_date"))
@@ -1059,17 +1073,18 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
     std::vector<SourceBar> rows;
     for (const auto& [day, b] : carry) rows.push_back(b);
     rows.back().carry.reset();  // a day with no quote
-    // Carry off: the twelve columns as before, and no bar carries a quote.
+    // Carry off: the thirteen columns as before (MM's roll_from_volume the thirteenth), and no bar
+    // carries a quote.
     auto off = source_bars_to_arrow(rows);
     ASSERT_TRUE(off.is_ok());
-    EXPECT_EQ(off.value()->num_columns(), 12);
+    EXPECT_EQ(off.value()->num_columns(), 13);
     auto off_bars = DataConversionUtils::arrow_table_to_bars(off.value());
     ASSERT_TRUE(off_bars.is_ok());
     for (const auto& b : off_bars.value()) EXPECT_FALSE(b.carry.has_value());
     // Carry on: five more columns, the quote round-trips exactly, NULL stays absent.
     auto on = source_bars_to_arrow(rows, true);
     ASSERT_TRUE(on.is_ok());
-    EXPECT_EQ(on.value()->num_columns(), 17);
+    EXPECT_EQ(on.value()->num_columns(), 18);
     EXPECT_NE(on.value()->GetColumnByName("carry_months"), nullptr);
     auto on_bars = DataConversionUtils::arrow_table_to_bars(on.value());
     ASSERT_TRUE(on_bars.is_ok()) << on_bars.error()->what();
@@ -1167,9 +1182,9 @@ TEST_F(PerContractSourceDbTest, TheLoadersOwnCallHandsOutCarryQuotesOnlyWithCarr
     };
     auto table = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
     ASSERT_TRUE(table.is_ok());
-    EXPECT_EQ(table.value()->num_columns(), 12);
+    EXPECT_EQ(table.value()->num_columns(), 13);
     PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, true);
     auto table_on = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
     ASSERT_TRUE(table_on.is_ok());
-    EXPECT_EQ(table_on.value()->num_columns(), 17);
+    EXPECT_EQ(table_on.value()->num_columns(), 18);
 }

@@ -201,11 +201,13 @@ Timestamp source_bar_time(const std::string& time_text);
 /// The bus event the loader publishes for a bar (BAR, its OHLCV), as for the vendor's bars.
 MarketDataEvent source_bar_event(const SourceBar& bar);
 
-/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's four
-/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date; NULL where it is absent). With
-/// `with_carry` (carry on) five more, Bar::carry's (carry_held_close, carry_other_close,
-/// carry_months, carry_held_symbol, carry_other_symbol; NULL where it is absent); without it the
-/// table is the twelve columns, unchanged.
+/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's five
+/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date, roll_from_volume; NULL where it
+/// is absent; roll_from_volume also NULL where the field carries no volume). With `with_carry`
+/// (carry on) five more, Bar::carry's (carry_held_close, carry_other_close, carry_months,
+/// carry_held_symbol, carry_other_symbol; NULL where it is absent); without it the table is the
+/// thirteen columns. (Merged on tune2/final-base: MM's roll_from_volume is column 12 in every
+/// table, carry's columns follow it.)
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars,
                                                            bool with_carry = false);
 

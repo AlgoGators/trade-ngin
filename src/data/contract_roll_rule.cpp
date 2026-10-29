@@ -210,6 +210,7 @@ HeldSeries Rule::run() {
             if (const ContractBar* lb = just_left->bar_on(d)) {
                 day.left_close = lb->close;
                 day.left_id = lb->instrument_id;
+                day.left_volume = lb->volume;
                 day.left_roll_date = just_left_on;
                 day.left_by_alias = just_left_alias;
             }

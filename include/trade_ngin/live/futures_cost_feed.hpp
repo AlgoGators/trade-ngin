@@ -86,7 +86,7 @@ struct FuturesCostFeedSymbol {
     size_t bars = 0;             ///< bars of this symbol in the feed
     size_t returns = 0;          ///< log returns handed to the volatility window (all of them;
                                  ///< the window keeps the last 20)
-    double own_day_volume = 0.0; ///< the latest bar's own volume
+    double own_day_volume = 0.0; ///< the latest bar's own volume (its cost_volume when set)
     Timestamp own_day_time{};    ///< the latest bar's timestamp
     size_t merged_weekend_bars = 0;       ///< weekend bars in the participation volume (C8c3)
     double merged_weekend_volume = 0.0;   ///< their volume (B's own included when B is one)
@@ -109,6 +109,10 @@ inline bool is_weekend_day(Timestamp t) {
 inline bool is_weekend_bar(const Bar& bar) {
     return futures_cost_feed_detail::is_weekend_day(bar.timestamp);
 }
+
+/// The volume a bar is fed to the impact model with: its cost_volume when set (MM fix round 1, a
+/// listing predecessor's copied bar: the full-size contract's own), else its own volume.
+inline double fed_volume(const Bar& bar) { return bar.cost_volume.value_or(bar.volume); }
 
 /// A fill day (a run's date T, or a backtest cycle's) that is a Monday to Friday by its UTC date.
 inline bool is_weekday_fill(Timestamp fill_time) {
@@ -133,6 +137,7 @@ struct FuturesSessionVolume {
 
     void add(const Bar& bar) {
         const bool weekend = is_weekend_bar(bar);
+        const double volume = fed_volume(bar);
         if (weekend) {
             if (!has_latest || !latest_is_weekend) {  // a block starts after a session (or first)
                 has_previous_session = has_latest;
@@ -140,7 +145,7 @@ struct FuturesSessionVolume {
                 block_volume = 0.0;
                 block_bars = 0;
             }
-            block_volume += bar.volume;
+            block_volume += volume;
             ++block_bars;
         } else if (!has_latest || !latest_is_weekend) {  // a session after a session: no block
             block_volume = 0.0;
@@ -148,7 +153,7 @@ struct FuturesSessionVolume {
         }  // else a session right after a block: the block is merged into it
         has_latest = true;
         latest_is_weekend = weekend;
-        latest_volume = bar.volume;
+        latest_volume = volume;
         latest_time = bar.timestamp;
     }
 
@@ -235,7 +240,7 @@ inline FuturesCostFeedResult feed_futures_cost_model(
         }
 
         // The impact term: one observation, the participation volume of the weekend merge (C8c3).
-        entry.own_day_volume = bars.back().volume;
+        entry.own_day_volume = fed_volume(bars.back());
         entry.own_day_time = bars.back().timestamp;
         tcm.record_volume(symbol, sessions.participation(weekday_fill, entry));
 
@@ -301,7 +306,7 @@ inline FuturesCostFeedResult feed_futures_cost_model_step(
         }
         carry.last_close[symbol] = prev_close;
 
-        entry.own_day_volume = bars.back().volume;
+        entry.own_day_volume = fed_volume(bars.back());
         entry.own_day_time = bars.back().timestamp;
         const double v = sessions.participation(weekday_fill, entry);
         tcm.set_own_day_volume(symbol, v);
