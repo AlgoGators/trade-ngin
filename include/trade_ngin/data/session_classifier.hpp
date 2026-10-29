@@ -287,6 +287,8 @@ private:
     /// MM: per symbol, the dates of its changes of price source (a bar handed out as SOURCE_CHANGE,
     /// or the change an AFTER_SOURCE_CHANGE bar names).
     std::unordered_map<std::string, std::set<Day>> source_changes_;
+    /// MM fix round 1: the AFTER_SOURCE_CHANGE dates that did not parse, warned once each
+    std::set<std::string> malformed_source_change_dates_;
     mutable std::unordered_map<std::string, std::map<Day, bool>> session_flags_;
 };
 

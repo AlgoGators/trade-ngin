@@ -1,6 +1,8 @@
 // src/data/session_classifier.cpp
 #include "trade_ngin/data/session_classifier.hpp"
 
+#include "trade_ngin/core/logger.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -86,15 +88,29 @@ void SessionClassifier::add_bar(const Bar& bar) {
     if (bar.roll_from && (bar.roll_from->kind == RollFromKind::SOURCE_CHANGE ||
                           bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE)) {
         Day change = day;
-        int y = 0;
-        unsigned m = 0, d = 0;
-        if (bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE &&
-            std::sscanf(bar.roll_from->date.c_str(), "%4d-%2u-%2u", &y, &m, &d) == 3) {
-            const std::chrono::year_month_day named{std::chrono::year{y}, std::chrono::month{m},
-                                                    std::chrono::day{d}};
-            if (named.ok()) change = Day{named};
+        bool known = true;
+        if (bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE) {
+            // The change this bar names. MM fix round 1 (MMB's NOTE 1): a date that does not parse
+            // registers no change (the bar's own date is not the change's) and is warned once.
+            int y = 0;
+            unsigned m = 0, d = 0;
+            known = false;
+            if (std::sscanf(bar.roll_from->date.c_str(), "%4d-%2u-%2u", &y, &m, &d) == 3) {
+                const std::chrono::year_month_day named{std::chrono::year{y}, std::chrono::month{m},
+                                                        std::chrono::day{d}};
+                if (named.ok()) {
+                    change = Day{named};
+                    known = true;
+                }
+            }
+            if (!known &&
+                malformed_source_change_dates_.insert(bar.symbol + " " + bar.roll_from->date).second) {
+                WARN("SESSION_CLASSIFIER " + bar.symbol + " " + ymd(day) +
+                     ": the AFTER_SOURCE_CHANGE bar's roll_from.date '" + bar.roll_from->date +
+                     "' is not a date; no change of price source is registered for it");
+            }
         }
-        if (source_changes_[bar.symbol].insert(change).second) {
+        if (known && source_changes_[bar.symbol].insert(change).second) {
             invalidate_flags_from_previous(bar.symbol, change);
         }
     }
