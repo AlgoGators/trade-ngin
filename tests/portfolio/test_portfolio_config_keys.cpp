@@ -171,6 +171,14 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
         EXPECT_EQ(pc.buffer_step_rule, one_pass::BufferStepRule::kEdge);
         EXPECT_EQ(pc.to_json().at("opt_config").at("buffer_step_rule").get<std::string>(), "edge");
     }
+    {
+        AppConfig app = loaded.value();
+        app.buffer_step_rule = "edge_risk";
+        const PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_EQ(pc.buffer_step_rule, one_pass::BufferStepRule::kEdgeRisk);
+        EXPECT_EQ(pc.to_json().at("opt_config").at("buffer_step_rule").get<std::string>(),
+                  "edge_risk");
+    }
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);

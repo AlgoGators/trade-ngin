@@ -476,6 +476,20 @@ TEST_F(OnePassBookTest, TheBufferStepRuleOfTheConfigIsThePasss) {
                             "edge_order=[AAA+1 AAA+1 AAA+1]"),
               1u)
         << out;
+
+    // edge_risk (one row: its cut per unit of risk ranks as its error does) stores edge's 3
+    pc.buffer_step_rule = one_pass::BufferStepRule::kEdgeRisk;
+    make_pm(true, pc);
+    a_->rows["AAA"] = row(5.0);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(rebalance(1, {"AAA"}).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("A", "AAA"), 3.0);
+    EXPECT_EQ(count_of(out, " buffer_step_rule=edge_risk edge_steps=3 edge_te=0.04 edge_stop=inside "
+                            "edge_order=[AAA+1 AAA+1 AAA+1]"),
+              1u)
+        << out;
+    EXPECT_EQ(count_of(out, "EDGE_RISK_ZERO_RISK"), 0u) << out;
 }
 
 // The book's sample_cov_window reaches the pass: AAA's optimiser closes are 30 daily closes whose

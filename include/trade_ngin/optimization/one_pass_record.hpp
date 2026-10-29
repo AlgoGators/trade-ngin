@@ -27,7 +27,7 @@ namespace one_pass {
  * row too, with mode `no_pass` and no other value, and no symbol row. The files are written the way
  * record_file.hpp states.
  *
- * A book on buffer_step_rule "edge" adds four day columns at the end (a fraction book's record is
+ * A book on buffer_step_rule "edge" or "edge_risk" adds four day columns at the end (a fraction book's record is
  * unchanged): edge_steps (the buffer's one-contract steps), edge_order (each step as
  * SYMBOL+1 or SYMBOL-1, in the order taken, ";" between), edge_te (the TE of the buffer's book
  * against the search's answer) and edge_stop ("inside": at or below B_sigma; "no_lower": no step
@@ -81,7 +81,7 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
     if (dir == nullptr || *dir == '\0') return;
     const std::string days_name = "onepass_days_" + id + ".csv";
     const std::string book_name = "onepass_book_" + id + ".csv";
-    const bool edge = in.buffer_step_rule == BufferStepRule::kEdge;
+    const bool edge = steps_one_contract(in.buffer_step_rule);
     if (std::FILE* days =
             record_file::open_rows(dir, days_name, record_detail::days_header(edge).c_str())) {
         std::string over, by_hold;

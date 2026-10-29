@@ -2074,7 +2074,7 @@ bool PortfolioManager::one_pass_book() const {
 void PortfolioManager::record_no_pass(const std::string& signal_date, Timestamp cycle,
                                       bool is_warmup) const {
     one_pass::append_no_pass_record(id_, signal_date, core::format_utc_date(cycle), is_warmup,
-                                    config_.buffer_step_rule == one_pass::BufferStepRule::kEdge);
+                                    one_pass::steps_one_contract(config_.buffer_step_rule));
 }
 
 OnePassDay PortfolioManager::last_one_pass() const {
@@ -2875,6 +2875,15 @@ Result<void> PortfolioManager::rebalance_book(
         if (!refused) {
             Logger::register_component("DynamicOptimizer");
             INFO(one_pass::optimiser_line(symbols, result));
+            if (!result.edge_zero_risk.empty()) {
+                std::string names;
+                for (const std::size_t i : result.edge_zero_risk) {
+                    names += (names.empty() ? "" : ",") + symbols[i];
+                }
+                WARN("EDGE_RISK_ZERO_RISK symbols=" + names +
+                     ": no risk in the search's covariance (u sqrt(Sigma_ii) is not positive), so "
+                     "buffer_step_rule edge_risk did not step them");
+            }
             if (result.pass_capped) {
                 WARN("OPTIMISER_PASS_CAP the search stopped at its pass cap after " +
                      std::to_string(result.passes) + " passes");

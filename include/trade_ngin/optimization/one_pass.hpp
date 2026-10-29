@@ -147,8 +147,19 @@ std::pair<double, long> b_sigma(const Vector& u, const Matrix& covariance, const
  *     never passes or leaves its answer. Two errors within 1e-12 of each other (relative) are
  *     equal: a tie, a move that does not lower the error, an error at B. Under kEdge a TE_h within
  *     that of B is at the buffer (no trade); kFraction's no-trade check is TE_h <= B exactly.
+ *   - kEdgeRisk (size-neutral edge): kEdge's walk, tolerance and stop, but the next move is, among
+ *     the moves that lower the error, the one with the largest reduction in tracking error per unit
+ *     of that contract's own risk u_i sqrt(Sigma_ii), so a small contract that removes a little error
+ *     is not passed over for a large one that removes slightly more. Ties (1e-12 relative) go to the
+ *     lower error, then the row order; cost plays no part. A row whose risk is not a positive number
+ *     (no covariance row) is not eligible and is reported (Buffered::zero_risk).
  */
-enum class BufferStepRule { kFraction, kEdge };
+enum class BufferStepRule { kFraction, kEdge, kEdgeRisk };
+
+/// kEdge or kEdgeRisk: the buffer steps one contract at a time and its book is whole contracts.
+inline bool steps_one_contract(BufferStepRule rule) {
+    return rule != BufferStepRule::kFraction;
+}
 
 /// Section 5.3: TE_h = sqrt((h - y)' Sigma (h - y)) in weights. At or below B: no trade. Otherwise
 /// the book is h + a (y - h), a = (TE_h - B) / TE_h, rounded to nearest (kFraction), or the held
@@ -165,9 +176,12 @@ struct Buffered {
     std::vector<std::pair<std::size_t, double>> steps;  ///< (row, +1 or -1) in the order taken
     double te_book{0.0};    ///< TE of the returned book against y
     bool inside{false};     ///< it stopped at or below B (false: no move lowered the error)
+    /// kEdgeRisk only: the rows with a move toward the answer whose risk u sqrt(Sigma_ii) is not a
+    /// positive number, so never stepped, each once, in row order.
+    std::vector<std::size_t> zero_risk;
 };
 
-/// `cost` (per row, one contract's cost; empty reads as zero) breaks kEdge's ties only.
+/// `cost` (per row, one contract's cost; empty reads as zero) breaks kEdge's ties only (not kEdgeRisk's).
 Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
                 const Matrix& covariance, double b,
                 BufferStepRule rule = BufferStepRule::kFraction, const Vector& cost = {});
@@ -304,6 +318,9 @@ struct DayResult {
     /// its one-contract steps as (symbol, +1 or -1) in the order taken, the TE of its book against
     /// the search's answer and whether it stopped at or below B. Empty or zero under fraction.
     bool edge{false};
+    bool edge_risk{false};  ///< the book is on edge_risk (edge is then true too)
+    /// edge_risk: the symbols the buffer could not step for want of a risk (Buffered::zero_risk).
+    std::vector<std::size_t> edge_zero_risk;
     Vector edge_book;
     std::vector<std::pair<std::size_t, double>> edge_steps;
     double edge_te{0.0};

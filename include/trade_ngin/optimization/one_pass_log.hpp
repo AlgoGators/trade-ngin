@@ -38,6 +38,14 @@ inline long count(const Mask& mask) {
     return n;
 }
 
+// The named rows, space-separated ("-": none).
+inline std::string row_names(const std::vector<std::string>& symbols,
+                             const std::vector<std::size_t>& which) {
+    std::string out;
+    for (const std::size_t i : which) out += (out.empty() ? "" : " ") + symbols[i];
+    return out.empty() ? std::string("-") : out;
+}
+
 // buffer_step_rule edge: the buffer's steps as SYMBOL+1 or SYMBOL-1, in the order taken.
 inline std::string edge_order(const std::vector<std::string>& symbols, const DayResult& r) {
     std::string out;
@@ -113,7 +121,8 @@ inline std::string overlay_line(const std::vector<std::string>& symbols, const D
 /// forecast-sign closes, the cap clips, the close-outs and the free rows on the 0.01 diagonal; on
 /// buffer_step_rule edge, the buffer's steps, its book's TE, why it stopped and the steps in order,
 /// then what it did in words (the fraction book's "rounding returned to held" is not printed: edge
-/// rounds nothing).
+/// rounds nothing); on edge_risk the rule is named edge_risk and the rows it could not step for want
+/// of a risk follow as edge_zero_risk=[...] when there are any.
 inline std::string optimiser_line(const std::vector<std::string>& symbols, const DayResult& r) {
     using log_detail::num;
     Mask stale(symbols.size(), 0);
@@ -131,10 +140,14 @@ inline std::string optimiser_line(const std::vector<std::string>& symbols, const
            log_detail::names(symbols, r.clipped) + "] close_outs=[" +
            log_detail::names(symbols, r.closeout) + "] stale=[" + log_detail::names(symbols, stale) +
            "]" + (r.returned_to_held && !r.edge ? " buffer traded, rounding returned to held" : "") +
-           (r.edge ? " buffer_step_rule=edge edge_steps=" + std::to_string(r.edge_steps.size()) +
+           (r.edge ? std::string(r.edge_risk ? " buffer_step_rule=edge_risk" : " buffer_step_rule=edge") +
+                         " edge_steps=" + std::to_string(r.edge_steps.size()) +
                          " edge_te=" + num(r.edge_te) + " edge_stop=" +
                          (!r.traded ? "-" : (r.edge_inside ? "inside" : "no_lower")) +
                          " edge_order=[" + log_detail::edge_order(symbols, r) + "]" +
+                         (r.edge_zero_risk.empty()
+                              ? std::string()
+                              : " edge_zero_risk=[" + log_detail::row_names(symbols, r.edge_zero_risk) + "]") +
                          log_detail::edge_did(r)
                    : std::string());
 }

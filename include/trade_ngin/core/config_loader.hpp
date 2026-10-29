@@ -454,7 +454,8 @@ struct AppConfig {
     // buffer_step_rule, how the buffer reaches its edge when the held book is outside it:
     // "fraction" (today: every row moves the one fraction a of the way and is rounded) or "edge"
     // (one contract at a time toward the search's answer, the lowest tracking error first, until
-    // the error is at or below the buffer). Empty: absent.
+    // the error is at or below the buffer) or "edge_risk" (edge, each move chosen by the error it
+    // removes per unit of the contract's own risk). Empty: absent.
     std::string buffer_step_rule;
     // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
     // load, never read for a value; a futures book refuses to run on a non-empty list

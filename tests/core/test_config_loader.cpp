@@ -1474,13 +1474,14 @@ TEST_F(ConfigLoaderTest, TheSampleCovarianceWindowIsBoundedAndWarnedAboutUnderCa
     EXPECT_EQ(out.find(needle), std::string::npos) << out;
 }
 
-// buffer_step_rule (STEP), the same way: optional, "fraction" or "edge", anything else refused.
+// buffer_step_rule (STEP), the same way: optional, "fraction", "edge" or "edge_risk" (LEVERS),
+// anything else refused.
 TEST_F(ConfigLoaderTest, TheBufferStepRuleIsOptionalAndNamed) {
     write_full_set("base", loop_defaults(), loop_portfolio(), overlay_risk());
     auto r = ConfigLoader::load(base_, "base");
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     EXPECT_EQ(r.value().buffer_step_rule, "");
-    for (const char* value : {"fraction", "edge"}) {
+    for (const char* value : {"fraction", "edge", "edge_risk"}) {
         nlohmann::json defaults = loop_defaults();
         defaults["optimization"]["buffer_step_rule"] = value;
         write_full_set("base", defaults, loop_portfolio(), overlay_risk());
@@ -1489,14 +1490,15 @@ TEST_F(ConfigLoaderTest, TheBufferStepRuleIsOptionalAndNamed) {
         EXPECT_EQ(r.value().buffer_step_rule, value);
     }
     for (const nlohmann::json& bad : {nlohmann::json("Edge"), nlohmann::json("fractional"),
-                                      nlohmann::json(1)}) {
+                                      nlohmann::json("edge-risk"), nlohmann::json(1)}) {
         nlohmann::json defaults = loop_defaults();
         defaults["optimization"]["buffer_step_rule"] = bad;
         write_full_set("base", defaults, loop_portfolio(), overlay_risk());
         r = ConfigLoader::load(base_, "base");
         ASSERT_TRUE(r.is_error()) << bad.dump();
         EXPECT_NE(std::string(r.error()->what())
-                      .find("optimization.buffer_step_rule must be one of \"fraction\", \"edge\""),
+                      .find("optimization.buffer_step_rule must be one of \"fraction\", \"edge\", "
+                            "\"edge_risk\""),
                   std::string::npos)
             << r.error()->what();
     }

@@ -161,6 +161,9 @@ struct PortfolioConfig : public ConfigBase {
                 opt["sample_cov_window"] = sample_cov_window;
             }
             if (buffer_step_rule == one_pass::BufferStepRule::kEdge) opt["buffer_step_rule"] = "edge";
+            if (buffer_step_rule == one_pass::BufferStepRule::kEdgeRisk) {
+                opt["buffer_step_rule"] = "edge_risk";
+            }
             auto& risk = j["risk_config"];
             for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {
                 risk.erase(retired);

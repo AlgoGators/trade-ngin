@@ -328,31 +328,53 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
     Vector delta(held.size(), 0.0);
     for (std::size_t i = 0; i < held.size(); ++i) delta[i] = (held[i] - searched[i]) * u[i];
     out.te_held = std::sqrt(std::max(quadratic(delta, covariance), 0.0));
-    if (out.te_held <= b || (rule == BufferStepRule::kEdge && edge_at_or_below(out.te_held, b))) {
+    if (out.te_held <= b || (steps_one_contract(rule) && edge_at_or_below(out.te_held, b))) {
         out.book = held;
         out.unrounded = held;
         return out;
     }
     out.a = (out.te_held - b) / out.te_held;
     out.traded = true;
-    if (rule == BufferStepRule::kEdge) {
-        // One contract at a time toward the answer, the lowest tracking error first, to the edge.
-        // Every candidate is scored on the same quadratic as TE_h, recomputed in full; errors within
-        // kEdgeTolerance of each other are equal (a tie, a move that does not lower, at the buffer).
+    if (steps_one_contract(rule)) {
+        // One contract at a time toward the answer, the lowest tracking error first (edge_risk: the
+        // largest cut in the error per unit of the contract's own risk), to the edge. Every candidate
+        // is scored on the same quadratic as TE_h, recomputed in full; errors (and edge_risk's cuts
+        // per unit of risk) within kEdgeTolerance of each other are equal.
+        const bool per_risk = rule == BufferStepRule::kEdgeRisk;
+        Mask zero_risk(held.size(), 0);
         Vector current = held;
         double te = out.te_held;
         while (!edge_at_or_below(te, b)) {
             double best_te = kInf;
             double best_cost = kInf;
+            double best_score = -kInf;
             long best = -1;
             double best_step = 0.0;
             for (std::size_t i = 0; i < held.size(); ++i) {
                 const double gap = searched[i] - current[i];
                 if (std::abs(gap) < 1.0) continue;  // at the answer: never passes or leaves it
+                const double risk = per_risk ? u[i] * std::sqrt(std::max(covariance[i][i], 0.0)) : 0.0;
+                if (per_risk && !(risk > 0.0 && std::isfinite(risk))) {
+                    zero_risk[i] = 1;  // no covariance row: not eligible
+                    continue;
+                }
                 const double step = sign(gap);
                 delta[i] = (current[i] + step - searched[i]) * u[i];
                 const double candidate = std::sqrt(std::max(quadratic(delta, covariance), 0.0));
                 delta[i] = (current[i] - searched[i]) * u[i];
+                if (per_risk) {
+                    if (!(candidate < te) || edge_equal(candidate, te)) continue;  // only moves that lower it
+                    const double score = (te - candidate) / risk;
+                    const bool tied = best >= 0 && edge_equal(score, best_score);
+                    if (best < 0 || (!tied && score > best_score) ||
+                        (tied && candidate < best_te && !edge_equal(candidate, best_te))) {
+                        best_te = candidate;
+                        best_score = score;
+                        best = static_cast<long>(i);
+                        best_step = step;
+                    }
+                    continue;
+                }
                 const double c = i < cost.size() ? cost[i] : 0.0;
                 const bool tied = best >= 0 && edge_equal(candidate, best_te);
                 if (best < 0 || (!tied && candidate < best_te) || (tied && c < best_cost)) {
@@ -374,6 +396,9 @@ Buffered buffer(const Vector& searched, const Vector& held, const Vector& u,
         out.te_book = te;
         out.inside = edge_at_or_below(te, b);
         out.returned_to_held = out.steps.empty();
+        for (std::size_t i = 0; i < held.size(); ++i) {
+            if (zero_risk[i]) out.zero_risk.push_back(i);
+        }
         return out;
     }
     out.unrounded.assign(held.size(), 0.0);
@@ -695,8 +720,12 @@ DayResult rebalance(const DayInputs& in) {
         out.a = buffered.a;
         out.traded = buffered.traded;
         out.returned_to_held = buffered.returned_to_held;
-        if (in.buffer_step_rule == BufferStepRule::kEdge) {
+        if (steps_one_contract(in.buffer_step_rule)) {
             out.edge = true;
+            out.edge_risk = in.buffer_step_rule == BufferStepRule::kEdgeRisk;
+            for (const std::size_t row : buffered.zero_risk) {
+                out.edge_zero_risk.push_back(out.free_rows[row]);
+            }
             out.edge_book = closed_held;
             for (std::size_t a = 0; a < f; ++a) out.edge_book[out.free_rows[a]] = buffered.book[a];
             for (const auto& [row, step] : buffered.steps) {

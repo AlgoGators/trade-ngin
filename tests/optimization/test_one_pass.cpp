@@ -991,6 +991,183 @@ TEST(OnePass, TheEdgeRuleNeverLeavesTheAnswerUpward) {
     }
 }
 
+// buffer_step_rule edge_risk: a small contract over a large one's slightly larger cut. Rows of
+// one-contract risk 0.03 and 0.01 (uncorrelated), one and four contracts short of their answers:
+// TE_h 0.05. The large move leaves 0.04 (a cut of 0.010), the small 0.0424 (0.0076). Edge takes the
+// large one and stops at B = 0.04; edge_risk ranks the cuts per unit of risk (0.33 against 0.76),
+// takes the small one twice and stops inside at 0.0361: the small name is held, the large is not.
+// Hand computation: evidence/LEVERS/tooling/hand_edge_risk.py, case small_over_large.
+TEST(OnePass, TheEdgeRiskRuleTakesASmallContractOverALargeOnesLargerCut) {
+    const Vector u = {0.03, 0.01};
+    const Matrix c = correlated({1.0, 1.0}, 0.0);
+    const Vector held = {0.0, 0.0};
+    const Vector searched = {1.0, 4.0};
+    const Buffered edge = buffer(searched, held, u, c, 0.04, BufferStepRule::kEdge, {1.0, 1.0});
+    EXPECT_EQ(edge.steps, (Steps{{0, 1.0}}));
+    EXPECT_EQ(edge.book, (Vector{1.0, 0.0}));
+    const Buffered e = buffer(searched, held, u, c, 0.04, BufferStepRule::kEdgeRisk, {1.0, 1.0});
+    EXPECT_TRUE(e.traded);
+    expect_rel(e.te_held, 0.05);
+    expect_rel(e.a, (0.05 - 0.04) / 0.05);
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}, {1, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{0.0, 2.0}));
+    EXPECT_EQ(e.unrounded, e.book);
+    expect_rel(e.te_book, std::sqrt(0.0013));
+    EXPECT_TRUE(e.inside);
+    EXPECT_FALSE(e.returned_to_held);
+    EXPECT_TRUE(e.zero_risk.empty());
+}
+
+// A row whose risk u sqrt(Sigma_ii) is zero is not eligible and is reported. Row 0's variance is 0
+// while its covariance with row 1 is 0.5 (no book's covariance looks like this, but it is the case
+// where a zero risk would score infinite): its move would cut the error (0.0245 to 0.02), yet only
+// row 1 steps, twice, to the answer's error 0; row 0 is named once although both steps passed it.
+TEST(OnePass, TheEdgeRiskRuleNeverStepsARowWithoutRisk) {
+    const Vector u = {0.01, 0.01};
+    const Matrix c = {{0.0, 0.5}, {0.5, 1.0}};
+    const Buffered e = buffer({1.0, 2.0}, {0.0, 0.0}, u, c, 0.0, BufferStepRule::kEdgeRisk);
+    expect_rel(e.te_held, std::sqrt(0.0006));
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}, {1, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{0.0, 2.0}));
+    EXPECT_EQ(e.zero_risk, (std::vector<std::size_t>{0}));
+    EXPECT_DOUBLE_EQ(e.te_book, 0.0);
+    EXPECT_TRUE(e.inside);
+    EXPECT_TRUE(buffer({1.0, 2.0}, {0.0, 0.0}, u, c, 0.0, BufferStepRule::kEdge).zero_risk.empty())
+        << "edge needs no risk and reports none";
+}
+
+// Ties in the cut per unit of risk go to the lower tracking error, then the row order; cost plays
+// no part. Rows 0 and 1 (risks 0.002 and 0.0084, three and one contracts short; a third row of risk
+// 0.0019 one short sets TE_h to 0.0105) each cut 0.5 of error per unit of risk, row 0 to 0.0095 and
+// row 1 to 0.0063. In floating point row 0's score is the larger, by under 1e-15 (within the 1e-12
+// tolerance), so only the tie rule picks row 1, the lower error. Two identical rows go by row order,
+// whatever their costs (edge would take the cheaper).
+TEST(OnePass, TheEdgeRiskRulesTiesGoToTheLowerErrorThenTheRowOrder) {
+    const Vector u = {0.002, 0.0084, std::sqrt(0.000369) * 0.1};
+    const Buffered e = buffer({3.0, 1.0, 1.0}, {0.0, 0.0, 0.0}, u, correlated({1.0, 1.0, 1.0}, 0.0),
+                              0.0, BufferStepRule::kEdgeRisk);
+    expect_rel(e.te_held, 0.0105);
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}, {0, 1.0}, {0, 1.0}, {0, 1.0}, {2, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{3.0, 1.0, 1.0}));
+
+    const Matrix c = correlated({1.0, 1.0}, 0.0);
+    const Buffered same = buffer({1.0, 1.0}, {0.0, 0.0}, Vector(2, 0.01), c, 0.0101,
+                                 BufferStepRule::kEdgeRisk, {5.0, 1.0});
+    EXPECT_EQ(same.steps, (Steps{{0, 1.0}}));
+    EXPECT_EQ(same.book, (Vector{1.0, 0.0}));
+    EXPECT_EQ(buffer({1.0, 1.0}, {0.0, 0.0}, Vector(2, 0.01), c, 0.0101, BufferStepRule::kEdge,
+                     {5.0, 1.0})
+                  .steps,
+              (Steps{{1, 1.0}}))
+        << "edge breaks the same tie by cost";
+}
+
+// The stop rule is edge's: at or inside the buffer (1e-12), or when no move lowers the error. Two
+// rows at rho 0.99 whose errors offset (TE_h 0.001414 above B = 0.001): either move raises the
+// error, so the book is held and recorded as not inside. A TE_h within 1e-12 of B is no trade.
+TEST(OnePass, TheEdgeRiskRuleStopsWhereEdgeStops) {
+    const Vector u(2, 0.01);
+    const Matrix c = correlated({1.0, 1.0}, 0.99);
+    const Vector held = {1.0, -1.0};
+    const Buffered e = buffer({0.0, 0.0}, held, u, c, 0.001, BufferStepRule::kEdgeRisk);
+    EXPECT_TRUE(e.traded);
+    EXPECT_EQ(e.book, held);
+    EXPECT_TRUE(e.steps.empty());
+    EXPECT_FALSE(e.inside);
+    EXPECT_TRUE(e.returned_to_held);
+    expect_rel(e.te_book, e.te_held);
+
+    const Matrix flat = correlated({1.0, 1.0}, 0.0);
+    const double te_h = buffer({1.0, 4.0}, {0.0, 0.0}, {0.03, 0.01}, flat, 1.0).te_held;
+    const Buffered at = buffer({1.0, 4.0}, {0.0, 0.0}, {0.03, 0.01}, flat, te_h * (1.0 - 1e-13),
+                               BufferStepRule::kEdgeRisk);
+    EXPECT_FALSE(at.traded) << "TE_h within the tolerance of B is at the buffer";
+    EXPECT_EQ(at.book, (Vector{0.0, 0.0}));
+    EXPECT_TRUE(buffer({1.0, 4.0}, {0.0, 0.0}, {0.03, 0.01}, flat, te_h * (1.0 - 1e-13)).traded)
+        << "fraction's no-trade check stays exact";
+}
+
+// A move never passes or leaves the answer. Row 0 (risk 0.001) is asked for 2.5 and steps to 2;
+// going on to 3 would pass the answer although it would lower the error (0.00545 to 0.00456, it
+// hedges row 1, half a contract from its answer and so never moved), so the walk stops there. The
+// edge cases hold under edge_risk too: a row at its answer stays, a row held on the wrong side
+// crosses zero and stops at its answer.
+TEST(OnePass, TheEdgeRiskRuleNeverPassesOrLeavesTheAnswer) {
+    const Buffered e = buffer({2.5, 0.5}, {0.0, 0.0}, {0.001, 0.01}, correlated({1.0, 1.0}, 0.9),
+                              0.0, BufferStepRule::kEdgeRisk);
+    EXPECT_EQ(e.steps, (Steps{{0, 1.0}, {0, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{2.0, 0.0}));
+    EXPECT_FALSE(e.inside);
+    expect_rel(e.te_book, 0.0054543560573178575);
+
+    const Matrix c = correlated({1.0, 1.0, 1.0}, 0.9);
+    const Buffered cross = buffer({0.0, 0.0, -1.0}, {0.0, 2.0, 1.0}, Vector(3, 0.01), c, 0.0,
+                                  BufferStepRule::kEdgeRisk);
+    EXPECT_EQ(cross.book, (Vector{0.0, 0.0, -1.0}));
+    EXPECT_EQ(cross.steps, (Steps{{1, -1.0}, {2, -1.0}, {1, -1.0}, {2, -1.0}}));
+    const Buffered lumpy = buffer({0.0, 0.0, 0.0}, {0.0, 20.0, 20.0}, {0.02, 0.001, 0.001}, c, 0.02,
+                                  BufferStepRule::kEdgeRisk);
+    EXPECT_EQ(lumpy.book, (Vector{0.0, 10.0, 10.0}));
+    for (const auto& [row, step] : lumpy.steps) EXPECT_NE(row, 0u);
+}
+
+// edge_risk reaches the pass: the day of TheRebalanceUsesTheBufferStepRule. Its free rows share one
+// risk (u 0.2, sigma 0.1), so the cut per unit of risk ranks as the error does and the book and the
+// steps are edge's at equal costs; with BBB cheaper, edge_risk keeps that order (cost plays no part).
+// The log names edge_risk, the record carries the edge columns, a zero-risk row is named, and the
+// attribution is the buffer's.
+TEST(OnePass, TheRebalanceUsesEdgeRisk) {
+    DayInputs in = four_symbols();
+    in.wrong_sign_buffer = true;
+    in.b_sigma_floor = 0.25;
+    in.buffer_step_rule = BufferStepRule::kEdgeRisk;
+    const Steps order = {{1, -1.0}, {1, -1.0}, {1, -1.0}, {1, -1.0}, {0, 1.0}, {1, -1.0}, {0, 1.0},
+                         {1, -1.0}, {2, -1.0}, {0, 1.0}, {1, -1.0}, {2, -1.0}, {0, 1.0}, {1, -1.0}};
+    DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    EXPECT_TRUE(r.edge);
+    EXPECT_TRUE(r.edge_risk);
+    EXPECT_TRUE(r.edge_zero_risk.empty());
+    EXPECT_EQ(r.book, (Vector{4.0, -4.0, 2.0, 3.0}));
+    EXPECT_EQ(r.edge_steps, order);
+    EXPECT_TRUE(r.edge_inside);
+    const std::vector<std::string> symbols = {"AAA", "BBB", "CCC", "DDD"};
+    std::string line = optimiser_line(symbols, r);
+    EXPECT_NE(line.find(" buffer_step_rule=edge_risk edge_steps=14 edge_te=0.04898979486 "
+                        "edge_stop=inside edge_order=[BBB-1 "),
+              std::string::npos)
+        << line;
+    EXPECT_EQ(line.find("edge_zero_risk"), std::string::npos) << line;
+    EXPECT_EQ(attribute(in, r), (std::vector<std::string>{"buffer", "buffer", "buffer", "hold"}));
+    in.cost = {5.0, 4.0, 5.0, 5.0};
+    EXPECT_EQ(rebalance(in).edge_steps, order);
+
+    r.edge_zero_risk = {2};
+    line = optimiser_line(symbols, r);
+    EXPECT_NE(line.find(" edge_order=[BBB-1 BBB-1 BBB-1 BBB-1 AAA+1 BBB-1 AAA+1 BBB-1 CCC-1 AAA+1 "
+                        "BBB-1 CCC-1 AAA+1 BBB-1] edge_zero_risk=[CCC] buffer traded, edge took 14 "
+                        "steps"),
+              std::string::npos)
+        << line;
+    EXPECT_FALSE(steps_one_contract(BufferStepRule::kFraction));
+    EXPECT_TRUE(steps_one_contract(BufferStepRule::kEdge));
+    EXPECT_TRUE(steps_one_contract(BufferStepRule::kEdgeRisk));
+
+    const std::filesystem::path dir =
+        std::filesystem::current_path() / ("onepass_edge_risk_record_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    ::setenv("TRADE_NGIN_SERIES_DUMP_DIR", dir.c_str(), 1);
+    append_one_pass_record("EDGE_RISK_BOOK", "2026-01-02", "2026-01-02", false, symbols, in,
+                           rebalance(in));
+    ::unsetenv("TRADE_NGIN_SERIES_DUMP_DIR");
+    std::ifstream f(dir / "onepass_days_EDGE_RISK_BOOK.csv");
+    std::string header;
+    std::getline(f, header);
+    EXPECT_EQ(header, record_detail::days_header(true));
+    std::filesystem::remove_all(dir);
+}
+
 // The OPTIMISER line under edge says what edge did and never "rounding returned to held"; a
 // fraction book's line keeps that phrase.
 TEST(OnePass, TheOptimiserLineSaysWhatEdgeDid) {
