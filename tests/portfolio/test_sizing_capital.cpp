@@ -949,16 +949,12 @@ TEST_F(LiveSizingReads, AHoldIsMarkedFlaggedAndExitsThreeLikeARiskModuleFailure)
     EXPECT_EQ(marked["risk_refusal"]["error"], r.failure);
     EXPECT_EQ(marked["total_capital"], 500'000.0) << "every other key of the row is kept";
 
-    EXPECT_EQ(risk_module_failure_email_subject("Daily Trading Report - 2026-04-28"),
-              "[RISK MODULE FAILED - BOOK HELD] Daily Trading Report - 2026-04-28");
-    const std::string flagged =
-        flag_email_body_for_risk_module_failure("<div class=\"container\">\n<h1>x</h1>", hold);
-    EXPECT_NE(flagged.find("<strong>SIZING READ FAILED - BOOK HELD:</strong> the account's equity "
-                           "could not be read to size today's book (Day T-1&#39;s live_results row "
-                           "could not be read (Failed to load live results: server closed the "
-                           "connection unexpectedly)). Every strategy is held at the previous "
-                           "day's positions and no orders were generated. The run exited with "
-                           "code 3."),
+    const std::string flagged = risk_module_failure_text(hold);
+    EXPECT_NE(flagged.find("The account's equity could not be read to size today's book (Day "
+                           "T-1's live_results row could not be read (Failed to load live "
+                           "results: server closed the connection unexpectedly)). Every strategy "
+                           "is held at the previous day's positions and no orders were generated. "
+                           "The run exited with code 3."),
               npos)
         << flagged;
     // The failure text is HTML-escaped in the body, as a risk module's error is.
@@ -1227,7 +1223,7 @@ TEST(SizingCapitalWiring, BothFuturesRunnersRouteTheSizingDecisionTheSameWay) {
         EXPECT_LT(src.find("}  // End of if (!skip_strategy_processing)"), flag);
         EXPECT_LT(src.find("sleeve_risk_module_failure(portfolio->last_risk_decisions());"), flag)
             << "set after the PortfolioManager's detection, which would reset it";
-        EXPECT_LT(flag, src.find("subject = risk_module_failure_email_subject(subject);"));
+        EXPECT_LT(flag, src.find("mail.alert = risk_module_failure_text(*risk_module_failure);"));
         EXPECT_LT(flag, src.find("return live_run_exit_code(risk_module_failure);"));
 
         routes[i] = between(src, "        std::optional<nlohmann::json> sizing_hold;",

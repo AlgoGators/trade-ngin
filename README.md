@@ -315,8 +315,7 @@ trade-ngin/
 ├── include/trade_ngin/             # Public headers, one directory per module
 │   ├── backtest/                   # coordinator, data loader, execution, P&L, metrics, CSV export
 │   ├── core/                       # types (Decimal, Bar, Position, ExecutionReport), error, logger,
-│   │                               #   config_loader, email_sender, chart_generator, holiday_checker,
-│   │                               #   time_utils
+│   │                               #   config_loader, holiday_checker, time_utils
 │   ├── data/                       # postgres_database, database_pooling, market_data_bus,
 │   │                               #   market_data_utils, session_classifier, roll_series, listing_dates
 │   ├── execution/                  # execution_engine
@@ -367,7 +366,7 @@ The module map, the runners and what each reads and writes are in
 
 | Layer | Modules | Role |
 |-------|---------|------|
-| Core | `core/` | types, errors, logging, configuration loading, email, charts |
+| Core | `core/` | types, errors, logging, configuration loading |
 | Data | `data/`, `instruments/` | database access, bar loading, session classification, roll series, contract metadata |
 | Strategy | `strategy/` | forecasts and unrounded targets per sleeve |
 | Portfolio | `portfolio/`, `optimization/`, `risk/` | sizing capital, the rebalance, the risk overlay and modules |
@@ -613,7 +612,6 @@ watchdog and the rules for manual and catch-up runs are in
 | Apache Arrow C++ | Latest | Efficient data processing |
 | libpqxx | Latest | PostgreSQL C++ client |
 | Eigen3 | Latest | Linear algebra for optimization |
-| libcurl | Latest | Email functionality |
 | GoogleTest | Latest | Unit testing |
 
 ### System Requirements
@@ -674,8 +672,9 @@ date:
 # The production form: a date and the email report
 ./build/bin/Release/live_portfolio_conservative 2025-01-15 --send-email
 
-# The same run, writing the report body to a file instead of mailing it
-TRADE_NGIN_EMAIL_BODY_DIR=/path/to/dir ./build/bin/Release/live_portfolio_conservative 2025-01-15
+# The stored day's report, written to a directory instead of mailed (from services/rpc)
+python -m algogators_rpc.services.report --portfolio-id CONSERVATIVE_PORTFOLIO --date 2025-01-15 \
+    --preview-dir /path/to/dir
 ```
 
 - **Run modes.** A live run is in one of three modes, by its arguments and by the host's date: no
@@ -693,15 +692,20 @@ TRADE_NGIN_EMAIL_BODY_DIR=/path/to/dir ./build/bin/Release/live_portfolio_conser
   whose clock is UTC the two are the same instant. The image in this repository sets
   `TZ=America/New_York` (`Dockerfile:85`); [docs/LIVE_RUN_CYCLE.md](docs/LIVE_RUN_CYCLE.md) says what
   that changes.
-- **The report body file.** `TRADE_NGIN_EMAIL_BODY_DIR` applies only to a futures run that does not
-  send: with the variable set to a directory, the run builds the report body exactly as for a send,
-  writes it there as `email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the
-  variable is ignored with one warning line in the log, and the report is mailed as usual. A run
-  with no date sends, so it ignores the variable in the same way. The equity runner does not read
-  the variable.
+- **The book e-mail.** The e-mail is built and sent by the Python report module
+  `services/rpc/algogators_rpc/services/report`, not by the C++ runner. With `--send-email` each
+  of the three live runners, after storing the day, runs
+  `python -m algogators_rpc.services.report --portfolio-id <id> --date <date>` with the positions
+  CSV files as `--attach`, `--no-session` when the run carried its book, and `--alert` with the
+  risk-module failure text. The module reads the stored day from the database, renders the HTML
+  (charts by matplotlib) with a plain-text part and sends it over SMTP with the portfolio's
+  `email.json`. `QT_MAIL_PYTHON`, `QT_MAIL_APP` and `QT_MAIL_TIMEOUT` set the interpreter, the
+  application directory and the time limit (`include/trade_ngin/live/python_mail.hpp`). To look at a
+  report without mailing it, run the module with `--preview-dir`.
 - **Exit codes.** A futures live run exits 0 when it reaches the end of the run with the book not
   refused, 3 when it reaches the end with the book held because the risk step refused it or the
-  sizing read failed, and 1 when it stops early. Exit 0 covers a completed day, a carried day, and
+  sizing read failed, 4 when the day is stored but the book e-mail was not sent (the module failed,
+  timed out or could not start; a run that exits 3 keeps 3), and 1 when it stops early. Exit 0 covers a completed day, a carried day, and
   a run in which a store failed, was logged and was passed over; the evidence of a completed day is
   the date's `trading.live_results` row, not the exit code. The wrapper also returns 0, without
   starting the binary, when it finds its lock held (nothing stored). A refusal by the risk step never ends at 0: the
@@ -709,7 +713,7 @@ TRADE_NGIN_EMAIL_BODY_DIR=/path/to/dir ./build/bin/Release/live_portfolio_conser
   answer or a sleeve module decided to refuse, or at 1 when the refused book has no stored previous
   positions to be held at. Exit 1 stores nothing when the run refuses before its `live_run_metadata`
   row is written, and can leave that row, the signals or a half-written day when it stops later. The
-  equity runner and the backtest runners return only 0 or 1.
+  equity runner returns 0, 1 or 4, the backtest runners only 0 or 1.
 - **Re-runs.** A lone re-run of an older date is not supported and is not refused: the runner
   accepts it, rewrites that day and the day before, and leaves every later day as it was. A replay
   runs every date forward in order. See [docs/performance_upkeep.md](docs/performance_upkeep.md).
@@ -742,9 +746,10 @@ The equity book's strategies are built by `equity_strategy_builder.hpp`.
 
 `config/portfolios/<name>/email.json` is a flat object with the keys `smtp_host`, `smtp_port` (a
 number), `username`, `password`, `from_email`, `to_emails`, `to_emails_production` and `use_tls`.
-Copy it from `config_template/portfolios/<name>/email.json` and replace the placeholders. The last
-two keys are present and not read: every report goes to `to_emails`, and the sender always asks for
-TLS.
+Copy it from `config_template/portfolios/<name>/email.json` and replace the placeholders. The book
+e-mail goes to `to_emails`; `to_emails_production` is present and not read. The report module
+connects with implicit TLS on port 465 and otherwise asks for STARTTLS when `use_tls` is true (the
+default when the key is absent).
 
 > **Gmail Setup**: Use an [App Password](https://support.google.com/accounts/answer/185833) rather than your account password.
 
@@ -873,7 +878,6 @@ docker run -d \
 The container includes:
 - All system dependencies
 - The scheduled job (`live_portfolio.cron`), which calls `scripts/run_live_portfolio.sh`
-- Gnuplot for chart generation
 - Timezone set to America/New_York
 
 Mount your local `config/` directory (created from `config_template/`) into the container so it has

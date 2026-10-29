@@ -89,14 +89,8 @@ TEST(ReportRiskLines, TheFuturesRunnersNoLongerPrintOrMailThePriceWeightedFigure
         EXPECT_NE(src.find("std::cout << trade_ngin::report_risk_console(report_risk);"),
                   std::string::npos)
             << runner;
-        EXPECT_NE(src.find("for (const auto& [name, value] : report_risk) {"), std::string::npos)
-            << runner;
         // portfolio_var's stored value is as it was.
         EXPECT_NE(src.find("{\"portfolio_var\", portfolio_var},"), std::string::npos) << runner;
         EXPECT_NE(src.find("portfolio_var = r.portfolio_var;"), std::string::npos) << runner;
     }
-    const std::string email = read_source("src/core/email_sender.cpp");
-    if (email.empty()) GTEST_SKIP() << "email source not found";
-    EXPECT_EQ(email.find("<strong>Portfolio VaR:</strong>"), std::string::npos);
-    EXPECT_EQ(email.find("strategy_metrics.find(\"Portfolio VaR\")"), std::string::npos);
 }

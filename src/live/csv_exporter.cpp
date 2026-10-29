@@ -9,7 +9,6 @@
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_price_text.hpp"
-#include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/core/report_settled_marks.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -537,24 +536,6 @@ Result<std::string> CSVExporter::export_equity_settled(
     }
     file.close();
     INFO("CSVExporter: equity settled positions saved to " + filename);
-    return Result<std::string>(filename);
-}
-
-Result<std::string> CSVExporter::export_account_detail(
-    const std::string& portfolio_id, const std::string& date,
-    const std::vector<std::pair<std::string, std::string>>& columns) {
-    const std::string filename = output_directory_ + "account_detail_" + portfolio_id + "_" + date + ".csv";
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-        return Result<std::string>(std::make_unique<TradeError>(
-            ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
-    }
-    for (const auto& row : account_detail_rows(columns)) {
-        for (size_t i = 0; i < row.size(); ++i) file << (i ? "," : "") << row[i];
-        file << "\n";
-    }
-    file.close();
-    INFO("CSVExporter: account detail saved to " + filename);
     return Result<std::string>(filename);
 }
 

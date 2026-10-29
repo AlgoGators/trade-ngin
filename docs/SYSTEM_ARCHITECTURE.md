@@ -81,7 +81,7 @@ flowchart LR
   TR --> API
   REG <--> API
   API --> SPA --> USERS["Members"]
-  LIVE -->|"SMTP, charts inline"| MAIL["Daily email"]
+  LIVE -->|"python -m algogators_rpc.services.report"| MAIL["Daily email (SMTP, charts inline)"]
 ```
 
 Satellites, none of which touch the database above:
@@ -216,7 +216,7 @@ says where to look.
 
 | Module | Role | Start reading at |
 |---|---|---|
-| `core/` | layered JSON configuration (`config_loader`, `config_manager`), logger, `email_sender` (SMTP through libcurl), `chart_generator` (gnuplot, inline PNG), `holiday_checker` with `holidays.json`, `time_utils`, `types.hpp` (bars, positions, execution reports, asset class to schema) | `include/trade_ngin/core/config_loader.hpp` (`require_loop_keys`) |
+| `core/` | layered JSON configuration (`config_loader`, `config_manager`), logger, `holiday_checker` with `holidays.json`, `time_utils`, `types.hpp` (bars, positions, execution reports, asset class to schema) | `include/trade_ngin/core/config_loader.hpp` (`require_loop_keys`) |
 | `data/` | `postgres_database` (every SQL read and write, libpqxx to Arrow tables), `credential_store`, `market_data_bus`, `market_data_utils` (the futures bar query that keeps one row per symbol and day; the equity adjustment), `session_classifier`, `roll_series`, `listing_dates` | `include/trade_ngin/data/market_data_utils.hpp` (`kFuturesBarKeepOrder`) |
 | `data/session_classifier` | what one symbol's bar, or its absence, is on one date: `SESSION`, `JUNK`, `NO_BAR_CLOSURE`, `NO_BAR_FEED_HOLE`. Only a `SESSION` symbol updates its signal and may trade; the others are held | `include/trade_ngin/data/session_classifier.hpp` (`SessionVerdict`) (`SessionClassifier`) |
 | `data/roll_series` | the contract switches of a symbol's consumed bars (change, confirm, flip), the back-adjusted level and return series, and the two ROLL legs of a confirmed roll | `include/trade_ngin/data/roll_series.hpp` (`build_series`) (`make_roll_legs`) |
@@ -228,7 +228,7 @@ says where to look.
 | `risk/` | `overlay` (the overlay's arithmetic: the gate window, five readings, one multiplier), `risk_module` (the module interface and its actions), `carver_risk_module`, `basic_risk_modules` (constant scale, warn, refuse), `risk_module_config` (`risk.json` schema 2), `risk_detail`, `risk_manager` (the measurement behind the reported risk columns) | `include/trade_ngin/risk/overlay.hpp` (`Readings`), `include/trade_ngin/risk/risk_module.hpp` (`RiskModule`) |
 | `transaction_cost/` | spread and impact models, per-asset cost configuration, `transaction_cost_manager`, `netting` (the adjustment between sleeves and the cost after netting) | `include/trade_ngin/transaction_cost/netting.hpp` (`net_cost`) |
 | `backtest/` | `backtest_coordinator` (the daily loop), data loader, execution, P&L and price managers, metrics, CSV export, the equity cost helpers | `src/backtest/backtest_coordinator.cpp` (`run_portfolio`) (`process_portfolio_day`) |
-| `live/` | `live_trading_coordinator`, `live_daily_cycle` and `live_data_loader`, `execution_manager` (paper fills), `execution_price_resolver`, `live_pnl_manager`, `margin_manager`, `session_book_gate`, `live_roll_legs`, `futures_cost_feed`, `live_sizing_read`, `stored_book_ownership`, `risk_module_failure` and `run_metadata_marks`, `email_body_file`, the corporate-actions applier, lifecycle, classification and audit log, `broker_frame`, `csv_exporter`, the live metrics | `include/trade_ngin/live/session_book_gate.hpp`, `include/trade_ngin/live/live_trading_coordinator.hpp` |
+| `live/` | `live_trading_coordinator`, `live_daily_cycle` and `live_data_loader`, `execution_manager` (paper fills), `execution_price_resolver`, `live_pnl_manager`, `margin_manager`, `session_book_gate`, `live_roll_legs`, `futures_cost_feed`, `live_sizing_read`, `stored_book_ownership`, `risk_module_failure` and `run_metadata_marks`, `python_mail` (runs the book e-mail module), the corporate-actions applier, lifecycle, classification and audit log, `broker_frame`, `csv_exporter`, the live metrics | `include/trade_ngin/live/session_book_gate.hpp`, `include/trade_ngin/live/live_trading_coordinator.hpp` |
 | `storage/` | `backtest_results_manager` and `live_results_manager`: map a run's output onto `backtest.*` and `trading.*` | `include/trade_ngin/storage/live_results_manager.hpp` |
 | `statistics/` | statistical tests, regressions, state estimation, volatility models, transformers. A library; the runners' stored statistics come from the backtest and live metrics calculators | `src/statistics/README.md` |
 | `order/`, `execution/` | an order state machine and an execution-algorithm engine. Neither is used by a runner (`include/trade_ngin/execution/execution_engine.hpp`) | |
@@ -329,13 +329,13 @@ The exit codes of the runners and of the wrapper, and what each can leave stored
 
 | Exit code | When it happens | What it can leave stored |
 |---|---|---|
-| 0 | A futures live runner (`live_portfolio`, `live_portfolio_conservative`) reaches the end of the run with the book not refused by the risk step, no sizing hold, and its report, when the run makes one, built and mailed or written. Three cases share this code: a completed day; a carried day (no symbol has a consumed bar for the previous day, so the whole book is carried and no order is made); a run in which a store failed, was logged and was passed over. A refusal by the risk step never ends at 0: see the rows for 3 and for 1 after the `live_run_metadata` row. | A completed day: the `live_run_metadata` row, the signals, the executions, the settled rows of the previous day, the day's positions, the day's `live_results` row and its equity point. A carried day: the same without signals; the book is unchanged, so no order is made. A passed-over failure: the day without the table whose store failed, which can be the `live_run_metadata` row, the signals, the executions of a sleeve that has no roll leg, the previous day's positions, the day's positions, the previous day's equity point, or the day's `live_results` row and equity point. Exit 0 is not proof that the day is stored in full: the evidence of a completed day is the date's `trading.live_results` row. |
+| 0 | A futures live runner (`live_portfolio`, `live_portfolio_conservative`) reaches the end of the run with the book not refused by the risk step, no sizing hold, and its book e-mail, when the run sends one, sent. Three cases share this code: a completed day; a carried day (no symbol has a consumed bar for the previous day, so the whole book is carried and no order is made); a run in which a store failed, was logged and was passed over. A refusal by the risk step never ends at 0: see the rows for 3 and for 1 after the `live_run_metadata` row. | A completed day: the `live_run_metadata` row, the signals, the executions, the settled rows of the previous day, the day's positions, the day's `live_results` row and its equity point. A carried day: the same without signals; the book is unchanged, so no order is made. A passed-over failure: the day without the table whose store failed, which can be the `live_run_metadata` row, the signals, the executions of a sleeve that has no roll leg, the previous day's positions, the day's positions, the previous day's equity point, or the day's `live_results` row and equity point. Exit 0 is not proof that the day is stored in full: the evidence of a completed day is the date's `trading.live_results` row. |
 | 0 | The wrapper `scripts/run_live_portfolio.sh` finds its lock directory present and skips. The binary is not started. | Nothing. |
 | 1 | A futures live runner refuses before it writes the day's `live_run_metadata` row: a bad argument; a logger that cannot be initialised; a config, database or instrument registry failure; a missed previous run; a listing-date refusal; missing margin metadata; a sleeve that cannot be built or started; bars that cannot be loaded; a feed in which no symbol has a usable bar date; a holiday calendar that is not loaded or does not cover the run date or the day before it; a held symbol with no bar for longer than the tolerance on a run for the host's date; roll state that cannot be read or placed; a stored book the run does not load; a sleeve book the sizing read cannot load; a sizing capital the portfolio manager rejects. | Nothing. |
 | 1 | A futures live runner stops after it wrote the day's `live_run_metadata` row. | It depends on where the run stops. The estimator history cannot be seeded, or the portfolio step fails: the `live_run_metadata` row (marked `risk_refusal` when a sizing hold was recorded first, when the portfolio step failed because the risk step refused a book that has no stored previous positions to be held at, or, with scope `sleeve`, when a sleeve risk module or the sleeve's risk step could not answer on a sleeve that has no stored previous positions). A roll leg has no usable close, executions cannot be generated with a roll owed, the strict assertion fails (the row is marked `strict_assertion`), the netting refuses a row, or the day's roll executions cannot be stored: the row and the day's signals. The margin calculation fails: the row, the signals, the executions and the rewritten positions of the previous day. The previous day's `live_results` row cannot be updated: the row, the signals, the executions and both days' positions; the previous day's `live_results` row and equity point are left as they were. The previous cumulative roll cost cannot be read: a half-written day, with the executions, both days' positions and the previous day's settled `live_results` row and equity point stored, and no `live_results` row for the day. Any other error: whatever was written before it. |
 | 2 | A live runner (`live_portfolio`, `live_portfolio_conservative`, `live_equity_mr`) is started with no date. It prints the usage and runs nothing. The wrapper always passes a date. | Nothing. No email is sent. |
 | 3 | Futures live runners only. The risk step refused the book, or the sizing read failed with every sleeve book loaded. The risk step refuses the book when the one pass cannot produce its answer (the overlay sleeve is not running, a held symbol that cannot be weighed has no usable close or multiplier, an input or an overlay reading is not a finite number, the pass fails), and when a sleeve risk module refuses or replaces its sleeve or cannot evaluate it: one search on the summed book cannot hold one sleeve apart, so the whole book is held. Every such refusal is recorded with its reason as an error, whether a module decided it or a module failed. The book is held and the run goes on to the end. A report that fails on such a day is logged and the code stays 3. | A held day: the held book as the day's positions, no order, the day's `live_results` row and its equity point, and the day's signals. On a sizing hold the portfolio step is not run, so the sleeves compute no forecast and the signal stored for each symbol with seeded history is 0. The `live_run_metadata` row is marked `risk_refusal`, and the subject and the body of the report are flagged. |
-| 4 | A live runner (all three) stored the day, but the report the run makes was not built, written or sent: the mail sender could not be initialised, the body was empty, the body file could not be written, or the send failed. One `EMAIL_FAILED` line at error level says so. A run that makes no report (no `--send-email` and no `TRADE_NGIN_EMAIL_BODY_DIR`) never exits 4. A futures day that exits 3 keeps 3, and an equity run whose results were not all saved exits 1. | The day, as on exit 0, without the report. |
+| 4 | A live runner (all three) run with `--send-email` stored the day, but the book e-mail was not sent: the report module (`python -m algogators_rpc.services.report`) failed, timed out or could not start. One `EMAIL_FAILED` line at error level says so. A run without `--send-email` never exits 4. A futures day that exits 3 keeps 3, and an equity run whose results were not all saved exits 1. | The day, as on exit 0, without the e-mail. |
 | 0 or 1 | The equity live runner (`live_equity_mr`) returns these two codes, 2 and 4 as above, and never 3. It returns 1 on each of its refusals, and also when the previous day's positions or `live_results` row cannot be settled, when an execution cannot be stored or applied, and at the end of a run whose results could not all be saved. | On exit 1: nothing if the stop comes before the run's first store, as every refusal does (the feed checks, the missed-run guard, the held-symbol check and the corporate-action de-duplication included); otherwise the `live_run_metadata` row and whatever was written before the stop. On exit 0: the day; a failed store of the `live_run_metadata` row or of the previous day's equity point is logged and passed over. |
 | 0 or 1 | The backtest runners (`bt_portfolio`, `bt_portfolio_conservative`, `bt_equity_mr`) take no argument. They return 1 when the config, the database, a strategy or the backtest itself fails, or when a storing run's run id already has rows in `backtest.results` or `backtest.final_positions` (the run is refused before its first cycle), and 0 when the backtest ran. `bt_equity_validation` returns 0 only when every check passes. | On exit 1: nothing when the run id was refused; otherwise no `backtest.results` row and nothing saved at the end of the run; the `backtest.final_positions` rows of the bar dates processed before the failure remain, because they are written during the run. On exit 0: the results, unless the save to the database failed; that failure is logged and passed over, so exit 0 does not prove the results are stored. |
 | 127 | The wrapper cannot find the binary, or it is not executable. | Nothing. |
@@ -348,12 +348,12 @@ marks are keys of `portfolio_config` on the day's `live_run_metadata` row: `risk
 `sizing_hold_refusal`, `include/trade_ngin/live/live_sizing_read.hpp`) and `strict_assertion`
 (`mark_strict_assertion`, `include/trade_ngin/live/run_metadata_marks.hpp`).
 
-The report email is built and mailed with `--send-email`. `TRADE_NGIN_EMAIL_BODY_DIR` applies to a
-live run that does not send, on all three runners: with the variable set to a directory, the run
-builds the report body exactly as for a send, writes it there as
-`email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the variable is
-ignored with one warning line in the log, and the report is mailed as usual
-(`plan_email_report`, `include/trade_ngin/live/email_body_file.hpp`). Running instructions and the catch-up rules are in
+The book e-mail is sent with `--send-email`, by the Python report module
+`services/rpc/algogators_rpc/services/report`, not by the C++ runner: after the day is stored the
+runner runs `python -m algogators_rpc.services.report --portfolio-id <id> --date <date>`
+(`include/trade_ngin/live/python_mail.hpp`), which reads the stored day from the database, renders
+the HTML (matplotlib charts) and sends it over SMTP with the portfolio's `email.json`. To look at a
+report without mailing it, run the module with `--preview-dir DIR`. Running instructions and the catch-up rules are in
 [LIVE_RUN_CYCLE.md](LIVE_RUN_CYCLE.md) and [performance_upkeep.md](performance_upkeep.md).
 
 ### 4.6 Execution and costs
@@ -383,8 +383,8 @@ sizing capital is built from, the history behind the reported metrics); `trading
 
 **Writes, live.** `trading.positions`, `executions`, `signals`, `equity_curve`, `live_results`
 (the day's row, then the T-1 row finalised), `live_run_metadata`, and `corp_action_applied` (the
-equity book). Outside the database: logs, CSV exports of the positions, and the charts embedded in
-the email.
+equity book). Outside the database: logs and CSV exports of the positions. The book e-mail is
+rendered from the stored rows by the report module.
 
 **Writes, backtest.** `backtest.run_metadata`, `results`, `equity_curve`, `final_positions`,
 `executions`, and CSV exports. `backtest.signals` has no writer and stays empty.
@@ -397,9 +397,9 @@ See [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
 ### 4.8 Scheduling and deployment
 
 The image (`Dockerfile`) is a two-stage Ubuntu 24.04 build. The runtime stage pins
-`TZ=America/New_York` (`Dockerfile`), installs cron and gnuplot, installs the cron table
-(`Dockerfile`) and starts `scripts/docker-entrypoint.sh` (`Dockerfile`), which writes the
-variables the job needs (`TRADING_*`, `DB_*`, `PG*`, `TZ`, `LD_LIBRARY_PATH`) to `/app/.cron_env`
+`TZ=America/New_York` (`Dockerfile`), installs cron and `python3` with the rpc venv `/opt/rpc`
+(which holds the book e-mail's report module), installs the cron table (`Dockerfile`) and starts
+`scripts/docker-entrypoint.sh` (`Dockerfile`), which writes the variables the job needs (`TRADING_*`, `DB_*`, `PG*`, `TZ`, `LD_LIBRARY_PATH`) to `/app/.cron_env`
 for cron and then runs cron in the foreground. A health check marks the container unhealthy when
 no cron process is found (`Dockerfile`).
 
@@ -428,7 +428,7 @@ stale or a run is marked.
 
 ### 4.9 Build and CI
 
-CMake, with GoogleTest, nlohmann_json, Apache Arrow, Eigen3, NLopt, libcurl and libpqxx.
+CMake, with GoogleTest, nlohmann_json, Apache Arrow, Eigen3, NLopt and libpqxx.
 Dependencies are installed by the scripts under `requirements/`. `benchmarks/` holds a small
 harness (`trade_ngin_bench`) with component benchmarks and a comparison script; it is compiled by
 CI and never run there.

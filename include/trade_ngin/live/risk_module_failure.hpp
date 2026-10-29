@@ -18,7 +18,7 @@ namespace trade_ngin {
  * futures books run one Carver module), the PortfolioManager REFUSES the scope: every strategy
  * is held at its seeded T-1 book and no orders are generated. The runner then stores the day
  * exactly as it stores any REFUSE day (the metadata row marked by run_metadata_marks.hpp, the
- * held positions, no executions, live_results), logs an ERROR, flags the email, and exits
+ * held positions, no executions, live_results), logs an ERROR, flags the book e-mail (risk_module_failure_text), and exits
  * NON-ZERO so the cron wrapper and the operator see a day the gate did not measure.
  *
  * T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope module that cannot answer (any
@@ -88,81 +88,26 @@ inline int live_run_exit_code(const std::optional<nlohmann::json>& module_failur
     return module_failure.has_value() ? kRiskModuleFailureExitCode : 0;
 }
 
-/// The subject prefix a flagged email carries.
-inline constexpr const char* kRiskModuleFailureSubjectFlag = "[RISK MODULE FAILED - BOOK HELD] ";
-
-inline std::string risk_module_failure_email_subject(const std::string& subject) {
-    return std::string(kRiskModuleFailureSubjectFlag) + subject;
-}
-
-namespace detail {
-inline std::string html_escape(const std::string& in) {
-    std::string out;
-    out.reserve(in.size());
-    for (char c : in) {
-        switch (c) {
-            case '&': out += "&amp;"; break;
-            case '<': out += "&lt;"; break;
-            case '>': out += "&gt;"; break;
-            case '"': out += "&quot;"; break;
-            case '\'': out += "&#39;"; break;
-            default: out += c;
-        }
-    }
-    return out;
-}
-}  // namespace detail
-
-/// The red banner a flagged email opens with.
-inline std::string risk_module_failure_email_banner(const nlohmann::json& failure) {
+/// What the book e-mail says about the failure (the report module's --alert): the module, the
+/// error and what was held, in plain words. The report puts it at the top and flags the subject.
+inline std::string risk_module_failure_text(const nlohmann::json& failure) {
     const std::string module = failure.value("module", std::string());
     const std::string error = failure.value("error", std::string());
-    std::string html;
-    html += "<div class=\"alert-note\" id=\"risk-module-failure\">\n";
+    const std::string code = std::to_string(kRiskModuleFailureExitCode);
     if (failure.value("scope", std::string()) == "sleeve") {
-        const std::string sleeve = failure.value("scope_id", std::string());
-        html += "<strong>RISK MODULE FAILED - BOOK HELD:</strong> the sleeve risk module " +
-                detail::html_escape(module) + " could not evaluate sleeve " +
-                detail::html_escape(sleeve) + "'s book (" + detail::html_escape(error) +
-                "). That sleeve is held at the previous day's positions and sent no orders; the "
-                "other sleeves traded. The run exited with code " +
-                std::to_string(kRiskModuleFailureExitCode) + ".\n";
-        html += "</div>\n";
-        return html;
+        return "The sleeve risk module " + module + " could not evaluate sleeve " +
+               failure.value("scope_id", std::string()) + "'s book (" + error +
+               "). That sleeve is held at the previous day's positions and sent no orders; the "
+               "other sleeves traded. The run exited with code " + code + ".";
     }
-    // T-7b-3 R-3 (HD 2026-09-27 ruling 5): a sizing read failed (live/live_sizing_read.hpp).
     if (failure.value("scope", std::string()) == "sizing") {
-        html += "<strong>SIZING READ FAILED - BOOK HELD:</strong> the account's equity could not "
-                "be read to size today's book (" +
-                detail::html_escape(error) +
-                "). Every strategy is held at the previous day's positions and no orders were "
-                "generated. The run exited with code " +
-                std::to_string(kRiskModuleFailureExitCode) + ".\n";
-        html += "</div>\n";
-        return html;
+        return "The account's equity could not be read to size today's book (" + error +
+               "). Every strategy is held at the previous day's positions and no orders were "
+               "generated. The run exited with code " + code + ".";
     }
-    html += "<strong>RISK MODULE FAILED - BOOK HELD:</strong> the portfolio risk module " +
-            detail::html_escape(module) + " could not evaluate today's book (" +
-            detail::html_escape(error) +
-            "). Every strategy is held at the previous day's positions and no orders were "
-            "generated. The run exited with code " +
-            std::to_string(kRiskModuleFailureExitCode) + ".\n";
-    html += "</div>\n";
-    return html;
-}
-
-/// `body` with the banner placed at the top of the report (inside the container the email
-/// builder opens, EmailSender::generate_trading_report_body), or in front of the body when the
-/// container is not found.
-inline std::string flag_email_body_for_risk_module_failure(const std::string& body,
-                                                           const nlohmann::json& failure) {
-    static const std::string kContainer = "<div class=\"container\">\n";
-    const std::string banner = risk_module_failure_email_banner(failure);
-    const auto at = body.find(kContainer);
-    if (at == std::string::npos) return banner + body;
-    std::string flagged = body;
-    flagged.insert(at + kContainer.size(), banner);
-    return flagged;
+    return "The portfolio risk module " + module + " could not evaluate today's book (" + error +
+           "). Every strategy is held at the previous day's positions and no orders were "
+           "generated. The run exited with code " + code + ".";
 }
 
 }  // namespace trade_ngin

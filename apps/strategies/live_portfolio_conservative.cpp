@@ -11,7 +11,6 @@
 #include <sstream>
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/portfolio/loop_config.hpp"
-#include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/report_leverage_console.hpp"
@@ -30,15 +29,12 @@
 #include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/console_labels.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
+#include "trade_ngin/live/python_mail.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
-#include "trade_ngin/live/email_body_file.hpp"
-#include "trade_ngin/live/account_detail.hpp"
-#include "trade_ngin/live/email_delivery.hpp"
 #include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_settings.hpp"
 #include "trade_ngin/live/qt_desk.hpp"
-#include "trade_ngin/core/chart_generator.hpp"
 #include "trade_ngin/live/finalized_books_read.hpp"
 #include "trade_ngin/live/late_bar_warning.hpp"
 #include "trade_ngin/live/live_listing_guard.hpp"
@@ -56,7 +52,6 @@
 #include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_columns.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
-#include "trade_ngin/live/report_queries.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
@@ -260,6 +255,10 @@ int main(int argc, char* argv[]) {
         const bool qt_sends =
             qt_mode == qt::Mode::SEND ||
             ((qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) && qt_send_now);
+        // QT_MAIL_TEST_TO: a --send that mails one address and records nothing, so a day can be
+        // previewed whether or not it was already sent.
+        const std::string qt_mail_test_to =
+            qt_mode == qt::Mode::SEND ? live::python_mail_test_to() : std::string();
 
         if (send_email && use_override_date) {
             std::cout << "Email sending enabled for historical run" << std::endl;
@@ -857,7 +856,7 @@ int main(int argc, char* argv[]) {
                 return qt_refuse(qt_date + " is not published: nothing is e-mailed before the "
                                  "approval or the 10:00 fallback");
             }
-            if (!state.value().sent_at.empty()) {
+            if (!state.value().sent_at.empty() && qt_mail_test_to.empty()) {
                 INFO("QT_SEND " + portfolio_id + " " + qt_date + " was already sent at " +
                      state.value().sent_at + "; not sent again");
                 std::cerr << "QT_SEND already sent at " << state.value().sent_at << std::endl;
@@ -865,7 +864,7 @@ int main(int argc, char* argv[]) {
             }
             auto legacy = qt::publish_email_sent(*db, portfolio_id, qt_date);
             if (legacy.is_error()) return qt_fail(legacy.error()->what());
-            if (!legacy.value().at.empty()) {
+            if (!legacy.value().at.empty() && qt_mail_test_to.empty()) {
                 // Sent by a publish row before migration 027: recorded, not sent again.
                 auto recorded =
                     qt::record_sent(*db, 0, portfolio_id, combined_strategy_id, qt_date);
@@ -1032,9 +1031,6 @@ int main(int argc, char* argv[]) {
         //
         // The metadata row itself is a one-row data correction on production and is NOT
         // made here.
-        // The book's start date as its metadata row gives it (empty when it could not be read):
-        // the daily report's footer prints it (T-8D-2 R59).
-        std::string book_live_start_date;
         {
             auto anchor_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
                 if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
@@ -1054,9 +1050,6 @@ int main(int argc, char* argv[]) {
                 "WHERE strategy_id = '" + combined_strategy_id + "'"
                 " AND portfolio_id = '" + portfolio_id + "'" + qt_read_sql);
 
-            if (!anchor_q.is_error()) {
-                book_live_start_date = anchor_cell(anchor_q);
-            }
             if (anchor_q.is_error() || first_q.is_error()) {
                 WARN("Could not check the annualization anchor for " + portfolio_id +
                      "; total_annualized_return is reported as the DB function computes it.");
@@ -1493,7 +1486,6 @@ int main(int argc, char* argv[]) {
             ERROR("QT: " + std::string(booked.error()->what()));
             return 1;
         }
-        ChartGenerator::set_book(qt_write_book);
 
         // Create Phase 3 managers
         INFO("Creating ExecutionManager and MarginManager for Phase 3");
@@ -4246,8 +4238,8 @@ int main(int argc, char* argv[]) {
                         // this host it printed 0.000000 for a row that held daily_return
                         // 1.2767 and daily_pnl 6347.25.
                         //
-                        // Read by the array's actual type instead, the way chart_generator.cpp
-                        // has always done it (:188-196). Dispatching rather than assuming utf8
+                        // Read by the array's actual type instead, the way the C++ chart code
+                        // (since deleted) did it. Dispatching rather than assuming utf8
                         // is deliberate: it stays correct if convert_generic_to_arrow is ever
                         // given real column types, which is the change condition 2 of
                         // STAGE3_PLAN section 20 pairs with this one.
@@ -5286,480 +5278,56 @@ int main(int argc, char* argv[]) {
 
         INFO("Daily trend following position generation completed successfully");
 
-        // Send email report with trading results (based on send_email flag).
-        // --send-email WINS (HD 2026-10-10): a run that sends builds and mails the report exactly
-        // as if TRADE_NGIN_EMAIL_BODY_DIR did not exist; the variable, if set, is ignored with one
-        // WARN line. Only a run that does not send looks at the variable: with it set (a
-        // directory) the body is built exactly as for a send and written there as
-        // email_body_<portfolio>_<date>.html and nothing is mailed; without it nothing is built.
-        // Production always sends and test runs never do, so the file path cannot run in
-        // production. email_body_file.hpp.
-        bool email_failed = false;  // the report was not built, written or sent: exit code 4
+        // The book e-mail (live/python_mail.hpp): the report module reads the stored day, renders
+        // it and sends it over the portfolio's email.json; the run adds what only it knows (no
+        // session the day before, a held book) and the files it exported. A QT send is recorded
+        // (live_run_metadata.sent_at, the row's email_sent_at) once the server accepted it (item
+        // 7, contract C7); with no SMTP for the QT engine nothing is sent and the command row says
+        // so. QT_MAIL_TEST_TO: a --send to that one address, recorded nowhere.
+        bool email_failed = false;  // the report was not sent: exit code 4
         bool qt_emailed = false;
         std::optional<nlohmann::json> qt_email_logged;
         std::string qt_email_sent_at;  // publish: when this run's e-mail went out
-        const live::EmailReportPlan email_plan =
-            live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));
-        if (email_plan.variable_ignored) {
-            WARN(live::email_body_dir_ignored_warning(email_plan));
-        }
-        if (email_plan.build()) {
-            if (email_plan.send) {
-                INFO("Sending email report...");
+        if (send_email) {
+            if (qt_sends &&
+                qt::email_disabled(app_config.email.username, app_config.email.password)) {
+                qt_email_logged = nlohmann::json{{"to", app_config.email.to_emails},
+                                                 {"date", qt_date}};
+                INFO("QT_SEND e-mail disabled: not sent");
             } else {
-                INFO("EMAIL_BODY_FILE building the report body for " + email_plan.body_dir +
-                     "; nothing is mailed");
-            }
-            try {
-                EmailSenderConfig email_config;
-                email_config.smtp_host = app_config.email.smtp_host;
-                email_config.smtp_port = app_config.email.smtp_port;
-                email_config.username = app_config.email.username;
-                email_config.password = app_config.email.password;
-                email_config.from_email = app_config.email.from_email;
-                email_config.use_tls = app_config.email.use_tls;
-                email_config.to_emails = app_config.email.to_emails;
-
-                auto email_sender = std::make_shared<EmailSender>(email_config);
-                auto email_init_result = email_sender->initialize();
-                if (email_init_result.is_error()) {
-                    ERROR("Failed to initialize email sender: " +
-                          std::string(email_init_result.error()->what()));
+                live::PythonMailRequest mail;
+                mail.portfolio_id = portfolio_id;
+                mail.date = qt_date;
+                mail.no_session = skip_strategy_processing;
+                if (risk_module_failure) {
+                    mail.alert = risk_module_failure_text(*risk_module_failure);
+                }
+                mail.attachments = {today_filename, yesterday_filename};
+                mail.test_to = qt_mail_test_to;
+                INFO("Sending the book e-mail for " + portfolio_id + " " + qt_date);
+                if (auto why = live::send_via_python(mail, live::python_mail_settings_from_env())) {
+                    ERROR("The book e-mail was not sent: " + *why);
                     email_failed = true;
+                } else if (!qt_mail_test_to.empty()) {
+                    // A test send: not the day's send, so nothing is recorded.
+                    qt_emailed = true;
+                    INFO("QT_SEND test e-mail sent to " + qt_mail_test_to +
+                         " (QT_MAIL_TEST_TO); sent_at not recorded");
                 } else {
-                    // Prepare email data
-                    std::string date_str =
-                        std::to_string(now_tm->tm_year + 1900) + "-" +
-                        std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') +
-                        std::to_string(now_tm->tm_mon + 1) + "-" +
-                        std::string(2 - std::to_string(now_tm->tm_mday).length(), '0') +
-                        std::to_string(now_tm->tm_mday);
-
-                    std::string subject = "Daily Trading Report - " + date_str;
-
-                    // Load yesterday's finalized positions for email display
-                    // Keyed by (sleeve, symbol) (T-7b-1 C7b S1-3): two sleeves holding one
-                    // symbol are two rows; keyed by symbol, the last sleeve read won.
-                    std::map<std::pair<std::string, std::string>, Position>
-                        yesterday_positions_finalized;
-                    std::map<std::string, double> yesterday_daily_metrics_final;
-                    std::unordered_map<std::string, double>
-                        yesterday_entry_prices;  // the price each settled row was settled from
-                    std::unordered_map<std::string, double>
-                        yesterday_exit_prices;  // the price it was settled at
-
-                    // Calculate yesterday's date for email
-                    auto yesterday_time_email = now - std::chrono::hours(24);
-                    auto yesterday_time_t_email =
-                        std::chrono::system_clock::to_time_t(yesterday_time_email);
-
-                    // Load finalized positions from database for email
-                    std::string yesterday_date_for_email;
-                    std::ostringstream yss_email;
-                    yss_email << std::put_time(std::gmtime(&yesterday_time_t_email), "%Y-%m-%d");
-                    yesterday_date_for_email = yss_email.str();
-
-                    INFO("Loading yesterday's finalized positions for email: " +
-                         yesterday_date_for_email);
-
-                    // T-8D-2 R55: this book's rows by both ids, the book the day started from (021).
-                    std::string positions_query_email =
-                        trade_ngin::yesterday_positions_report_query(
-                            combined_strategy_id, coordinator_config.portfolio_id,
-                            yesterday_date_for_email, true, qt_read_book);
-
-                    auto positions_result_email = db->execute_query(positions_query_email);
-
-                    if (positions_result_email.is_ok() &&
-                        positions_result_email.value()->num_rows() > 0) {
-                        auto table_email = positions_result_email.value();
-                        // All columns are StringArrays from generic converter
-                        auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(
-                            table_email->column(0)->chunk(0));
-                        auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(
-                            table_email->column(1)->chunk(0));
-                        auto avg_price_arr = std::static_pointer_cast<arrow::StringArray>(
-                            table_email->column(2)->chunk(0));
-                        auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(
-                            table_email->column(3)->chunk(0));
-                        auto strategy_name_arr = std::static_pointer_cast<arrow::StringArray>(
-                            table_email->column(6)->chunk(0));
-
-                        for (int64_t i = 0; i < table_email->num_rows(); ++i) {
-                            if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
-                                std::string symbol = symbol_arr->GetString(i);
-                                double quantity = std::stod(quantity_arr->GetString(i));
-                                double avg_price = std::stod(avg_price_arr->GetString(i));
-                                double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
-
-                                // Skip positions with zero quantity
-                                if (std::abs(quantity) < 0.0001)
-                                    continue;
-
-                                // Create Position object for yesterday's finalized position
-                                Position pos;
-                                pos.symbol = symbol;
-                                pos.quantity = Decimal(quantity);
-                                pos.average_price = Decimal(avg_price);
-                                pos.realized_pnl = Decimal(realized_pnl);
-
-                                const std::string strategy_name =
-                                    strategy_name_arr->IsNull(i) ? std::string()
-                                                                 : strategy_name_arr->GetString(i);
-                                yesterday_positions_finalized[{strategy_name, symbol}] = pos;
-
-                                // The row's two prices: the pair its P&L was settled on.
-                                if (const auto previous = trade_ngin::settled_price_of(
-                                        settled_table.previous, symbol)) {
-                                    yesterday_entry_prices[symbol] = *previous;
-                                }
-                                if (const auto latest = trade_ngin::settled_price_of(
-                                        settled_table.latest, symbol)) {
-                                    yesterday_exit_prices[symbol] = *latest;
-                                }
-                            }
-                        }
-                        INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) +
-                             " finalized positions for email");
-
-                        // Load yesterday's daily metrics from database for accurate display
-                        std::string yesterday_metrics_query =
-                            "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, "
-                            "daily_pnl, daily_transaction_costs, COALESCE(daily_roll_costs, 0) "
-                            "FROM trading.live_results "
-                            "WHERE strategy_id = '" +
-                            combined_strategy_id + "' AND portfolio_id = '" +
-                            coordinator_config.portfolio_id + "' AND date = '" +
-                            yesterday_date_for_email + "'" + qt_read_sql +
-                            " ORDER BY date DESC LIMIT 1";
-
-                        INFO("Loading yesterday's daily metrics from live_results: " +
-                             yesterday_metrics_query);
-                        auto yesterday_metrics_result = db->execute_query(yesterday_metrics_query);
-
-                        if (yesterday_metrics_result.is_ok() &&
-                            yesterday_metrics_result.value()->num_rows() > 0) {
-                            auto metrics_table = yesterday_metrics_result.value();
-                            INFO("Retrieved " + std::to_string(metrics_table->num_rows()) +
-                                 " rows from live_results");
-
-                            auto daily_return_arr = std::static_pointer_cast<arrow::StringArray>(
-                                metrics_table->column(0)->chunk(0));
-                            auto daily_unrealized_arr =
-                                std::static_pointer_cast<arrow::StringArray>(
-                                    metrics_table->column(1)->chunk(0));
-                            auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(
-                                metrics_table->column(2)->chunk(0));
-                            auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(
-                                metrics_table->column(3)->chunk(0));
-                            auto daily_commissions_arr =
-                                std::static_pointer_cast<arrow::StringArray>(
-                                    metrics_table->column(4)->chunk(0));
-                            auto daily_roll_costs_arr =  // migration 017, appended
-                                std::static_pointer_cast<arrow::StringArray>(
-                                    metrics_table->column(5)->chunk(0));
-
-                            if (!daily_return_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Return"] =
-                                    std::stod(daily_return_arr->GetString(0));
-                                INFO("Daily Return: " + daily_return_arr->GetString(0));
-                            }
-                            if (!daily_unrealized_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Unrealized PnL"] =
-                                    std::stod(daily_unrealized_arr->GetString(0));
-                                INFO("Daily Unrealized PnL: " + daily_unrealized_arr->GetString(0));
-                            }
-                            if (!daily_realized_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Realized PnL"] =
-                                    std::stod(daily_realized_arr->GetString(0));
-                                INFO("Daily Realized PnL: " + daily_realized_arr->GetString(0));
-                            }
-                            if (!daily_total_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Total PnL"] =
-                                    std::stod(daily_total_arr->GetString(0));
-                                INFO("Daily Total PnL: " + daily_total_arr->GetString(0));
-                            }
-
-                            if (!daily_commissions_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Transaction Costs"] =
-                                    std::stod(daily_commissions_arr->GetString(0));
-                                INFO("Daily Transaction Costs: " +
-                                     daily_commissions_arr->GetString(0));
-                            }
-                            if (!daily_roll_costs_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Roll Costs"] =
-                                    std::stod(daily_roll_costs_arr->GetString(0));
-                            }
-
-                            INFO("Successfully loaded yesterday's daily metrics from live_results");
+                    qt_emailed = true;
+                    INFO("The book e-mail was sent");
+                    if (qt_sends) {
+                        auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,
+                                                      portfolio_id, combined_strategy_id, qt_date);
+                        if (marked.is_error()) {
+                            ERROR("QT_SEND the e-mail was sent but sent_at could not be "
+                                  "recorded: " +
+                                  std::string(marked.error()->what()));
                         } else {
-                            if (yesterday_metrics_result.is_error()) {
-                                ERROR("Failed to query live_results: " +
-                                      std::string(yesterday_metrics_result.error()->what()));
-                            } else {
-                                WARN("No rows found in live_results for date: " +
-                                     yesterday_date_for_email);
-                            }
-                            // Fallback: calculate from positions if database query fails
-                            double yesterday_daily_realized = 0.0;
-                            for (const auto& [sleeve_symbol, pos] : yesterday_positions_finalized) {
-                                yesterday_daily_realized += pos.realized_pnl.as_double();
-                            }
-                            yesterday_daily_metrics_final["Daily Realized PnL"] =
-                                yesterday_daily_realized;
-                            INFO(
-                                "Calculated yesterday's metrics from positions (fallback) - Daily "
-                                "Realized PnL: " +
-                                std::to_string(yesterday_daily_realized));
+                            qt_email_sent_at = marked.value();
                         }
-
-                    } else {
-                        INFO("No finalized positions found for yesterday's email table");
-                    }
-
-                    // Create strategy metrics map with all relevant metrics organized by category
-                    std::map<std::string, double> strategy_metrics;
-
-                    // Load today's stored metrics from live_results (including Sharpe, Sortino,
-                    // etc.)
-                    LiveResultsRow today_row;
-                    bool has_today_row_metrics = false;
-                    try {
-                        data_loader->set_book(qt_write_book);
-                        auto today_row_result = data_loader->load_live_results(
-                            combined_strategy_id, coordinator_config.portfolio_id, now);
-                        if (today_row_result.is_ok()) {
-                            today_row = today_row_result.value();
-                            has_today_row_metrics = true;
-                        } else {
-                            WARN("Failed to load today's live_results row for email metrics: " +
-                                 std::string(today_row_result.error()->what()));
-                        }
-                    } catch (const std::exception& e) {
-                        WARN("Exception while loading today's live_results for email metrics: " +
-                             std::string(e.what()));
-                    }
-
-                    // Performance Metrics. T-8D-2 R61: the day T "Daily ..." values are not
-                    // report lines (the day's P&L is booked by tomorrow's run; the settled
-                    // day's are in yesterday_daily_metrics_final), and the two return lines read
-                    // the day's stored row below: one source.
-                    strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
-                    strategy_metrics["Total Realized PnL"] = total_realized_pnl;
-                    strategy_metrics["Total PnL"] = total_pnl;
-
-                    // What the report is told about the day beyond the metric map.
-                    trade_ngin::EmailReportContext report_context;
-                    report_context.settled_date = yesterday_date_for_email;
-                    report_context.sessions_per_year =
-                        app_config.statistics.futures_sessions_per_year;
-                    // T-8D-2 R59: the footer's start date is the book's own, and what the
-                    // report says about the day before is this run's classification of it (a
-                    // carried book: no session), never the weekday's.
-                    report_context.live_start_date = book_live_start_date;
-                    report_context.prior_day_no_session = skip_strategy_processing;
-                    report_context.settled_zero_kinds.roll = t1_settlement.roll_zero_symbols;
-                    report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;
-                    // The two capital keys of the day's risk_detail, when the row carries one
-                    // (the condition and the values of the set_risk_detail call above).
-                    if (one_pass_day.stores_detail()) {
-                        report_context.has_sizing_capital = true;
-                        report_context.sizing_capital = one_pass_day.sizing_capital;
-                        report_context.account_value_at_sizing =
-                            sizing_capital_read.capital.account;
-                    }
-
-                    if (has_today_row_metrics) {
-                        strategy_metrics["Total Cumulative Return"] =
-                            today_row.total_cumulative_return;
-                        strategy_metrics["Total Annualized Return"] =
-                            today_row.total_annualized_return;
-                        report_context.statistics_sessions = today_row.total_days;
-                        // Risk-adjusted and distribution metrics from live_results
-                        strategy_metrics["Sharpe Ratio"] = today_row.sharpe_ratio;
-                        strategy_metrics["Sortino Ratio"] = today_row.sortino_ratio;
-                        strategy_metrics["Max Drawdown"] = today_row.max_drawdown;
-                        strategy_metrics["Volatility"] = today_row.volatility;
-                        strategy_metrics["Win Rate"] = today_row.win_rate;
-                        strategy_metrics["Average Win"] = today_row.avg_win;
-                        strategy_metrics["Average Loss"] = today_row.avg_loss;
-                        strategy_metrics["Profit Factor"] = today_row.profit_factor;
-                        strategy_metrics["Best Day"] = today_row.best_day;
-                        strategy_metrics["Worst Day"] = today_row.worst_day;
-                        strategy_metrics["Downside Deviation"] = today_row.downside_deviation;
-                        strategy_metrics["Gross Profit"] = today_row.gross_profit;
-                        strategy_metrics["Gross Loss"] = today_row.gross_loss;
-                        // Removed Total Trades - will be implemented properly later with closing trades logic
-                        strategy_metrics["Winning Days"] =
-                            static_cast<double>(today_row.winning_days);
-                        strategy_metrics["Losing Days"] =
-                            static_cast<double>(today_row.losing_days);
-                        // Flat Days = total - winning - losing (Sat/Sun/holidays w/ zero PnL).
-                        // Shown explicitly in email so the total math adds up cleanly.
-                        strategy_metrics["Flat Days"] = static_cast<double>(
-                            std::max(0, today_row.total_days - today_row.winning_days -
-                                            today_row.losing_days));
-                        strategy_metrics["Total Days"] = static_cast<double>(today_row.total_days);
-                    }
-                    // The two risk lines of the portfolio summary: the overlay's expected risk
-                    // beside the target and the one-day VaR (report_risk_lines.hpp). A day with
-                    // no figure carries no key and prints no line.
-                    for (const auto& [name, value] : report_risk) {
-                        strategy_metrics[name] = value;
-                    }
-                    strategy_metrics["Total Transaction Costs"] =
-                        total_transaction_costs_cumulative;
-                    strategy_metrics["Total Roll Costs"] = total_roll_costs_cumulative;  // 017
-                    strategy_metrics["Daily Roll Costs"] = total_daily_roll_costs;
-                    strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
-                    // T-8D-2 R60: the book block of the positions section prints the account's
-                    // own notional (the figure the day's row stores), not a sum over the sleeves.
-                    strategy_metrics[trade_ngin::kReportGrossNotional] = gross_notional;
-                    if (qt_stored_results) {
-                        // Item 4: publish's figures are the stored qt day's.
-                        // (Not the price-weighted "Portfolio VaR": the report prints the stored
-                        // one-day VaR through report_risk_lines.hpp, T-8D.)
-                        const auto& stored_row = *qt_stored_results;
-                        if (stored_row.contains("total_roll_costs") &&
-                            stored_row.at("total_roll_costs").is_number()) {
-                            strategy_metrics["Total Roll Costs"] =
-                                stored_row.at("total_roll_costs").get<double>();
-                        }
-                    }
-
-                    // Leverage Metrics - Calculate values from position analysis
-                    double gross_leverage_calc = (current_portfolio_value != 0.0)
-                                                     ? (gross_notional / current_portfolio_value)
-                                                     : 0.0;
-                    double net_leverage_calc = (current_portfolio_value != 0.0)
-                                                   ? (net_notional / current_portfolio_value)
-                                                   : 0.0;
-
-                    strategy_metrics["Gross Leverage"] = gross_leverage_calc;
-                    strategy_metrics["Net Leverage"] = net_leverage_calc;
-                    // The two margin lines are printed only when the figure has a value.
-                    if (equity_to_margin_ratio) {
-                        strategy_metrics["Equity-to-Margin Ratio"] = *equity_to_margin_ratio;
-                    }
-
-                    // Risk & Liquidity Metrics
-                    if (margin_cushion) {
-                        strategy_metrics["Margin Cushion"] =
-                            *margin_cushion * 100.0;  // Convert to percentage
-                    }
-                    strategy_metrics["Margin Posted"] = total_posted_margin;
-                    strategy_metrics["Cash Available"] =
-                        current_portfolio_value - total_posted_margin;
-
-                    // Note: yesterday_daily_metrics_final is now loaded AFTER database updates
-                    // above So we don't need to create it here anymore
-
-                    // Generate email body with is_daily_strategy flag set to true and current
-                    // prices. Pass strategy_positions_map and all_strategy_executions for
-                    // per-strategy tables.
-                    const trade_ngin::OverLimitReport over_limit_for_report =
-                        trade_ngin::over_limit_report(one_pass_day, overlay_columns,
-                                                      portfolio_config.risk_modules,
-                                                      portfolio_config.per_name_cap);
-                    std::string email_body = email_sender->generate_trading_report_body(
-                        strategy_positions_map,  // Per-strategy positions for grouped tables
-                        positions,
-                        risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
-                        strategy_metrics, all_strategy_executions, date_str,
-                        portfolio_id,                   // Portfolio name for email header
-                        true,                           // is_daily_strategy
-                        day_t_mark_prices,              // The Day T mark of today's positions
-                        db,                             // Pass database for symbols reference table
-                        finalized_strategy_positions,   // Per-strategy yesterday's positions,
-                                                        // read back after the finalize
-                        yesterday_exit_prices,          // the price each settled row was settled at
-                        yesterday_entry_prices,         // the price it was settled from
-                        yesterday_daily_metrics_final,  // Yesterday's metrics
-                        combined_strategy_id,           // The charts query this run's own rows
-                        // T-8D R20: the stored book's leverage on the sizing capital beside the
-                        // limits the overlay ran with, and the day's over-limit marks.
-                        over_limit_for_report, report_context);
-
-                    // Send email with CSV attachments: today's positions and yesterday's finalized
-                    // (if available)
-                    std::vector<std::string> attachments = {today_filename};
-                    if (!yesterday_filename.empty()) {
-                        attachments.push_back(yesterday_filename);
-                    }
-                    // The account detail file (HD 10-13): the stored row's figures and the day's
-                    // over-limit report, one row.
-                    {
-                        const auto detail = csv_exporter->export_account_detail(
-                            portfolio_id, date_str,
-                            trade_ngin::account_detail_columns(
-                                date_str,
-                                trade_ngin::read_account_detail_row(
-                                    db, combined_strategy_id, coordinator_config.portfolio_id,
-                                    date_str, qt_write_book),
-                                &over_limit_for_report, strategy_metrics));
-                        if (detail.is_ok()) {
-                            attachments.push_back(detail.value());
-                        } else {
-                            ERROR("Failed to export the account detail file: " +
-                                  std::string(detail.error()->what()));
-                        }
-                    }
-
-                    // The day's flags, then the body file or the one send (live/email_delivery.hpp,
-                    // T-EMAIL P2-4). T-7a C5: a day the portfolio risk module could not answer is
-                    // flagged in the subject and at the top of the body. T-7b-1 C7b R2: a carried
-                    // day's email opens with the reason its positions file carries.
-                    // QT: a send of a desk-editable portfolio is marked in the subject; with no
-                    // SMTP for the QT engine the e-mail is kept in the command row instead; a send
-                    // that went out is recorded (live_run_metadata.sent_at, the row's
-                    // email_sent_at) before anything else (item 7, contract C7).
-                    const bool qt_mail_off =
-                        qt_sends && qt::email_disabled(email_config.username, email_config.password);
-                    const live::EmailDelivery delivery = live::deliver_email_report(
-                        email_plan, portfolio_id, date_str, subject, email_body,
-                        risk_module_failure, skip_strategy_processing, carried_day_note,
-                        [&](std::string mail_subject, const std::string& mail_body)
-                            -> std::optional<std::string> {
-                            if (qt_sends) mail_subject = "[QT " + portfolio_id + "] " + mail_subject;
-                            if (qt_mail_off) {
-                                qt_email_logged = nlohmann::json{{"to", email_config.to_emails},
-                                                                 {"subject", mail_subject},
-                                                                 {"attachments", attachments},
-                                                                 {"body", mail_body}};
-                                INFO("QT_SEND e-mail disabled: not sent (the body is kept in the "
-                                     "command row, if any)");
-                                return std::nullopt;
-                            }
-                            auto send_result = email_sender->send_email(mail_subject, mail_body,
-                                                                        true, attachments);
-                            if (send_result.is_error()) {
-                                return std::string(send_result.error()->what());
-                            }
-                            qt_emailed = true;
-                            if (qt_sends) {
-                                auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,
-                                                              portfolio_id, combined_strategy_id,
-                                                              qt_date);
-                                if (marked.is_error()) {
-                                    ERROR("QT_SEND the e-mail was sent but sent_at could not be "
-                                          "recorded: " +
-                                          std::string(marked.error()->what()));
-                                } else {
-                                    qt_email_sent_at = marked.value();
-                                }
-                            }
-                            return std::nullopt;
-                        });
-                    if (!delivery.ok) {
-                        ERROR(delivery.message);
-                        email_failed = true;
-                    } else {
-                        INFO(delivery.message);
                     }
                 }
-            } catch (const std::exception& e) {
-                ERROR("Exception during email sending: " + std::string(e.what()));
-                email_failed = true;
             }
         } else {
             INFO("Email reporting disabled");
@@ -5842,7 +5410,7 @@ int main(int argc, char* argv[]) {
         }
         if (email_failed && !risk_module_failure) {
             ERROR("EMAIL_FAILED the day is stored; the report was not delivered; exiting " +
-                  std::to_string(live::kEmailFailureExitCode));
+                  std::to_string(live::kBookEmailFailureExitCode));
         }
         return live::futures_run_exit_code(risk_module_failure, email_failed);
 

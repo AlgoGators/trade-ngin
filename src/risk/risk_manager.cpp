@@ -234,9 +234,9 @@ Result<RiskResult> RiskManager::process_positions(
         //            this weighting represents per-contract volatility exposure
         //            rather than dollar-notional exposure.
         //   Formula: σ = √(vol_weights' · Σ · vol_weights), Σ annualized.
-        //   Used by: email_sender HTML report, the equity runner's stdout line
+        //   Used by: the equity runner's stdout line
         //            "Ex-ante vol (reporter):",
-        //            JSON metrics written to disk, chart_generator inputs,
+        //            JSON metrics written to disk,
         //            and the trading.live_results.portfolio_var DB column.
         //   Not used for any sizing/gating decision — those use the gating
         //   form set inside calculate_portfolio_multiplier(); see comment

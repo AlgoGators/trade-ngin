@@ -18,7 +18,7 @@
 #               refused       S0 restored, ONE run dated REFUSED_DATE that must be refused; snapshots before and after
 # Every run carries a date. --send-email is never passed. Only 127.0.0.1, only a database whose name holds "scratch".
 # One runner at a time under GATE_RUN_LOCK; the run config is written under the lock and the runner's own database
-# line is asserted. The report body is built on every run (TRADE_NGIN_EMAIL_BODY_DIR) and nothing is mailed.
+# line is asserted. Nothing is mailed.
 #
 # Settings (environment; the defaults are the stage-3 layout of the machine the gate was written on):
 #   GATE_WORKTREE   the built tree (build/bin/Release holds the runners)          required; a linked worktree,
@@ -155,7 +155,7 @@ run_day() {   # <date> [host date] [log suffix]; prints the exit code, never fai
   mkdir -p "$OUT/series/$d"
   lock_run "$UNIT-$d"; setcfg > "$OUT/config.txt"   # the config is written under the lock, for every run
   local lg="$d"; [ "$hd" != "$d" ] && lg="${d}_on_host_${hd}"; lg="$lg$sfx"
-  ( cd "$W" && mkdir -p "$OUT/email/$lg"; export TRADE_NGIN_EMAIL_BODY_DIR="$OUT/email/$lg"; if [ "$MODE" = M2 ]; then export TDATED_HOST_CLOCK_OFFSET=$(python3 -c "import datetime as t,time,sys;y,m,dd=map(int,sys.argv[1].split('-'));print(int(time.mktime(t.datetime(y,m,dd,12,0).timetuple())-time.time()))" "$hd"); export DYLD_INSERT_LIBRARIES="$SHIM"; echo "MODE M2: host clock offset $TDATED_HOST_CLOCK_OFFSET s (run date $d; the host's date presented as $hd 12:00 local)"; else echo "MODE M3: real host clock $(date +%FT%T%z)"; fi; TRADE_NGIN_SERIES_DUMP_DIR="$OUT/series/$d" "$W/build/bin/Release/$BIN" "$d" ) > "$OUT/logs/$lg.log" 2>&1 && rc=0 || rc=$?; unlock_run
+  ( cd "$W" && if [ "$MODE" = M2 ]; then export TDATED_HOST_CLOCK_OFFSET=$(python3 -c "import datetime as t,time,sys;y,m,dd=map(int,sys.argv[1].split('-'));print(int(time.mktime(t.datetime(y,m,dd,12,0).timetuple())-time.time()))" "$hd"); export DYLD_INSERT_LIBRARIES="$SHIM"; echo "MODE M2: host clock offset $TDATED_HOST_CLOCK_OFFSET s (run date $d; the host's date presented as $hd 12:00 local)"; else echo "MODE M3: real host clock $(date +%FT%T%z)"; fi; TRADE_NGIN_SERIES_DUMP_DIR="$OUT/series/$d" "$W/build/bin/Release/$BIN" "$d" ) > "$OUT/logs/$lg.log" 2>&1 && rc=0 || rc=$?; unlock_run
   /bin/rm -rf "$W/logs/$d"; for f in "$W"/logs/*.log(N); do /bin/rm -f "$f"; done
   grep -a "Config summary: db=" "$OUT/logs/$lg.log" | head -1 | grep -q "/$DB," || { echo "STOP: the run dated $d did not run on $DB" | tee -a "$OUT/progress.txt"; rc=9 }
   grep -av "password" "$OUT/logs/$lg.log" | gzip -nc > "$OUT/logs/$lg.log.gz"; /bin/rm -f "$OUT/logs/$lg.log"

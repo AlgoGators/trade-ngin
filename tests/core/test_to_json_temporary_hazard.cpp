@@ -172,7 +172,7 @@ TEST(ToJsonTemporaryHazard, TheScannerRecognisesTheHazardousShape) {
 //
 // Two dead declarations removed in this batch:
 //
-//   src/core/email_sender.cpp   filter_non_agricultural_positions() -- [[maybe_unused]],
+//   the C++ email sender (since deleted)   filter_non_agricultural_positions() -- [[maybe_unused]],
 //     no caller anywhere -- together with is_agricultural_future(), whose only
 //     caller was that filter. Both were a SECOND definition of logic the two
 //     futures runners already implement as their own lambda, so the copy here

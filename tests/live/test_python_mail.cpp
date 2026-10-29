@@ -1,8 +1,9 @@
 // tests/live/test_python_mail.cpp
 //
-// The book e-mail sent by the report module (live/python_mail.hpp). A stand-in interpreter plays
-// the module, so these cases EXECUTE the real process path (command, time limit, exit status)
-// without a database or SMTP. POSIX only: the stand-in is a shell script.
+// The book e-mail sent by the report module (live/python_mail.hpp), the only way a live runner
+// reports its day. A stand-in interpreter plays the module, so these cases EXECUTE the real
+// process path (command, time limit, exit status) without a database or SMTP. POSIX only: the
+// stand-in is a shell script.
 
 #include <gtest/gtest.h>
 
@@ -22,17 +23,33 @@ namespace fs = std::filesystem;
 using namespace trade_ngin::live;
 
 namespace {
-PythonMailRequest request() { return {"QT_CONSERVATIVE", "2026-10-23"}; }
+PythonMailRequest request() {
+    PythonMailRequest r;
+    r.portfolio_id = "QT_CONSERVATIVE";
+    r.date = "2026-10-23";
+    return r;
+}
+
+std::string read_source(const std::string& rel) {
+    for (fs::path dir = fs::current_path(); !dir.empty(); dir = dir.parent_path()) {
+        std::ifstream f(dir / rel);
+        if (f) {
+            std::stringstream ss;
+            ss << f.rdbuf();
+            return ss.str();
+        }
+        if (dir == dir.parent_path()) break;
+    }
+    return {};
+}
 }  // namespace
 
-TEST(PythonMailPure, TheBackendIsSelectedOnlyByTheExactValue) {
+TEST(PythonMailPure, TheTestAddressIsReadFromTheEnvironment) {
 #ifndef _WIN32
-    setenv("QT_MAIL_BACKEND", "python", 1);
-    EXPECT_TRUE(python_mail_selected());
-    setenv("QT_MAIL_BACKEND", "curl", 1);
-    EXPECT_FALSE(python_mail_selected());
-    unsetenv("QT_MAIL_BACKEND");
-    EXPECT_FALSE(python_mail_selected());
+    setenv("QT_MAIL_TEST_TO", "someone@example.org", 1);
+    EXPECT_EQ(python_mail_test_to(), "someone@example.org");
+    unsetenv("QT_MAIL_TEST_TO");
+    EXPECT_EQ(python_mail_test_to(), "");
 #endif
 }
 
@@ -40,13 +57,63 @@ TEST(PythonMailPure, TheCommandNamesTheModuleThePortfolioAndTheDayAndQuotesThem)
     PythonMailSettings s;
     s.python = "/opt/rpc/venv/bin/python";
     s.app_dir = "/opt/rpc/app";
-    const std::string cmd = python_mail_command({"QT'X", "2026-10-23"}, s);
+    PythonMailRequest r = request();
+    r.portfolio_id = "QT'X";
+    const std::string cmd = python_mail_command(r, s);
     EXPECT_NE(cmd.find("-m algogators_rpc.services.report"), std::string::npos) << cmd;
-    EXPECT_NE(cmd.find("PYTHONPATH='/opt/rpc/app'"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("--date '2026-10-23'"), std::string::npos) << cmd;
+    // an ordinary day: no flag, no attachment, the portfolio's own recipients
+    for (const char* absent : {"--no-session", "--alert", "--attach", "--to"}) {
+        EXPECT_EQ(cmd.find(absent), std::string::npos) << absent << ": " << cmd;
+    }
 #ifndef _WIN32
+    EXPECT_NE(cmd.find("PYTHONPATH='/opt/rpc/app'"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("'QT'\\''X'"), std::string::npos) << cmd;  // an embedded quote is escaped
 #endif
+}
+
+TEST(PythonMailPure, TheRunsFlagsFilesAndTestAddressAreHandedOver) {
+    PythonMailRequest r = request();
+    r.no_session = true;
+    r.alert = "The portfolio risk module carver could not evaluate today's book (boom).";
+    r.attachments = {"/app/results/positions.csv", "", "/app/results/finalized.csv"};
+    r.test_to = "someone@example.org";
+    const std::string cmd = python_mail_command(r, PythonMailSettings{});
+    EXPECT_NE(cmd.find(" --no-session"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("--alert"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("could not evaluate today"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("positions.csv"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("finalized.csv"), std::string::npos) << cmd;
+    std::size_t attaches = 0;
+    for (auto at = cmd.find("--attach"); at != std::string::npos; at = cmd.find("--attach", at + 1))
+        ++attaches;
+    EXPECT_EQ(attaches, 2u) << "an empty path (no settled file that day) is not attached: " << cmd;
+    EXPECT_NE(cmd.find("--to"), std::string::npos) << cmd;
+}
+
+TEST(PythonMailPure, AHeldBookKeepsItsCodeAndAnUnsentEmailIsFour) {
+    const nlohmann::json held = {{"module", "carver"}, {"error", "x"}};
+    EXPECT_EQ(futures_run_exit_code(std::nullopt, false), 0);
+    EXPECT_EQ(futures_run_exit_code(std::nullopt, true), kBookEmailFailureExitCode);
+    EXPECT_EQ(futures_run_exit_code(held, true), trade_ngin::kRiskModuleFailureExitCode);
+    EXPECT_EQ(futures_run_exit_code(held, false), trade_ngin::kRiskModuleFailureExitCode);
+}
+
+// Every live runner sends the book e-mail through the module, and nothing else sends it.
+TEST(PythonMailSource, EveryLiveRunnerSendsThroughTheReportModuleOnly) {
+    for (const char* runner :
+         {"apps/strategies/live_portfolio_conservative.cpp", "apps/strategies/live_portfolio.cpp",
+          "apps/strategies/live_equity_mean_reversion.cpp"}) {
+        SCOPED_TRACE(runner);
+        const std::string src = read_source(runner);
+        if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
+        EXPECT_NE(src.find("live::send_via_python(mail, live::python_mail_settings_from_env())"),
+                  std::string::npos);
+        for (const char* gone : {"send_email(mail_subject", "generate_trading_report_body(",
+                                 "EmailSender", "deliver_email_report(", "QT_MAIL_BACKEND"}) {
+            EXPECT_EQ(src.find(gone), std::string::npos) << gone;
+        }
+    }
 }
 
 #ifndef _WIN32

@@ -123,14 +123,6 @@ public:
                                               const std::string& strategy,
                                               const std::vector<EquityCsvRow>& rows);
 
-    /**
-     * @brief Write account_detail_<portfolio>_<date>.csv: a header row of column names and the
-     *        one row of the day (live/account_detail.hpp). Cells are written as given.
-     */
-    Result<std::string> export_account_detail(
-        const std::string& portfolio_id, const std::string& date,
-        const std::vector<std::pair<std::string, std::string>>& columns);
-
     Result<std::string> export_carried_positions(
         const std::chrono::system_clock::time_point& date,
         const StrategyPositionsMap& strategy_positions,

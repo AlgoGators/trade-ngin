@@ -53,7 +53,7 @@ meets by name in a log:
 | `stored_book_ownership.hpp` | refuses a run that would not load positions the portfolio has stored |
 | `live_listing_guard.hpp` | refuses a run whose book or symbol list disagrees with the declared listing dates |
 | `data_freshness.hpp` | the feed staleness checks |
-| `email_body_file.hpp` | the report body written to a file on a run that does not send |
+| `python_mail.hpp` | the book e-mail: runs the Python report module after the day is stored; a send that fails exits 4 |
 
 ---
 
@@ -81,8 +81,9 @@ A live run always carries a date.
 # A test or a replay: the date, no --send-email (nothing is mailed)
 ./build/bin/Release/live_portfolio_conservative 2026-04-28
 
-# The same, with the report body written to a file instead
-TRADE_NGIN_EMAIL_BODY_DIR=/path/to/existing/dir ./build/bin/Release/live_portfolio_conservative 2026-04-28
+# The stored day's report written to a directory instead of mailed (from services/rpc)
+python -m algogators_rpc.services.report --portfolio-id CONSERVATIVE_PORTFOLIO --date 2026-04-28 \
+    --preview-dir /path/to/dir
 ```
 
 ### Arguments
@@ -96,13 +97,17 @@ runner a second date on the line replaces the first with no message: type the da
 | Argument | Format | Description |
 |---|---|---|
 | Date | `YYYY-MM-DD` | The date to run. Always given. A run started without a date takes the wall clock and turns the email on. Do not start one: nothing in the code refuses it. The futures runners read the date as midnight in the host's local time and the equity runner as midnight UTC; the three run modes are in [docs/LIVE_RUN_CYCLE.md](../../docs/LIVE_RUN_CYCLE.md), section 1. |
-| `--send-email` | Flag | Build the report and mail it. Production passes it; a test or a replay never does. |
+| `--send-email` | Flag | After the day is stored, run the report module, which builds the report and mails it. Production passes it; a test or a replay never does. |
 
 ### Environment
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| TRADE_NGIN_EMAIL_BODY_DIR | An existing directory | Futures runners only (`live_portfolio`, `live_portfolio_conservative`). On a run that does NOT send (a date given, no `--send-email`) the report body is built exactly as for a send and written there as `email_body_<portfolio_id>_<date>.html`; nothing is mailed. `--send-email` wins: on a run that sends (`--send-email`, or a run without a date) the variable is ignored, the report is mailed as usual, one WARN line says so and no file is written. An empty value is the same as unset. The directory is not created; a second run of the same book and date replaces the file. |
+| QT_MAIL_PYTHON | A Python interpreter | The interpreter that runs the report module. Default `/opt/rpc/venv/bin/python`. |
+| QT_MAIL_APP | A directory | The directory put on `PYTHONPATH` for the module. Default `/opt/rpc/app`. |
+| QT_MAIL_TIMEOUT | Seconds | The time limit of one send. Default 120. |
+| QT_MAIL_TEST_TO | An address | On a QT `--send` run, mail only this address (no Cc) and record nothing: `sent_at` is left as it was, so a day already sent can be sent again as a preview. |
+| QT_MAIL_CC | Addresses, comma separated | Added to the Cc of the book e-mail (read by the module). |
 
 ### Rules
 
@@ -112,17 +117,18 @@ runner a second date on the line replaces the first with no message: type the da
 - The futures book runs every calendar day; a run refuses to start when the previous day's run is missing.
 
 A futures live run exits 0 when it reaches the end of the run with the book not refused, 3 when it reaches the
-end with the book held because the risk step refused it or the sizing read failed, and 1 when it stops early.
+end with the book held because the risk step refused it or the sizing read failed, 4 when the day is stored but
+the book e-mail was not sent (a run that exits 3 keeps 3), and 1 when it stops early.
 Exit 0 covers a completed day, a carried day, and a run in which a store failed, was logged and was passed over;
 the evidence of a completed day is the date's `trading.live_results` row, not the exit code. The wrapper also
 returns 0, without starting the binary, when it finds its lock held (nothing stored). A refusal by the risk step never ends at 0: the
 `live_run_metadata` row is marked `risk_refusal` and the run ends at 3, whether a module could not answer or a
 sleeve module decided to refuse, or at 1 when the refused book has no stored previous positions to be held at.
 Exit 1 stores nothing when the run refuses before its `live_run_metadata` row is written, and can leave that
-row, the signals or a half-written day when it stops later. The equity runner and the backtest runners return
-only 0 or 1.
+row, the signals or a half-written day when it stops later. The equity runner returns 0, 1 or 4, the backtest
+runners only 0 or 1.
 
-The reasons, the full exit-code table (0, 1, 3, and the wrapper's 127), the log locations and the scheduled job are
+The reasons, the full exit-code table (0, 1, 2, 3, 4, and the wrapper's 127), the log locations and the scheduled job are
 in [docs/performance_upkeep.md](../../docs/performance_upkeep.md).
 
 ---
@@ -141,11 +147,25 @@ the P&L columns are not a single quantity times price change formula.
 
 ## Email Report
 
-A run that sends builds an HTML report (`EmailSender::generate_trading_report_body`, `src/core/email_sender.cpp`,
-with charts from `src/core/chart_generator.cpp`) and mails it with the positions files from `CSVExporter` attached.
-On a day the book was held because the risk step refused it or the sizing read failed, the subject and the top of the
-body are flagged (`risk_module_failure.hpp`). Recipients and SMTP settings are in each portfolio's `email.json`
-([docs/CONFIG_GUIDE.md](../../docs/CONFIG_GUIDE.md)).
+The book e-mail is sent by the Python report module `services/rpc/algogators_rpc/services/report`, not by the
+runner. A run with `--send-email`, after storing the day, runs it through `send_via_python` (`python_mail.hpp`):
+
+```bash
+python -m algogators_rpc.services.report --portfolio-id ID --date YYYY-MM-DD [--no-session] [--alert TEXT] \
+    [--attach FILE ...] [--to ADDR] [--preview-dir DIR]
+```
+
+The runner passes `--no-session` when the run carried its book (no session the day before), `--alert` with the
+risk-module failure text (`risk_module_failure_text`, `risk_module_failure.hpp`) and the positions files from
+`CSVExporter` as `--attach`. The module reads the stored day from the database (the date's `live_results` row and
+the one before, the positions, the executions with the roll legs and the netting, the equity curve, the start
+date), renders the HTML (a Jinja template, matplotlib charts) with a plain-text part, and sends it over SMTP.
+On a day the book was held, the e-mail opens with the alert and the subject begins
+`[RISK MODULE FAILED - BOOK HELD] `. The module exits 0 when the server accepted the message; otherwise the
+runner logs `EMAIL_FAILED` and exits 4 (3 on a held day). The To recipients are `to_emails` of the portfolio's
+`email.json`, the QT approvers and `QT_MAIL_CC` go in Cc; SMTP settings are in the same file
+([docs/CONFIG_GUIDE.md](../../docs/CONFIG_GUIDE.md)). `--preview-dir` writes the report there and sends nothing;
+`--to` sends to that one address only.
 
 ---
 
