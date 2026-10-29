@@ -410,6 +410,44 @@ TEST(ListingDates, APairWithoutItsListedRowsOrWithoutThePerContractSourceIsRefus
     EXPECT_TRUE(rule.refusals({"ZN.v.0"}, true).empty()) << "neither contract of a pair stored: nothing to read";
 }
 
+// MM's gate 5 finding (HD 2026-10-29): the reverse of the refusals above. A micro of the code's alias
+// table stored beside its full-size root with no pair declared refuses (the run would trade GC and
+// MGC side by side). Nothing valid is refused: the scratch copy of production stores no ES, NQ, YM
+// or RTY .v.0 (the equity micros run with or without their pairs), the conservative template's
+// symbols on tune_base (no micro metals), and fill_mm's symbols with both metal pairs declared.
+TEST(ListingDates, AMicroStoredBesideItsFullSizeRootWithoutAPairIsRefused) {
+    Guard guard;
+    const std::vector<ListedContract> equity = {{"MES", "ES", "2019-05-06", 10.0}, {"MNQ", "NQ", "2019-05-06", 10.0},
+                                                {"MYM", "YM", "2019-05-06", 10.0}, {"M2K", "RTY", "2019-05-06", 10.0}};
+    std::vector<ListedContract> metals = equity;
+    metals.push_back({"MGC", "GC", "2010-10-04", 10.0});
+    metals.push_back({"SIL", "SI", "2013-06-17", 5.0});
+    const std::vector<std::string> tune_base = {"6A.v.0", "GC.v.0", "M2K.v.0", "MES.v.0", "MNQ.v.0", "MYM.v.0", "SI.v.0", "ZN.v.0"};
+    std::vector<std::string> fill_mm = tune_base;
+    fill_mm.push_back("MGC.v.0");
+    fill_mm.push_back("SIL.v.0");
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(tune_base, {}).empty()) << "no ES/NQ/YM/RTY .v.0, no micro metals";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(tune_base, equity).empty()) << "the conservative template";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(fill_mm, metals).empty()) << "fill_mm with both pairs set";
+    const auto none = ListingDates::unpaired_micro_refusals(fill_mm, {});
+    ASSERT_EQ(none.size(), 2u) << "MGC and SIL stored beside GC and SI, no pairs (gate 5's base book)";
+    EXPECT_NE(none[0].find("LISTING_REFUSED MGC: MGC.v.0 and GC.v.0 are both stored"), std::string::npos) << none[0];
+    EXPECT_NE(none[0].find("{\"symbol\": \"MGC\", \"before\": \"GC\""), std::string::npos) << none[0];
+    EXPECT_NE(none[1].find("LISTING_REFUSED SIL: SIL.v.0 and SI.v.0"), std::string::npos) << none[1];
+    EXPECT_EQ(ListingDates::unpaired_micro_refusals(fill_mm, equity).size(), 2u) << "the equity pairs alone";
+    std::vector<ListedContract> gold_only = equity;
+    gold_only.push_back({"MGC", "GC", "2010-10-04", 10.0});
+    const auto silver = ListingDates::unpaired_micro_refusals(fill_mm, gold_only);
+    ASSERT_EQ(silver.size(), 1u);
+    EXPECT_NE(silver[0].find("LISTING_REFUSED SIL"), std::string::npos) << silver[0];
+    // a full-size equity root stored beside its micro, unpaired: refused the same way
+    const auto es = ListingDates::unpaired_micro_refusals({"ES.v.0", "MES.v.0"}, {});
+    ASSERT_EQ(es.size(), 1u);
+    EXPECT_NE(es[0].find("MES.v.0 and ES.v.0 are both stored"), std::string::npos) << es[0];
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals({"GC.v.0", "SI.v.0"}, {}).empty()) << "no micro stored";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals({"MGC.v.0"}, {}).empty()) << "no full-size root stored";
+}
+
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,
 // handed on unchanged under its own symbol, after the stored rows and in their order.
 TEST(ListingDates, ThePredecessorReadsTheRowsStoredUnderTheListedSymbol) {

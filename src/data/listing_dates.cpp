@@ -243,6 +243,35 @@ std::vector<std::string> ListingDates::refusals(const std::vector<std::string>& 
     return out;
 }
 
+std::vector<std::string> ListingDates::unpaired_micro_refusals(
+    const std::vector<std::string>& stored_symbols, const std::vector<ListedContract>& declared) {
+    std::vector<std::string> out;
+    const auto stored = [&](const std::string& s) {
+        return std::find(stored_symbols.begin(), stored_symbols.end(), s) != stored_symbols.end();
+    };
+    for (const auto& symbol : stored_symbols) {
+        if (symbol.size() < 5 || symbol.compare(symbol.size() - 4, 4, ".v.0") != 0) continue;
+        const std::string root = root_of(symbol);
+        const auto alias = contract_rolls::micro_alias(root);
+        if (!alias) continue;
+        const std::string full = alias->full_root + ".v.0";
+        if (!stored(full)) continue;
+        const bool paired = std::any_of(declared.begin(), declared.end(), [&](const ListedContract& c) {
+            return c.symbol == root && c.before == alias->full_root;
+        });
+        if (paired) continue;
+        out.push_back("LISTING_REFUSED " + root + ": " + symbol + " and " + full +
+                      " are both stored and listing_dates has no pair for them, so the run would "
+                      "trade " + alias->full_root + " and " + root +
+                      " side by side; add {\"symbol\": \"" + root + "\", \"before\": \"" +
+                      alias->full_root +
+                      "\", \"listed\": <its listing date>, \"ratio\": <" + root +
+                      " contracts per " + alias->full_root +
+                      ">} to portfolio.json's listing_dates contracts");
+    }
+    return out;
+}
+
 std::vector<ListingConversion> ListingDates::conversions_due(
     const std::vector<Bar>& signal_feed) const {
     std::lock_guard<std::mutex> lock(mutex_);

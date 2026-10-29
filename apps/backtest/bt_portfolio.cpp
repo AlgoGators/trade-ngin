@@ -191,6 +191,14 @@ int main() {
             // Listing dates (nothing happens without portfolio.json's listing_dates):
             // a window that starts before a contract's listing date also runs the contract traded
             // before it, on the rows stored under the listed contract's symbol.
+            // MM's gate 5 finding: a micro stored beside its full-size root with no pair declared
+            // refuses the run (ListingDates::unpaired_micro_refusals), with or without listing_dates.
+            const auto unpaired =
+                ListingDates::unpaired_micro_refusals(symbols, app_config.listing_dates);
+            if (!unpaired.empty()) {
+                for (const auto& line : unpaired) ERROR(line);
+                throw std::runtime_error(unpaired.front());
+            }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
                 ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);

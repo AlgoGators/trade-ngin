@@ -187,6 +187,15 @@ public:
     std::vector<std::string> refusals(const std::vector<std::string>& stored_symbols,
                                       bool per_contract_rolls) const;
 
+    /// MM's gate 5 finding (HD 2026-10-29): the reverse of refusals(). For every micro of the code's
+    /// own alias table (contract_roll_rule.hpp micro_alias: MGC/GC, SIL/SI, MES/ES, MNQ/NQ, MYM/YM,
+    /// M2K/RTY) whose .v.0 is stored beside its full-size root's .v.0 while `declared` (portfolio.json's
+    /// listing_dates) has no pair for the two, one line naming both and what to add: the run would
+    /// trade the full-size contract and the micro side by side. Read on the database's stored symbol
+    /// list, with or without listing_dates. Empty: nothing refused.
+    static std::vector<std::string> unpaired_micro_refusals(
+        const std::vector<std::string>& stored_symbols, const std::vector<ListedContract>& declared);
+
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
     /// MM fix round 1: each copy's cost_volume (the volume the cost feed prices the predecessor's

@@ -1131,6 +1131,15 @@ int main(int argc, char* argv[]) {
             } else if (!app_config.instrument_id_relabels.empty()) {
                 INFO(relabels_not_read_line(app_config.instrument_id_relabels));
             }
+            // MM's gate 5 finding: a micro stored beside its full-size root with no pair declared
+            // refuses the run before its first write (ListingDates::unpaired_micro_refusals), with
+            // or without listing_dates.
+            const auto unpaired =
+                ListingDates::unpaired_micro_refusals(symbols, app_config.listing_dates);
+            if (!unpaired.empty()) {
+                for (const auto& line : unpaired) ERROR(line);
+                return 1;
+            }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
                 // MM fix round 1: pairs the stored data or the bar source cannot carry refuse
