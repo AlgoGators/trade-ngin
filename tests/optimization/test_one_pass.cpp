@@ -1103,6 +1103,17 @@ TEST(OnePass, TheEdgeRiskRuleLetsOnlyALoweringMoveCompete) {
     EXPECT_EQ(buffer(searched, {0.0, 0.0, 0.0}, u, c, 0.0, BufferStepRule::kEdge).steps, (Steps{{1, 1.0}}));
 }
 
+// The risk is u_i sqrt(Sigma_ii), with unequal variances. Rows of u 0.005 and 0.015, variances 16 and 1, uncorrelated,
+// one and two contracts short: risks 0.02 and 0.015. edge_risk takes row 1, then row 0 (its cut per unit of risk is
+// now the larger), then row 1. On u alone (0.005 against 0.015) row 0 would go first; on u x Sigma_ii (0.08 against
+// 0.015) row 1 would go twice before row 0 (audit A, LEVERS fix round 1; hand_edge_risk.py, sqrt_P).
+TEST(OnePass, TheEdgeRiskRulesRiskIsUTimesTheSquareRootOfTheVariance) {
+    const Matrix c = {{16.0, 0.0}, {0.0, 1.0}};
+    const Buffered e = buffer({1.0, 2.0}, {0.0, 0.0}, {0.005, 0.015}, c, 0.0, BufferStepRule::kEdgeRisk);
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}, {0, 1.0}, {1, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{1.0, 2.0}));
+}
+
 // A move never passes or leaves the answer. Row 0 (risk 0.001) is asked for 2.5 and steps to 2;
 // going on to 3 would pass the answer although it would lower the error (0.00545 to 0.00456, it
 // hedges row 1, half a contract from its answer and so never moved), so the walk stops there. The
