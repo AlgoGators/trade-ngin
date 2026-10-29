@@ -156,6 +156,23 @@ Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, cons
     return out;
 }
 
+void keep_last_closes(Matrix& closes, Matrix& levels, std::size_t window) {
+    const std::size_t n = closes.empty() ? 0 : closes.front().size();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t kept = 0;
+        for (std::size_t d = closes.size(); d-- > 0;) {
+            if (std::isnan(closes[d][i])) continue;
+            if (kept < window) {
+                ++kept;
+                continue;
+            }
+            closes[d][i] = nan;
+            levels[d][i] = nan;
+        }
+    }
+}
+
 Covariance strategy25_covariance(const Matrix& returns, const Vector& ordinals,
                                  const Vector& sigma) {
     Covariance out;
@@ -651,6 +668,7 @@ DayResult rebalance(const DayInputs& in) {
                                       union_count[static_cast<std::size_t>(last[a]) + 1];
                 out.stale[a] = behind > 5;
             }
+            keep_last_closes(closes, levels, in.sample_cov_window);
             out.covariance = optimiser_covariance(closes, levels, in.opt_ordinals, out.stale);
         }
 

@@ -478,6 +478,36 @@ TEST_F(OnePassBookTest, TheBufferStepRuleOfTheConfigIsThePasss) {
         << out;
 }
 
+// The book's sample_cov_window reaches the pass: AAA's optimiser closes are 30 daily closes whose
+// first 9 returns are +-10% and last 20 alternate +-1%, so on its last 21 closes its variance is
+// 20 x 0.0001 / 19 x 365.25 by hand and B_sigma (granularity, one free row) is u sqrt(var) =
+// 0.2 x 0.19608; on all 30 closes (756, the default) B_sigma is several times that.
+TEST_F(OnePassBookTest, TheSampleCovarianceWindowOfTheConfigIsThePasss) {
+    OverlayStubStrategy::Row aaa = row(5.0);
+    double close = 100.0;
+    for (int d = 0; d < 30; ++d) {
+        aaa.opt_day.push_back(20455.0 - 29 + d);  // ending on the bar of day 1 (2026-01-02)
+        aaa.opt_close.push_back(close);
+        close *= d < 9 ? (d % 2 == 0 ? 1.10 : 0.90) : (d % 2 == 0 ? 1.01 : 0.99);
+    }
+    auto b_sigma = [&](std::size_t window) {
+        PortfolioConfig pc = one_pass_config("A");
+        pc.sample_cov_window = window;
+        make_pm(true, pc);
+        a_->rows["AAA"] = aaa;
+        ::testing::internal::CaptureStdout();
+        EXPECT_TRUE(rebalance(1, {"AAA"}).is_ok());
+        const std::string out = ::testing::internal::GetCapturedStdout();
+        const auto at = out.find("OPTIMISER ");
+        const auto b = out.find(" b_sigma=", at);
+        EXPECT_NE(b, std::string::npos) << out;
+        return b == std::string::npos ? 0.0 : std::stod(out.substr(b + 9));
+    };
+    const double hand = 0.2 * std::sqrt(20.0 * 0.0001 / 19.0 * 365.25);
+    EXPECT_NEAR(b_sigma(21), hand, 1e-9 * hand);
+    EXPECT_GT(b_sigma(756), 3.0 * hand);
+}
+
 // The book's wrong_sign_rule "buffer" reaches the pass: the flip of
 // AForecastSignCloseIsItsOwnFillBeforeTheSearch is ONE fill (4 -> -4, a = 0.889 of the way from 4
 // to -5), and a forecast of -1.99 inside today's band is not held: 4 moves a = 0.75 of the way to

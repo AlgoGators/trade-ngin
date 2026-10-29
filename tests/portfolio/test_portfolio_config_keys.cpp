@@ -135,6 +135,26 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
                   "carver");
         EXPECT_FALSE(runner_config(loaded.value(), "TREND_FOLLOWING", 0.20).optimiser_carver);
     }
+    // sample_cov_window: absent and 756 are today's and not recorded, another window is, and a
+    // carver book (which ignores it) records none.
+    EXPECT_FALSE(j.at("opt_config").contains("sample_cov_window"));
+    for (const std::size_t value : {std::size_t{0}, std::size_t{756}}) {
+        AppConfig app = loaded.value();
+        app.sample_cov_window = value;
+        const PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_EQ(pc.sample_cov_window, 756u) << value;
+        EXPECT_FALSE(pc.to_json().at("opt_config").contains("sample_cov_window")) << value;
+    }
+    {
+        AppConfig app = loaded.value();
+        app.sample_cov_window = 126;
+        PortfolioConfig pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_EQ(pc.sample_cov_window, 126u);
+        EXPECT_EQ(pc.to_json().at("opt_config").at("sample_cov_window").get<std::size_t>(), 126u);
+        app.optimiser_covariance = "carver";
+        pc = runner_config(app, "TREND_FOLLOWING", 0.20);
+        EXPECT_FALSE(pc.to_json().at("opt_config").contains("sample_cov_window"));
+    }
     // buffer_step_rule: absent and "fraction" are today's and not recorded, "edge" is.
     EXPECT_FALSE(j.at("opt_config").contains("buffer_step_rule"));
     for (const char* value : {"", "fraction"}) {

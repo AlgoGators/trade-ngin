@@ -14,6 +14,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "trade_ngin/core/logger.hpp"
 #define private public
 #include "trade_ngin/core/config_loader.hpp"
 #undef private
@@ -1412,6 +1413,65 @@ TEST_F(ConfigLoaderTest, TheOptimiserCovarianceIsOptionalAndNamed) {
                   std::string::npos)
             << r.error()->what();
     }
+}
+
+// sample_cov_window (LEVERS): optional, a whole number of bars from 40 to 756, anything else
+// refused with the range named. Set under optimiser_covariance "carver" it is kept but warned
+// about once (the carver covariance does not read it); set under sample, or absent, no warning.
+TEST_F(ConfigLoaderTest, TheSampleCovarianceWindowIsBoundedAndWarnedAboutUnderCarver) {
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::WARNING;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    auto load = [&](const nlohmann::json& optimization_extra, std::string* out) {
+        nlohmann::json defaults = loop_defaults();
+        for (auto& [k, v] : optimization_extra.items()) defaults["optimization"][k] = v;
+        write_full_set("base", defaults, loop_portfolio(), overlay_risk());
+        ::testing::internal::CaptureStdout();
+        auto r = ConfigLoader::load(base_, "base");
+        *out = ::testing::internal::GetCapturedStdout();
+        return r;
+    };
+    const std::string needle = "optimization.sample_cov_window";
+    std::string out;
+    auto r = load(nlohmann::json::object(), &out);
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().sample_cov_window, 0u);
+    EXPECT_EQ(out.find(needle), std::string::npos) << out;
+    for (const int value : {40, 126, 252, 504, 756}) {
+        r = load({{"sample_cov_window", value}}, &out);
+        ASSERT_TRUE(r.is_ok()) << value;
+        EXPECT_EQ(r.value().sample_cov_window, static_cast<std::size_t>(value));
+        EXPECT_EQ(out.find(needle), std::string::npos) << out;
+    }
+    for (const nlohmann::json& bad : {nlohmann::json(39), nlohmann::json(757), nlohmann::json(0),
+                                      nlohmann::json(-126), nlohmann::json(126.5),
+                                      nlohmann::json("126"), nlohmann::json(nullptr)}) {
+        r = load({{"sample_cov_window", bad}}, &out);
+        ASSERT_TRUE(r.is_error()) << bad.dump();
+        EXPECT_NE(std::string(r.error()->what())
+                      .find("optimization.sample_cov_window must be a whole number of bars from 40 "
+                            "to 756, got " + bad.dump()),
+                  std::string::npos)
+            << r.error()->what();
+    }
+    r = load({{"optimiser_covariance", "carver"}, {"sample_cov_window", 126}}, &out);
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().sample_cov_window, 126u);
+    std::size_t warns = 0;
+    for (std::size_t at = out.find(needle); at != std::string::npos; at = out.find(needle, at + 1)) {
+        ++warns;
+    }
+    EXPECT_EQ(warns, 1u) << out;
+    EXPECT_NE(out.find("[WARNING]"), std::string::npos) << out;
+    EXPECT_NE(out.find("sample_cov_window 126 applies only to the sample optimiser covariance; "
+                       "optimiser_covariance is \"carver\", so it is ignored"),
+              std::string::npos)
+        << out;
+    r = load({{"optimiser_covariance", "carver"}}, &out);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(out.find(needle), std::string::npos) << out;
 }
 
 // buffer_step_rule (STEP), the same way: optional, "fraction" or "edge", anything else refused.

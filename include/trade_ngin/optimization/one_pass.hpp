@@ -56,6 +56,16 @@ struct Covariance {
 Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, const Vector& ordinals,
                                 const Mask& stale);
 
+/// The closes the search holds per symbol (the trend sleeve's last 756 consumed bars), and so
+/// the default and the largest sample_cov_window.
+inline constexpr std::size_t kSampleCovWindow = 756;
+
+/// defaults.json optimization.sample_cov_window: each symbol (column) keeps only its last
+/// `window` closes, its earlier closes and levels set to NaN, so optimiser_covariance estimates on
+/// that span exactly as it does on the full one. A column with no more than `window` closes is
+/// unchanged.
+void keep_last_closes(Matrix& closes, Matrix& levels, std::size_t window);
+
 /**
  * Section 5.1 under defaults.json optimization.optimiser_covariance "carver": AFTS strategy 25's
  * covariance (p.417; Appendix B p.641), sigma_i sigma_j rho_ij with sigma_i the symbol's standard
@@ -246,6 +256,10 @@ struct DayInputs {
     Matrix opt_closes;
     Matrix opt_levels;
     Vector opt_ordinals;
+    /// defaults.json optimization.sample_cov_window: the sample covariance reads each free row's
+    /// last this many of the closes above (keep_last_closes), after the stale rule. Ignored when
+    /// opt_carver.
+    std::size_t sample_cov_window{kSampleCovWindow};
     /// defaults.json optimization.optimiser_covariance "carver" (AFTS strategy 25): the optimiser's
     /// covariance is strategy25_covariance on `returns` and `ordinals` (the overlay's window) with
     /// `opt_sigma` (per symbol, strategy three's blended sd annualised by 16); false ("sample"):

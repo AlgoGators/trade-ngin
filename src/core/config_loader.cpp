@@ -220,6 +220,26 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 }
                 *choice.into = v.get<std::string>();
             }
+            // The sample covariance's window, in bars: from 40 (about 36 names need more than
+            // that) to the 756 closes the search holds.
+            if (optimization.contains("sample_cov_window")) {
+                const auto& v = optimization.at("sample_cov_window");
+                if (!v.is_number_integer() || v.get<long long>() < 40 || v.get<long long>() > 756) {
+                    return make_error<AppConfig>(
+                        ErrorCode::INVALID_DATA,
+                        "config for " + config.portfolio_id +
+                            ": defaults.json optimization.sample_cov_window must be a whole "
+                            "number of bars from 40 to 756, got " + v.dump(),
+                        "ConfigLoader");
+                }
+                config.sample_cov_window = v.get<std::size_t>();
+                if (config.optimiser_covariance == "carver") {
+                    WARN("config for " + config.portfolio_id +
+                         ": defaults.json optimization.sample_cov_window " + v.dump() +
+                         " applies only to the sample optimiser covariance; optimiser_covariance "
+                         "is \"carver\", so it is ignored");
+                }
+            }
             for (const char* key : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
                 if (optimization.contains(key)) {
                     config.retired_loop_keys.push_back(std::string("defaults.json optimization: ") +

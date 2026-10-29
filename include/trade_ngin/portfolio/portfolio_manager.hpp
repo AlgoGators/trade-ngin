@@ -67,6 +67,8 @@ struct PortfolioConfig : public ConfigBase {
     bool wrong_sign_buffer{false};
     // AppConfig::optimiser_covariance: false is "sample", true is "carver".
     bool optimiser_carver{false};
+    // AppConfig::sample_cov_window (absent: 756), the sample covariance's bars per symbol.
+    size_t sample_cov_window{one_pass::kSampleCovWindow};
     // AppConfig::buffer_step_rule (one_pass::BufferStepRule).
     one_pass::BufferStepRule buffer_step_rule{one_pass::BufferStepRule::kFraction};
     // The overlay's covariance (risk.json's carver module overlay_covariance): false is "sample",
@@ -154,6 +156,10 @@ struct PortfolioConfig : public ConfigBase {
             }
             if (wrong_sign_buffer) opt["wrong_sign_rule"] = "buffer";
             if (optimiser_carver) opt["optimiser_covariance"] = "carver";
+            // Recorded only on a sample book away from 756 (a carver book ignores it).
+            if (!optimiser_carver && sample_cov_window != one_pass::kSampleCovWindow) {
+                opt["sample_cov_window"] = sample_cov_window;
+            }
             if (buffer_step_rule == one_pass::BufferStepRule::kEdge) opt["buffer_step_rule"] = "edge";
             auto& risk = j["risk_config"];
             for (const char* retired : {"var_limit", "jump_risk_limit", "max_correlation"}) {

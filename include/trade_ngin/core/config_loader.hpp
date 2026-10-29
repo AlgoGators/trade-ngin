@@ -448,6 +448,9 @@ struct AppConfig {
     // sd x 16 and
     // exponentially weighted weekly correlations, the overlay's carver estimator). Empty: absent.
     std::string optimiser_covariance;
+    // sample_cov_window, the bars of each symbol's closes the sample covariance reads: 40 to 756
+    // (the closes the search holds). Ignored, with one warning, under "carver". 0: absent (756).
+    std::size_t sample_cov_window{0};
     // buffer_step_rule, how the buffer reaches its edge when the held book is outside it:
     // "fraction" (today: every row moves the one fraction a of the way and is rounded) or "edge"
     // (one contract at a time toward the search's answer, the lowest tracking error first, until

@@ -1020,3 +1020,131 @@ TEST(OnePass, TheOptimiserLineSaysWhatEdgeDid) {
     r.edge_steps.clear();
     EXPECT_EQ(optimiser_line(symbols, r).find("buffer traded"), std::string::npos);
 }
+
+namespace {
+
+// Two symbols on 30 daily closes (ordinals one day apart). The first 9 returns are +-10% and move
+// together; the last 20 alternate +1% / -1% for A and -2% / +2% for B, against each other. The
+// last 21 closes then hold exactly those 20 returns: mean 0, so by hand (n - 1 = 19, and 20
+// returns over 20 days annualise by 365.25) var A = 20 x 0.0001 / 19 x 365.25, var B = 20 x
+// 0.0004 / 19 x 365.25 and cov = -20 x 0.0002 / 19 x 365.25.
+struct Window {
+    Matrix closes, levels;
+    Vector ordinals;
+};
+
+Window two_symbol_window() {
+    Window w;
+    double a = 100.0, b = 50.0;
+    for (int d = 0; d < 30; ++d) {
+        w.closes.push_back({a, b});
+        w.ordinals.push_back(740000.0 + d);
+        const bool up = d % 2 == 0;
+        if (d < 9) {
+            a *= up ? 1.10 : 0.90;
+            b *= up ? 1.10 : 0.90;
+        } else {
+            a *= up ? 1.01 : 0.99;
+            b *= up ? 0.98 : 1.02;
+        }
+    }
+    w.levels = w.closes;
+    return w;
+}
+
+const double kVarA = 20.0 * 0.0001 / 19.0 * 365.25;
+const double kVarB = 20.0 * 0.0004 / 19.0 * 365.25;
+const double kCovAB = -20.0 * 0.0002 / 19.0 * 365.25;
+
+}  // namespace
+
+// sample_cov_window: the sample covariance on the last N closes is the hand-computed covariance of
+// those N closes alone; on all 30 closes it is not (the +-10% returns move together).
+TEST(OnePass, TheSampleCovarianceOnTheLastNBars) {
+    Window w = two_symbol_window();
+    const Covariance full = optimiser_covariance(w.closes, w.levels, w.ordinals, Mask{0, 0});
+    EXPECT_GT(full.matrix[0][1], 0.0) << "the whole span's covariance is the +-10% returns'";
+    keep_last_closes(w.closes, w.levels, 21);
+    for (int d = 0; d < 9; ++d) EXPECT_TRUE(std::isnan(w.closes[d][0]) && std::isnan(w.levels[d][1]));
+    EXPECT_FALSE(std::isnan(w.closes[9][0]));
+    const Covariance c = optimiser_covariance(w.closes, w.levels, w.ordinals, Mask{0, 0});
+    EXPECT_EQ(c.filled, (Mask{0, 0}));
+    expect_rel(c.bars_per_year, 365.25);
+    expect_rel(c.matrix[0][0], kVarA);
+    expect_rel(c.matrix[1][1], kVarB);
+    expect_rel(c.matrix[0][1], kCovAB);
+    expect_rel(c.matrix[1][0], kCovAB);
+}
+
+// Each symbol keeps its own last N closes (a hole is not a close, so the span reaches one date
+// further back), and a symbol with no more than N closes, as every symbol has at 756, is left
+// exactly as it was.
+TEST(OnePass, TheWindowCountsEachSymbolsOwnCloses) {
+    Matrix closes = {{1.0, 10.0}, {2.0, 20.0}, {kNaN, 30.0}, {4.0, 40.0}, {5.0, kNaN}};
+    Matrix levels = {{1.5, 10.5}, {2.5, 20.5}, {kNaN, 30.5}, {4.5, 40.5}, {5.5, kNaN}};
+    keep_last_closes(closes, levels, 3);
+    const Vector col0 = {closes[0][0], closes[1][0], closes[3][0], closes[4][0]};
+    EXPECT_TRUE(std::isnan(col0[0]) && std::isnan(levels[0][0]));
+    EXPECT_EQ((Vector{col0[1], col0[2], col0[3]}), (Vector{2.0, 4.0, 5.0}));
+    EXPECT_EQ(levels[1][0], 2.5);
+    EXPECT_TRUE(std::isnan(closes[0][1]) && std::isnan(levels[0][1]));
+    EXPECT_EQ((Vector{closes[1][1], closes[2][1], closes[3][1]}), (Vector{20.0, 30.0, 40.0}));
+
+    const Fixture f = fixture();
+    Fixture g = f;
+    keep_last_closes(g.closes, g.levels, kSampleCovWindow);
+    for (int d = 0; d < kDates; ++d) {
+        for (int i = 0; i < kSymbols; ++i) {
+            EXPECT_EQ(std::isnan(g.closes[d][i]), std::isnan(f.closes[d][i]));
+            if (!std::isnan(f.closes[d][i])) {
+                EXPECT_EQ(g.closes[d][i], f.closes[d][i]);
+                EXPECT_EQ(g.levels[d][i], f.levels[d][i]);
+            }
+        }
+    }
+    EXPECT_EQ(kSampleCovWindow, 756u);
+}
+
+// The pass reads the window from its inputs: on the two free symbols above, 21 bars give the hand
+// covariance, 756 (the default) every close; under opt_carver the window is not read.
+TEST(OnePass, TheRebalanceUsesTheSampleCovarianceWindow) {
+    const Window w = two_symbol_window();
+    DayInputs in;
+    in.capital = 500000.0;
+    in.limits = {0.45, 0.90, 0.80, 8.0, 6.0};
+    in.multiplier.assign(2, 1000.0);
+    in.close.assign(2, 100.0);
+    in.cost.assign(2, 5.0);
+    in.held = {0.0, 0.0};
+    in.target = {2.0, -2.0};
+    in.first_forecast = {10.0, -10.0};
+    in.signalling.assign(2, 1);
+    in.first_signalling.assign(2, 1);
+    in.hold.assign(2, 0);
+    in.has_bar.assign(2, 1);
+    in.ever_signalled.assign(2, 1);
+    in.jump_sigma_daily.assign(2, 0.0);
+    in.opt_closes = w.closes;
+    in.opt_levels = w.levels;
+    in.opt_ordinals = w.ordinals;
+    EXPECT_EQ(in.sample_cov_window, kSampleCovWindow);
+    const DayResult whole = rebalance(in);
+    ASSERT_TRUE(whole.refusal.empty()) << whole.refusal;
+    EXPECT_EQ(whole.covariance.matrix,
+              optimiser_covariance(w.closes, w.levels, w.ordinals, Mask{0, 0}).matrix);
+
+    in.sample_cov_window = 21;
+    const DayResult r = rebalance(in);
+    ASSERT_TRUE(r.refusal.empty()) << r.refusal;
+    expect_rel(r.covariance.matrix[0][0], kVarA);
+    expect_rel(r.covariance.matrix[1][1], kVarB);
+    expect_rel(r.covariance.matrix[0][1], kCovAB);
+
+    in.opt_carver = true;
+    in.opt_sigma = {0.2, 0.3};
+    const DayResult carver21 = rebalance(in);
+    in.sample_cov_window = kSampleCovWindow;
+    const DayResult carver756 = rebalance(in);
+    EXPECT_TRUE(carver21.covariance.carver);
+    EXPECT_EQ(carver21.covariance.matrix, carver756.covariance.matrix);
+}
