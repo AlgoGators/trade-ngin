@@ -95,9 +95,6 @@ class CommandSettings:
     # QT_EMAIL_DISABLED=1, and only that: the override request then stores the mail (link and
     # token included) in the row's result. Any other e-mail misconfiguration fails the row (C1).
     email_disabled: bool = False
-    # QT_BOOK_EMAIL_HANDOFF=1: AlgoLens sends the daily book e-mail (and records sent_at); the
-    # engine never runs --send or --send-now. The review, override and alert mails stay here.
-    book_email_handoff: bool = False
     # A 'running' row with no live job in this process is re-driven once it is older than
     # job_timeout_s + stale_grace_s (it may belong to an engine started by hand).
     stale_grace_s: float = 300.0
@@ -226,7 +223,6 @@ def command_settings(env: Optional[Mapping[str, str]] = None) -> CommandSettings
         approvers=env.get("QT_APPROVERS") or "",
         approve_url_base=env.get("QT_APPROVE_URL_BASE") or DEFAULT_APPROVE_URL_BASE,
         email_disabled=(env.get("QT_EMAIL_DISABLED") or "").strip() == "1",
-        book_email_handoff=(env.get("QT_BOOK_EMAIL_HANDOFF") or "").strip() == "1",
         stale_grace_s=_positive(env, "QT_STALE_GRACE_S", 300.0),
         log_dir=env.get("QT_LOG_DIR") or DEFAULT_LOG_DIR,
     )
