@@ -1087,6 +1087,22 @@ TEST(OnePass, TheEdgeRiskRuleStopsWhereEdgeStops) {
         << "fraction's no-trade check stays exact";
 }
 
+// Only moves that lower the error compete, and a cut inside the 1e-12 tolerance is not a lowering move. Row 2 (risk
+// 1e-9, 50,000 contracts short of its answer) would cut the error 0.5 by about 1e-13, inside the tolerance, yet that
+// scores 1e-4 per unit of its risk; row 1 (risk 1e-5, one contract short) cuts it by 1e-10, a real cut scoring 1e-5;
+// row 0, half a contract off, never moves. edge_risk takes row 1, as edge does. Were the near move allowed to compete
+// it would win the pick, and edge's stop (no move lowers the error) would end the walk with no step (audit A, LEVERS
+// fix round 1; evidence/LEVERS/tooling/hand_edge_risk.py, near_move).
+TEST(OnePass, TheEdgeRiskRuleLetsOnlyALoweringMoveCompete) {
+    const Vector u = {1.0, 1e-5, 1e-9};
+    const Vector searched = {0.5, 1.0, 50000.0};
+    const Matrix c = correlated({1.0, 1.0, 1.0}, 0.0);
+    const Buffered e = buffer(searched, {0.0, 0.0, 0.0}, u, c, 0.0, BufferStepRule::kEdgeRisk);
+    EXPECT_EQ(e.steps, (Steps{{1, 1.0}}));
+    EXPECT_EQ(e.book, (Vector{0.0, 1.0, 0.0}));
+    EXPECT_EQ(buffer(searched, {0.0, 0.0, 0.0}, u, c, 0.0, BufferStepRule::kEdge).steps, (Steps{{1, 1.0}}));
+}
+
 // A move never passes or leaves the answer. Row 0 (risk 0.001) is asked for 2.5 and steps to 2;
 // going on to 3 would pass the answer although it would lower the error (0.00545 to 0.00456, it
 // hedges row 1, half a contract from its answer and so never moved), so the walk stops there. The
