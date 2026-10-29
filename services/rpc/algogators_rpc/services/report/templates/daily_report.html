@@ -1,7 +1,5 @@
-{# The engine's report (engine_report.Report) in the fund's design. Every figure and word comes from
-   the engine's blocks; this file decides only how they look. Email-safe: presentation tables,
-   inline styles, one phone rule. #}
 {% set ns = namespace(n=0) %}
+{% macro section(title) %}{% set ns.n = ns.n + 1 %}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:40px 0 14px 0;border-bottom:1px solid #14141A;"><tr><td class="mono label" style="padding-bottom:8px;"><span style="color:#FF5C00;margin-right:12px;">0{{ ns.n }}</span>{{ title }}</td></tr></table>{% endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20,15 +18,17 @@
   .label { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: #6C6A66; }
   .th { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #6C6A66;
         padding: 0 8px 10px 8px; border-bottom: 2px solid #14141A; font-weight: 500; }
-  .td { font-size: 13px; color: #2B2A30; padding: 10px 8px; border-bottom: 1px solid #D9D6CF; }
+  .td { font-size: 13px; color: #2B2A30; padding: 12px 8px; border-bottom: 2px solid #D9D6CF; }
   .r { text-align: right; }
+  .up { color: #14141A; font-weight: 600; }
+  .down { color: #D94A00; font-weight: 600; }
+  .muted { color: #6C6A66; }
   @media only screen and (max-width: 600px) {
-    .card { padding: 24px 16px !important; }
+    .card { padding: 24px 18px !important; }
     .stat { display: block !important; width: 100% !important; border-left: 0 !important;
-            border-top: 1px solid #ECEAE5; padding: 12px 0 !important; }
+            border-top: 1px solid #ECEAE5; padding: 14px 0 !important; }
     .big { font-size: 22px !important; }
-    .td, .th { padding-left: 4px !important; padding-right: 4px !important; font-size: 12px !important; }
-    h1 { font-size: 26px !important; }
+    h1 { font-size: 24px !important; }
   }
 </style>
 </head>
@@ -36,77 +36,162 @@
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#F6F4EF;">{{ preheader }}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#F6F4EF" style="background:#F6F4EF;">
 <tr><td align="center" style="padding:28px 12px;">
-<table role="presentation" width="760" cellpadding="0" cellspacing="0" style="width:100%;max-width:760px;background:#FFFFFF;border-top:3px solid #FF5C00;">
+<table role="presentation" width="720" cellpadding="0" cellspacing="0" style="width:100%;max-width:720px;background:#FFFFFF;border-top:3px solid #FF5C00;">
 <tr><td class="card sans" style="padding:40px 40px 32px 40px;color:#2B2A30;font-size:14px;line-height:1.6;">
 
   <!-- header -->
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
     <td width="52" valign="middle" style="padding-right:14px;"><img src="cid:brandmark" width="38" height="38" alt="AlgoGators" style="width:38px;height:38px;"></td>
-    <td valign="middle"><div class="mono label" style="color:#FF5C00;">AlgoGators Investment Fund</div></td>
+    <td valign="middle">
+      <div class="mono label" style="color:#FF5C00;">AlgoGators Investment Fund</div>
+    </td>
     <td valign="middle" align="right"><div class="mono" style="font-size:12px;color:#6C6A66;">{{ date_long }}</div></td>
   </tr></table>
   <h1 class="display" style="margin:26px 0 4px 0;font-size:34px;line-height:1.02;font-weight:800;text-transform:uppercase;letter-spacing:-0.01em;color:#14141A;">Daily Trading Report</h1>
-  <div class="mono" style="font-size:12px;color:#6C6A66;">{{ report.portfolio_name }} &middot; {{ report.report_date.isoformat() }}</div>
+  <div class="mono" style="font-size:12px;color:#6C6A66;">{{ report.portfolio_name }}</div>
 
   <!-- key numbers -->
-  {% if tiles %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:28px 0 4px 0;border-top:2px solid #14141A;border-bottom:1px solid #ECEAE5;"><tr>
-    {% for s in tiles %}
-    <td class="stat" width="{{ (100 / tiles|length)|int }}%" valign="top" style="padding:16px 12px 16px {{ 0 if loop.first else 16 }}px;{% if not loop.first %}border-left:1px solid #ECEAE5;{% endif %}">
+    {% for s in stats %}
+    <td class="stat" width="25%" valign="top" style="padding:16px 12px 16px {{ 0 if loop.first else 16 }}px;{% if not loop.first %}border-left:1px solid #ECEAE5;{% endif %}">
       <div class="mono label" style="font-size:10px;">{{ s.label }}</div>
-      <div class="big num display" style="font-size:24px;font-weight:800;line-height:1.15;margin-top:6px;color:{{ tone_color.get(s.tone, '#14141A') }};">{{ s.value }}</div>
+      <div class="big num display {{ s.tone }}" style="font-size:26px;font-weight:800;line-height:1.15;margin-top:6px;color:{{ '#D94A00' if s.tone == 'down' else '#14141A' }};">{{ s.value }}</div>
     </td>
     {% endfor %}
   </tr></table>
-  {% endif %}
 
-  {% for b in report.blocks %}
-  {% if b.kind == 'section' %}
-  {% set ns.n = ns.n + 1 %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:40px 0 14px 0;border-bottom:1px solid #14141A;"><tr><td class="mono label" style="padding-bottom:8px;"><span style="color:#FF5C00;margin-right:12px;">{{ '%02d' % ns.n }}</span>{{ b.title }}</td></tr></table>
-  {% elif b.kind == 'subheading' %}
-  <div style="font-size:14px;font-weight:700;color:#14141A;margin:24px 0 6px 0;padding-left:10px;border-left:3px solid #FF5C00;">{{ b.title }}</div>
-  {% elif b.kind == 'caption' %}
-  <div class="mono" style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#9C9BA6;margin:-2px 0 8px 13px;">{{ b.text }}</div>
-  {% elif b.kind == 'banner' %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:26px 0 0 0;background:#FFF4EC;border-left:3px solid #FF5C00;"><tr><td style="padding:16px 20px;">
-    <div style="font-size:15px;font-weight:700;color:#14141A;margin:0 0 6px 0;">{{ b.title }}</div>
-    {% for ln in b.lines %}
-    <div style="font-size:13px;color:#2B2A30;{% if not loop.first %}margin-top:8px;font-weight:600;{% endif %}">{{ ln.html }}</div>
-    {% endfor %}
+  <!-- notices -->
+  {% for n in report.notices %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:22px 0 0 0;background:#F6F4EF;border-left:3px solid {{ '#14141A' if n.kind == 'info' else '#D94A00' if n.kind == 'alert' else '#FF5C00' }};"><tr><td style="padding:{{ '12px' if n.kind in ('info', 'alert') else '16px' }} 20px;">
+    <div style="font-size:{{ 13 if n.kind in ('info', 'alert') else 15 }}px;font-weight:700;color:{{ '#D94A00' if n.kind == 'alert' else '#14141A' }};margin:0 0 6px 0;">{{ n.title }}</div>
+    <div style="font-size:13px;color:#2B2A30;">{{ n.body }}</div>
+    {% if n.footnote %}<div style="font-size:12px;font-weight:600;color:#14141A;margin-top:8px;">{{ n.footnote }}</div>{% endif %}
   </td></tr></table>
-  {% elif b.kind == 'callout' %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;background:{{ '#FDECEA' if b.style == 'alert' else '#F6F4EF' }};border-left:3px solid {{ '#B42318' if b.style == 'alert' else '#14141A' }};"><tr><td style="padding:12px 18px;font-size:13px;color:{{ '#7A1A12' if b.style == 'alert' else '#2B2A30' }};">{{ b.body.html }}</td></tr></table>
-  {% elif b.kind == 'table' %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 14px 0;">
-    {% if b.header %}
-    <tr>{% for h in b.header %}<td class="th mono{{ ' r' if loop.index0 in b.numeric_columns }}">{{ h }}</td>{% endfor %}</tr>
-    {% endif %}
-    {% for row in b.rows %}
-    <tr>{% for c in row %}<td class="td{{ ' num r' if loop.index0 in b.numeric_columns }}" style="{% if loop.first %}font-weight:600;color:#14141A;{% endif %}{% if c.tone %}color:{{ tone_color[c.tone] }};font-weight:600;{% endif %}">{{ c.body.html }}</td>{% endfor %}</tr>
-    {% endfor %}
-  </table>
-  {% elif b.kind == 'figures' %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 6px 0;">
-    {% for g in b.groups %}
-    {% set outer = loop %}
-    {% for f in g %}
-    <tr>
-      <td class="td" style="color:#6C6A66;{% if loop.first and not outer.first %}border-top:2px solid #14141A;{% endif %}">{{ f.label }}</td>
-      <td class="td num r" style="font-weight:600;color:{{ tone_color.get(f.tone, '#14141A') }};{% if loop.first and not outer.first %}border-top:2px solid #14141A;{% endif %}">{{ f.value.html }}</td>
-    </tr>
-    {% endfor %}
-    {% endfor %}
-  </table>
-  {% elif b.kind == 'image' %}
-  <img src="cid:{{ b.cid }}" width="680" alt="{{ b.alt }}" style="width:100%;max-width:680px;margin:4px 0 8px 0;">
-  {% elif b.kind == 'paragraph' %}
-  <div style="font-size:{{ 12 if b.small else 13 }}px;color:{{ '#6C6A66' if b.small else '#2B2A30' }};margin:{{ '4px' if b.small else '10px' }} 0;">{{ b.body.html }}</div>
-  {% endif %}
   {% endfor %}
 
+  <!-- positions -->
+  {% if report.positions %}
+  {{ section("Today's positions") }}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td class="th mono">Symbol</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Notional</td><td class="th mono r">Weight</td></tr>
+    {% for p in report.positions %}
+    <tr>
+      <td class="td"><span style="font-weight:600;color:#14141A;">{{ p.symbol }}</span>{% if p.name %}<span class="muted" style="font-size:12px;"> &nbsp;{{ p.name }}</span>{% endif %}</td>
+      <td class="td num r">{{ fmt.quantity(p.quantity) }}</td>
+      <td class="td num r">{{ fmt.price(p.price) }}</td>
+      <td class="td num r">{{ fmt.money(p.notional) }}</td>
+      <td class="td num r muted">{{ fmt.percent(p.weight) if p.weight is not none else '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;">
+    <tr><td class="mono label" style="padding:3px 0;">Positions</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.positions|length }}</td></tr>
+    <tr><td class="mono label" style="padding:3px 0;">Total notional</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_notional, 2) }}</td></tr>
+    {% if report.margin_posted is not none %}<tr><td class="mono label" style="padding:3px 0;">Total margin posted</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.margin_posted, 2) }}</td></tr>{% endif %}
+  </table>
+  {% endif %}
+
+  <!-- executions -->
+  {% if report.executions %}
+  {{ section("Daily executions") }}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td class="th mono">Symbol</td><td class="th mono">Side</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Notional</td><td class="th mono r">Cost</td></tr>
+    {% for e in report.executions %}
+    <tr>
+      <td class="td" style="font-weight:600;color:#14141A;">{{ e.symbol }}</td>
+      <td class="td mono" style="font-size:11px;letter-spacing:0.1em;color:{{ '#14141A' if e.side == 'BUY' else '#D94A00' }};font-weight:600;">{{ e.side }}</td>
+      <td class="td num r">{{ fmt.quantity(e.quantity) }}</td>
+      <td class="td num r">{{ fmt.price(e.price) }}</td>
+      <td class="td num r">{{ fmt.money(e.notional) }}</td>
+      <td class="td num r muted">{{ fmt.money(e.cost, 2) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;">
+    <tr><td class="mono label" style="padding:3px 0;">Total trades</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.executions|length }}</td></tr>
+    <tr><td class="mono label" style="padding:3px 0;">Total notional traded</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_traded, 2) }}</td></tr>
+    <tr><td class="mono label" style="padding:3px 0;">Today's transaction costs</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_cost, 2) }}</td></tr>
+  </table>
+  {% endif %}
+
+  <!-- realized -->
+  {% if report.realized %}
+  {{ section("Yesterday's finalized position results" ~ (" · " ~ report.realized_label if report.realized_label else "")) }}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td class="th mono">Symbol</td><td class="th mono r">Quantity</td><td class="th mono r">Previous price</td><td class="th mono r">Latest price</td><td class="th mono r">Realized PnL</td></tr>
+    {% for r in report.realized %}
+    <tr>
+      <td class="td" style="font-weight:600;color:#14141A;">{{ r.symbol }}</td>
+      <td class="td num r">{{ fmt.quantity(r.quantity) }}</td>
+      <td class="td num r">{{ fmt.price(r.entry_price) }}</td>
+      <td class="td num r">{{ fmt.price(r.exit_price) }}</td>
+      <td class="td num r {{ 'up' if r.pnl >= 0 else 'down' }}">{{ fmt.signed_money(r.pnl) }}</td>
+    </tr>
+    {% endfor %}
+    <tr><td class="td" colspan="4" style="border-bottom:0;border-top:2px solid #14141A;font-weight:600;color:#14141A;">Total</td>
+        <td class="td num r {{ 'up' if report.total_realized_pnl >= 0 else 'down' }}" style="border-bottom:0;border-top:2px solid #14141A;">{{ fmt.signed_money(report.total_realized_pnl) }}</td></tr>
+  </table>
+  {% endif %}
+
+  <!-- previous trading day -->
+  {% if report.previous_day %}
+  {{ section("Previous trading day" ~ (" · " ~ report.previous_day_label if report.previous_day_label else "")) }}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    {% for m in report.previous_day %}
+    <tr><td class="td" style="color:#6C6A66;">{{ m.label }}</td><td class="td num r {{ m.tone }}" style="font-weight:600;{% if not m.tone %}color:#14141A;{% endif %}">{{ m.value }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <!-- metrics -->
+  {% if report.metrics %}
+  {{ section("Performance metrics") }}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    {% for m in report.metrics %}
+    <tr><td class="td" style="color:#6C6A66;{% if loop.previtem is defined and loop.previtem.group != m.group %}border-top:2px solid #14141A;{% endif %}">{{ m.label }}</td><td class="td num r {{ m.tone }}" style="font-weight:600;{% if not m.tone %}color:#14141A;{% endif %}{% if loop.previtem is defined and loop.previtem.group != m.group %}border-top:2px solid #14141A;{% endif %}">{{ m.value }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <!-- charts -->
+  {% if charts %}
+  {{ section("Performance") }}
+  {% for c in charts %}
+  <div style="font-size:13px;font-weight:600;color:#14141A;margin:{{ '0' if loop.first else '26px' }} 0 8px 0;">{{ c.title }}</div>
+  <img src="cid:{{ c.cid }}" width="640" alt="{{ c.title }}" style="width:100%;max-width:640px;">
+  {% endfor %}
+  {% endif %}
+
+  <!-- rollovers -->
+  {% if report.rollovers %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:30px 0 0 0;background:#F6F4EF;border-left:3px solid #D94A00;"><tr><td style="padding:16px 20px;">
+    <div style="font-size:15px;font-weight:700;color:#14141A;margin:0 0 6px 0;">Rollover notice</div>
+    <div style="font-size:13px;color:#2B2A30;margin-bottom:8px;">These contracts are approaching their rollover period. Roll to the next contract month unless you intend to take delivery.</div>
+    {% for r in report.rollovers %}
+    <div class="num" style="font-size:13px;color:#14141A;padding:3px 0;"><strong>{{ r.symbol }}</strong> &nbsp;<span class="muted">{{ r.current }}</span> &nbsp;&rarr;&nbsp; <strong>{{ r.next }}</strong></div>
+    {% endfor %}
+  </td></tr></table>
+  {% endif %}
+
+  <!-- symbols reference -->
+  {% if report.symbols %}
+  {{ section("Symbols reference") }}
+  <div class="mono muted" style="font-size:11px;margin:0 0 10px 0;"><strong>Month codes</strong> F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, Q=Aug, U=Sep, V=Oct, X=Nov, Z=Dec</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td class="th mono">Symbol</td><td class="th mono">IB symbol</td><td class="th mono">Name</td><td class="th mono">Contract months</td></tr>
+    {% for r in report.symbols %}
+    <tr><td class="td" style="font-weight:600;color:#14141A;">{{ r.db_symbol }}</td><td class="td">{{ r.ib_symbol }}</td><td class="td">{{ r.name }}</td><td class="td mono" style="font-size:12px;">{{ r.months }}</td></tr>
+    {% endfor %}
+  </table>
+  {% if report.symbols_missing %}<div style="font-size:12px;color:#D94A00;margin-top:8px;"><strong>Note:</strong> metadata not found for: {{ report.symbols_missing|join(', ') }}.</div>{% endif %}
+  {% endif %}
+
+  <!-- footnotes + footer -->
+  {% for f in report.footnotes %}
+  <div style="margin:22px 0 0 0;padding:2px 0 2px 14px;border-left:2px solid #FF5C00;font-size:12px;color:#6C6A66;">{{ f }}</div>
+  {% endfor %}
   <div style="margin-top:40px;padding-top:16px;border-top:1px solid #ECEAE5;text-align:center;">
-    <div class="mono" style="font-size:11px;letter-spacing:0.08em;color:#9C9BA6;">AlgoGators Investment Fund &middot; University of Florida &middot; Generated by trade-ngin</div>
+    <div class="mono" style="font-size:11px;letter-spacing:0.08em;color:#9C9BA6;">AlgoGators Investment Fund &middot; University of Florida</div>
   </div>
 
 </td></tr>

@@ -2,16 +2,13 @@
 
 import smtplib
 import ssl
-import sys
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
-from pathlib import Path
 
 
-def build_message(sender, to, cc, email, attachments=()):
-    """multipart/alternative (text, then HTML with the charts inline), with the engine's CSV files
-    attached. A file that cannot be read is left off with one line on stderr, never a failed send:
-    the report itself is the message."""
+
+def build_message(sender, to, cc, email):
+    """multipart/alternative (text, then HTML), with the charts inline on the HTML part."""
     msg = EmailMessage()
     msg["Subject"] = email.subject
     msg["From"] = sender
@@ -34,21 +31,13 @@ def build_message(sender, to, cc, email, attachments=()):
             filename=f"{cid}.{'jpg' if subtype == 'jpeg' else 'png'}",
             disposition="inline",
         )
-    for path in attachments:
-        p = Path(path)
-        try:
-            data = p.read_bytes()
-        except OSError as exc:
-            print(f"report: attachment {p.name} left off: {exc.strerror}", file=sys.stderr)
-            continue
-        msg.add_attachment(data, maintype="text", subtype="csv", filename=p.name)
     return msg
 
 
-def send_message(cfg, to, cc, email, attachments=()):
+def send_message(cfg, to, cc, email):
     """Send over SMTP with an SmtpConfig (desk/override_mail.py: host, port, username, password,
     from_email, use_tls). Port 465 is implicit TLS; otherwise STARTTLS when use_tls."""
-    message = build_message(cfg.from_email, list(to), list(cc), email, attachments)
+    message = build_message(cfg.from_email, list(to), list(cc), email)
     context = ssl.create_default_context()
     server: smtplib.SMTP
     if cfg.port == 465:
