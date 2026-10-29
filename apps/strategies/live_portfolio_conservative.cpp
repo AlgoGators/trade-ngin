@@ -34,6 +34,7 @@
 #include "trade_ngin/live/email_body_file.hpp"
 #include "trade_ngin/live/account_detail.hpp"
 #include "trade_ngin/live/email_delivery.hpp"
+#include "trade_ngin/live/python_mail.hpp"
 #include "trade_ngin/live/run_args.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_settings.hpp"
@@ -260,6 +261,11 @@ int main(int argc, char* argv[]) {
         const bool qt_sends =
             qt_mode == qt::Mode::SEND ||
             ((qt_mode == qt::Mode::PUBLISH || qt_mode == qt::Mode::FALLBACK) && qt_send_now);
+        // QT_MAIL_TEST_TO (report module only): a --send that mails one address and records
+        // nothing, so a day can be previewed whether or not it was already sent.
+        const std::string qt_mail_test_to =
+            qt_mode == qt::Mode::SEND && live::python_mail_selected() ? live::python_mail_test_to()
+                                                                       : std::string();
 
         if (send_email && use_override_date) {
             std::cout << "Email sending enabled for historical run" << std::endl;
@@ -857,7 +863,7 @@ int main(int argc, char* argv[]) {
                 return qt_refuse(qt_date + " is not published: nothing is e-mailed before the "
                                  "approval or the 10:00 fallback");
             }
-            if (!state.value().sent_at.empty()) {
+            if (!state.value().sent_at.empty() && qt_mail_test_to.empty()) {
                 INFO("QT_SEND " + portfolio_id + " " + qt_date + " was already sent at " +
                      state.value().sent_at + "; not sent again");
                 std::cerr << "QT_SEND already sent at " << state.value().sent_at << std::endl;
@@ -865,7 +871,7 @@ int main(int argc, char* argv[]) {
             }
             auto legacy = qt::publish_email_sent(*db, portfolio_id, qt_date);
             if (legacy.is_error()) return qt_fail(legacy.error()->what());
-            if (!legacy.value().at.empty()) {
+            if (!legacy.value().at.empty() && qt_mail_test_to.empty()) {
                 // Sent by a publish row before migration 027: recorded, not sent again.
                 auto recorded =
                     qt::record_sent(*db, 0, portfolio_id, combined_strategy_id, qt_date);
@@ -5730,10 +5736,34 @@ int main(int argc, char* argv[]) {
                                      "command row, if any)");
                                 return std::nullopt;
                             }
-                            auto send_result = email_sender->send_email(mail_subject, mail_body,
-                                                                        true, attachments);
-                            if (send_result.is_error()) {
-                                return std::string(send_result.error()->what());
+                            if (qt_sends && live::python_mail_selected()) {
+                                // QT_MAIL_BACKEND=python: the report module lays this report out
+                                // in the fund's design and sends it (services/rpc/.../report);
+                                // every figure, banner and footnote stays the engine's.
+                                live::PythonMailRequest mail;
+                                mail.portfolio_id = portfolio_id;
+                                mail.date = qt_date;
+                                mail.subject = mail_subject;
+                                mail.body_html = mail_body;
+                                mail.images = email_sender->chart_images();
+                                mail.attachments = attachments;
+                                mail.test_to = qt_mail_test_to;
+                                if (auto why = live::send_via_python(
+                                        mail, live::python_mail_settings_from_env())) {
+                                    return why;
+                                }
+                                if (!qt_mail_test_to.empty()) {
+                                    // A test send: not the day's send, so nothing is recorded.
+                                    INFO("QT_SEND test e-mail sent to " + qt_mail_test_to +
+                                         " (QT_MAIL_TEST_TO); sent_at not recorded");
+                                    return std::nullopt;
+                                }
+                            } else {
+                                auto send_result = email_sender->send_email(
+                                    mail_subject, mail_body, true, attachments);
+                                if (send_result.is_error()) {
+                                    return std::string(send_result.error()->what());
+                                }
                             }
                             qt_emailed = true;
                             if (qt_sends) {
