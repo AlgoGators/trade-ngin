@@ -273,6 +273,57 @@ TEST(ContractRollMicros, SilWithNoContractOfTheHeldExpiryChangesIntoItsCycleTarg
     for (const auto& day : r.value().days) EXPECT_FALSE(day.micro_volume.has_value()) << ymd(day.date);
 }
 
+// MM fix round 1 (audit A, mutant M04): the fallback's target is SIL's CYCLE target. An off-cycle
+// August contract (SILQ3, expiring 2013-08-28, nearer than SILU3) that prints from the change is
+// passed over: SIL's cycle is H K N U Z, so the change still goes into SILU3. A fallback read on every
+// month would take SILQ3.
+TEST(ContractRollMicros, SilsFallbackPassesOverAnOffCycleContract) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (Day x = d("2013-06-03"); x <= d("2013-07-12"); x += std::chrono::days{1}) {
+        const std::string dt = ymd(x);
+        const bool sunday = std::chrono::weekday{x} == std::chrono::Sunday;
+        if (std::chrono::weekday{x} == std::chrono::Saturday) continue;
+        if (!sunday) {
+            rows.push_back(bar("SI", "SIN3", "s7", dt, "2013-07-29", 21.83, 30000));
+            rows.push_back(bar("SI", "SIU3", "s9", dt, "2013-09-26", 21.85, 800));
+        }
+        if (dt >= "2013-06-17") {
+            rows.push_back(bar("SIL", "SILQ3", "l8", dt, "2013-08-28", 21.79, 40));
+            rows.push_back(bar("SIL", "SILU3", "l9", dt, "2013-09-26", 21.80, 20));
+        }
+        VendorBar v;
+        v.date = x;
+        v.symbol = dt < "2013-06-17" ? "SI.v.0" : "SIL.v.0";
+        v.instrument_id = dt < "2013-06-17" ? "s7" : "l9";
+        v.close = 1;
+        grid.push_back(v);
+    }
+    auto book = ContractBook::build(rows);
+    ASSERT_TRUE(book.is_ok()) << book.error()->what();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("SIL");
+    RuleInputs in;
+    in.root = "SIL";
+    in.grid = grid;
+    in.book = &book.value();
+    in.cal = &cal;
+    in.cycle = roll_cycle("SIL").value();
+    in.alias = micro_alias("SIL");
+    auto r = apply_roll_rule(in);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    size_t rolls = 0;
+    for (const auto& day : r.value().days) {
+        if (!day.roll) continue;
+        ++rolls;
+        EXPECT_EQ(ymd(day.date), "2013-06-17");
+        EXPECT_EQ(day.held.raw_symbol, "SILU3") << "the cycle target, not the nearer off-cycle SILQ3";
+    }
+    EXPECT_EQ(rolls, 1u);
+    for (const auto& day : r.value().days) {
+        if (day.date >= d("2013-06-17")) EXPECT_EQ(day.held.raw_symbol, "SILU3") << ymd(day.date);
+    }
+}
+
 // R6 (HD 2026-10-26): the bar source hands the change bar out as a change of price source
 // (SOURCE_CHANGE, ESH6's close and id) and every bar after it, while ESH6 prints, as AFTER_SOURCE_CHANGE;
 // the earlier roll among the full-size contracts (ESZ5 to ESH6) stays KNOWN and AFTER_ROLL.
