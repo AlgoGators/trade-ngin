@@ -1,6 +1,7 @@
 // src/core/config_loader.cpp
 
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/optimization/one_pass.hpp"
 #include <cstring>
 
 #include <algorithm>
@@ -234,15 +235,18 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 *choice.into = v.get<std::string>();
             }
             // The sample covariance's window, in bars: from 40 (about 36 names need more than
-            // that) to the 756 closes the search holds.
+            // that) to the closes the search holds (one_pass::kSampleCovWindow, 756, which is also
+            // the trend sleeve's kOptimiserBars). N closes per symbol, then the shared dates: about
+            // 0.8 N returns on this book.
             if (optimization.contains("sample_cov_window")) {
                 const auto& v = optimization.at("sample_cov_window");
-                if (!v.is_number_integer() || v.get<long long>() < 40 || v.get<long long>() > 756) {
+                const auto most = static_cast<long long>(one_pass::kSampleCovWindow);
+                if (!v.is_number_integer() || v.get<long long>() < 40 || v.get<long long>() > most) {
                     return make_error<AppConfig>(
                         ErrorCode::INVALID_DATA,
                         "config for " + config.portfolio_id +
                             ": defaults.json optimization.sample_cov_window must be a whole "
-                            "number of bars from 40 to 756, got " + v.dump(),
+                            "number of bars from 40 to " + std::to_string(most) + ", got " + v.dump(),
                         "ConfigLoader");
                 }
                 config.sample_cov_window = v.get<std::size_t>();

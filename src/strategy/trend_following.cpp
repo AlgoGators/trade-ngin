@@ -2,6 +2,7 @@
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/optimization/one_pass.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator_record.hpp"
 #include <algorithm>
@@ -523,7 +524,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                                     window.day.end());
                 instrument_data.overlay_returns.assign(
                     window.returns.begin() + static_cast<long>(from), window.returns.end());
-                constexpr size_t kOptimiserBars = 756;
+                constexpr size_t kOptimiserBars = one_pass::kSampleCovWindow;  // the closes the search holds
                 const size_t opt_from = bars > kOptimiserBars ? bars - kOptimiserBars : 0;
                 instrument_data.opt_days.assign(window.day.begin() + static_cast<long>(opt_from),
                                                 window.day.end());

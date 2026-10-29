@@ -369,6 +369,36 @@ TEST(ListingDates, TheOptimisersSigmaIsStrategyThreesBlendAnnualisedBySixteen) {
     EXPECT_NE(series.opt_sigma, series.sizing_sigma) << "16, not the counted annualisation";
 }
 
+// The sleeve hands the search its last one_pass::kSampleCovWindow consumed bars, ending on the newest:
+// the same constant that bounds and defaults optimization.sample_cov_window (LEVERS fix round 1).
+TEST(ListingDates, TheSleeveHandsTheSearchTheClosesTheWindowIsBoundedBy) {
+    Guard guard;
+    StateManager::reset_instance();
+    Sleeve sleeve("OPT_BARS");
+    std::vector<Bar> bars;
+    double p = 100.0;
+    const int n = static_cast<int>(trade_ngin::one_pass::kSampleCovWindow) + 144;
+    for (int k = 0; k < n; ++k) {
+        p *= 1.0 + 0.003 * ((k * 7919) % 11 - 5) / 5.0 + 0.0004;
+        Bar b;
+        b.symbol = kOther;
+        b.timestamp = day(k) + std::chrono::hours(5);
+        b.open = Decimal(p);
+        b.high = Decimal(p * 1.002);
+        b.low = Decimal(p * 0.998);
+        b.close = Decimal(p);
+        b.volume = 100000.0;
+        b.instrument_id = "A";
+        bars.push_back(b);
+    }
+    ASSERT_TRUE(sleeve.strategy->on_data(bars).is_ok());
+    const auto series = sleeve.series(kOther);
+    EXPECT_EQ(series.opt_day.size(), trade_ngin::one_pass::kSampleCovWindow);
+    EXPECT_EQ(series.opt_close.size(), trade_ngin::one_pass::kSampleCovWindow);
+    ASSERT_FALSE(series.opt_close.empty());
+    EXPECT_DOUBLE_EQ(series.opt_close.back(), static_cast<double>(bars.back().close));
+}
+
 // On: before the listing date the predecessor signals and the micro publishes nothing; from the
 // listing date the micro signals, at exactly the target the same sleeve gives a symbol that was
 // never restricted (its history was kept), and the predecessor publishes nothing.

@@ -56,14 +56,17 @@ struct Covariance {
 Covariance optimiser_covariance(const Matrix& closes, const Matrix& levels, const Vector& ordinals,
                                 const Mask& stale);
 
-/// The closes the search holds per symbol (the trend sleeve's last 756 consumed bars), and so
-/// the default and the largest sample_cov_window.
+/// The closes the search holds per symbol, and so the default and the largest sample_cov_window. The
+/// one place it is set: the trend sleeve hands over this many consumed bars (trend_following.cpp,
+/// kOptimiserBars) and the loader's upper bound for sample_cov_window reads it.
 inline constexpr std::size_t kSampleCovWindow = 756;
 
 /// defaults.json optimization.sample_cov_window: each symbol (column) keeps only its last
 /// `window` closes, its earlier closes and levels set to NaN, so optimiser_covariance estimates on
 /// that span exactly as it does on the full one. A column with no more than `window` closes is
-/// unchanged.
+/// unchanged. The covariance then reads the dates every kept column shares, so N closes per
+/// symbol give fewer returns than N (about 0.8 N on the futures book, whose roots keep different
+/// calendars).
 void keep_last_closes(Matrix& closes, Matrix& levels, std::size_t window);
 
 /**

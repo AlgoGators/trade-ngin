@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/optimization/one_pass.hpp"
 #define private public
 #include "trade_ngin/core/config_loader.hpp"
 #undef private
@@ -1458,6 +1459,14 @@ TEST_F(ConfigLoaderTest, TheSampleCovarianceWindowIsBoundedAndWarnedAboutUnderCa
                   std::string::npos)
             << r.error()->what();
     }
+    // the upper bound is the closes the search holds, one_pass::kSampleCovWindow
+    const auto most = static_cast<int>(one_pass::kSampleCovWindow);
+    ASSERT_TRUE(load({{"sample_cov_window", most}}, &out).is_ok());
+    r = load({{"sample_cov_window", most + 1}}, &out);
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("from 40 to " + std::to_string(most) + ", got"),
+              std::string::npos)
+        << r.error()->what();
     r = load({{"optimiser_covariance", "carver"}, {"sample_cov_window", 126}}, &out);
     ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
     EXPECT_EQ(r.value().sample_cov_window, 126u);
