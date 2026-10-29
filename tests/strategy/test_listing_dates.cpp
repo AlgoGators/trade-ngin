@@ -381,6 +381,35 @@ TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSessi
     }
 }
 
+// MM fix round 1 (audits A S-1, C S-2): the pairs a run refuses on the stored symbol list. MGC and SIL
+// declared with GC.v.0 and SI.v.0 stored but not MGC.v.0 and SIL.v.0 (part B missing): GC and SI would
+// read no bars, refused. The full-size grid pairs with per_contract_rolls off: refused. The equity
+// pairs run either way (ES.v.0 not stored, MES.v.0 stored; not the full-size grid kind), and nothing
+// declared refuses nothing.
+TEST(ListingDates, APairWithoutItsListedRowsOrWithoutThePerContractSourceIsRefused) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    const std::vector<std::string> part_a_only = {"GC.v.0", "MES.v.0", "SI.v.0", "ZN.v.0"};
+    const std::vector<std::string> part_b = {"GC.v.0", "MES.v.0", "MGC.v.0", "SI.v.0", "SIL.v.0", "ZN.v.0"};
+    EXPECT_TRUE(rule.refusals(part_a_only, true).empty()) << "nothing declared";
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}});
+    EXPECT_TRUE(rule.refusals(part_a_only, true).empty());
+    EXPECT_TRUE(rule.refusals(part_a_only, false).empty()) << "the equity pairs run with the switch off";
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"MGC", "GC", "2010-10-04", 10.0}, {"SIL", "SI", "2013-06-17", 5.0}});
+    const auto missing = rule.refusals(part_a_only, true);
+    ASSERT_EQ(missing.size(), 2u);
+    EXPECT_NE(missing[0].find("LISTING_REFUSED MGC"), std::string::npos) << missing[0];
+    EXPECT_NE(missing[0].find("GC.v.0 is stored and MGC.v.0 is not"), std::string::npos) << missing[0];
+    EXPECT_NE(missing[1].find("LISTING_REFUSED SIL"), std::string::npos) << missing[1];
+    EXPECT_TRUE(rule.refusals(part_b, true).empty()) << "part B loaded, the switch on: runs";
+    const auto off = rule.refusals(part_b, false);
+    ASSERT_EQ(off.size(), 2u);
+    EXPECT_NE(off[0].find("per_contract_rolls is off"), std::string::npos) << off[0];
+    EXPECT_NE(off[1].find("LISTING_REFUSED SIL"), std::string::npos) << off[1];
+    EXPECT_EQ(rule.refusals(part_a_only, false).size(), 4u) << "both, for both pairs";
+    EXPECT_TRUE(rule.refusals({"ZN.v.0"}, true).empty()) << "neither contract of a pair stored: nothing to read";
+}
+
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,
 // handed on unchanged under its own symbol, after the stored rows and in their order.
 TEST(ListingDates, ThePredecessorReadsTheRowsStoredUnderTheListedSymbol) {

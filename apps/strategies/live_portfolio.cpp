@@ -1133,6 +1133,14 @@ int main(int argc, char* argv[]) {
             }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
+                // MM fix round 1: pairs the stored data or the bar source cannot carry refuse
+                // the run before its first write (ListingDates::refusals).
+                const auto listing_refused =
+                    ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);
+                if (!listing_refused.empty()) {
+                    for (const auto& line : listing_refused) ERROR(line);
+                    return 1;
+                }
                 // MM: a predecessor with stored rows of its own (GC.v.0, SI.v.0) is not in the
                 // run's universe while its listed contract is stored; the guard judges the rest.
                 std::vector<std::string> carried;

@@ -146,6 +146,13 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
         EXPECT_LT(guard, es_filter) << runner << ": the guard reads the symbol list before any name filter";
         // MM: the guard judges the run's universe, without a predecessor its stored listed contract carries
         const size_t universe = src.find("symbols = ListingDates::instance().run_universe(symbols, &carried);");
+        // MM fix round 1: the pairs the stored data cannot carry refuse before the universe and any write
+        const size_t refused = src.find("ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);");
+        ASSERT_NE(refused, std::string::npos) << runner;
+        EXPECT_LT(contracts, refused) << runner;
+        EXPECT_LT(refused, universe) << runner;
+        EXPECT_NE(src.find("for (const auto& line : listing_refused) ERROR(line);\n                    return 1;", refused),
+                  std::string::npos) << runner;
         ASSERT_NE(universe, std::string::npos) << runner;
         EXPECT_LT(contracts, universe) << runner;
         EXPECT_LT(universe, guard) << runner;
@@ -234,6 +241,13 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
         EXPECT_LT(hunk.find("ListingDates::instance().run_universe(symbols, &carried);"),
                   hunk.find("ListingDates::instance().predecessor_symbols("))
             << runner << ": the window's predecessors are added after the stored ones leave";
+        // MM fix round 1: the pairs the stored data cannot carry refuse the run, before the universe
+        const size_t refused = hunk.find("ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);");
+        ASSERT_NE(refused, std::string::npos) << runner;
+        EXPECT_LT(refused, hunk.find("ListingDates::instance().run_universe(symbols, &carried);")) << runner;
+        EXPECT_NE(hunk.find("for (const auto& line : listing_refused) ERROR(line);\n"
+                            "                    throw std::runtime_error(listing_refused.front());"),
+                  std::string::npos) << runner;
         hunks.push_back(hunk);
     }
     ASSERT_EQ(hunks.size(), 2u);

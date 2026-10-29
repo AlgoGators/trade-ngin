@@ -177,6 +177,16 @@ public:
     std::vector<std::string> run_universe(const std::vector<std::string>& symbols,
                                           std::vector<std::string>* dropped = nullptr) const;
 
+    /// MM fix round 1 (audits A S-1, C S-2): the declared pairs a run must refuse, one line each, on
+    /// the database's stored symbol list (before run_universe): (1) a pair whose predecessor's .v.0
+    /// is stored and its listed contract's is not (MGC and SIL without part B: the predecessor would
+    /// read the listed contract's rows, which are not there, and get no bars); (2) a pair of the
+    /// full-size grid kind (contract_roll_rule.hpp MicroAlias: MGC, SIL) with per_contract_rolls
+    /// off (the history before the listing is the alias's, which only the per-contract source
+    /// reads; without it the stored listed rows start at the listing). Empty: nothing refused.
+    std::vector<std::string> refusals(const std::vector<std::string>& stored_symbols,
+                                      bool per_contract_rolls) const;
+
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
     /// MM fix round 1: each copy's cost_volume (the volume the cost feed prices the predecessor's

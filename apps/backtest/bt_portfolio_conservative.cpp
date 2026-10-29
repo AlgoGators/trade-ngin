@@ -205,6 +205,14 @@ int main() {
                         c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
                     if (!wrong.empty()) throw std::runtime_error(wrong);
                 }
+                // MM fix round 1: pairs the stored data or the bar source cannot carry refuse
+                // the run (ListingDates::refusals).
+                const auto listing_refused =
+                    ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);
+                if (!listing_refused.empty()) {
+                    for (const auto& line : listing_refused) ERROR(line);
+                    throw std::runtime_error(listing_refused.front());
+                }
                 // MM: a predecessor with stored rows of its own (GC.v.0, SI.v.0) is not an
                 // instrument of the run while its listed contract is stored; it comes back below
                 // only for a window that starts before the listing.

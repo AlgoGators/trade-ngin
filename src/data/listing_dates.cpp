@@ -213,6 +213,36 @@ std::vector<std::string> ListingDates::run_universe(const std::vector<std::strin
     return out;
 }
 
+std::vector<std::string> ListingDates::refusals(const std::vector<std::string>& stored_symbols,
+                                               bool per_contract_rolls) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    const auto stored = [&](const std::string& s) {
+        return std::find(stored_symbols.begin(), stored_symbols.end(), s) != stored_symbols.end();
+    };
+    for (const auto& entry : entries_) {
+        const ListedContract& c = entry.contract;
+        const std::string listed = c.symbol + ".v.0";
+        const std::string before = c.before + ".v.0";
+        if (stored(before) && !stored(listed)) {
+            out.push_back("LISTING_REFUSED " + c.symbol + " (listed " + c.listed + ", before it " +
+                          c.before + "): " + before + " is stored and " + listed +
+                          " is not, so " + c.before +
+                          " would read no bars (the listed contract's continuous rows are not "
+                          "loaded); load them or take the pair out of listing_dates");
+        }
+        const auto alias = contract_rolls::micro_alias(c.symbol);
+        if (alias && alias->full_size_grid && !per_contract_rolls) {
+            out.push_back("LISTING_REFUSED " + c.symbol + " (listed " + c.listed + ", before it " +
+                          c.before + "): per_contract_rolls is off, and " + c.symbol +
+                          "'s history before its listing is " + c.before +
+                          "'s contracts, which only the per-contract source reads; set "
+                          "per_contract_rolls true or take the pair out of listing_dates");
+        }
+    }
+    return out;
+}
+
 std::vector<ListingConversion> ListingDates::conversions_due(
     const std::vector<Bar>& signal_feed) const {
     std::lock_guard<std::mutex> lock(mutex_);
