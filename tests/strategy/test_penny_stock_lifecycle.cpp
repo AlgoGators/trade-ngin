@@ -1,11 +1,10 @@
 // tests/strategy/test_penny_stock_lifecycle.cpp
 //
-// T-OR.2 -- a sub-dollar name, end to end: sizing -> cost registration -> cost
+// A sub-dollar name, end to end: sizing -> cost registration -> cost
 // calculation -> fill -> P&L.
 //
-// The only coverage a penny stock had was one lookup of get_tiered_equity_config(0.50,
-// 50000) in test_equity_pnl_accounting.cpp -- a table read, not a lifecycle. Everything
-// downstream of it is live: register_equity_costs_from_bars is called by the live runner,
+// A lookup of get_tiered_equity_config(0.50, 50000) is a table read, not a lifecycle.
+// Everything downstream of it is live: register_equity_costs_from_bars is called by the live runner,
 // the backtest coordinator and PortfolioManager, and the sizing gates that keep a $0.25
 // name out of fractional shares sit in MeanReversionStrategy::calculate_position_size.
 //
@@ -15,7 +14,7 @@
 //   * SEC Rule 612 makes the tick 0.0001 rather than 0.01, so the spread model prices
 //     off a different grid;
 //   * the commission is $0.005/share against a 1% cap on trade value, and below $0.50 a
-//     share the CAP is the binding term -- the case E2-C2 reordered the expression for.
+//     share the CAP is the binding term, which is why the expression's order matters.
 //
 // Scenario pin: no red is expected today. It exists so a change to any of those four
 // rules that is harmless at $150 cannot pass unnoticed at $0.25.
@@ -233,7 +232,7 @@ TEST_F(PennyStockLifecycleTest, RegisterEquityCostsFromBarsGivesAPennyNameThePen
 // The 1%-of-trade-value CAP is the binding commission term on a penny clip, and it must
 // win over the $1.00 per-order floor. 40,000 shares at $0.25 is $10,000 of value: raw
 // per-share commission is $200, the cap is $100. Getting the order of these two wrong is
-// exactly E2-C2, which over-charged the smallest clips by 21%.
+// the error that over-charges the smallest clips by 21%.
 TEST_F(PennyStockLifecycleTest, OnePercentCapBindsOnAPennyClipAndBeatsTheFloor) {
     TransactionCostManager tcm;
     std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
@@ -319,7 +318,7 @@ TEST_F(PennyStockLifecycleTest, RoundTripRealizesOnTheWholeShareQuantity) {
 }
 
 // A partial exit realizes on the shares that left and keeps the basis on the rest --
-// the E2-F27 rule, exercised where the numbers are small enough that a per-share
+// the closed-quantity rule, exercised where the numbers are small enough that a per-share
 // rounding error would be visible.
 TEST_F(PennyStockLifecycleTest, PartialExitRealizesOnlyTheSharesThatLeft) {
     auto strategy = create_strategy();

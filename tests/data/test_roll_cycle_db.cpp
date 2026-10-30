@@ -44,7 +44,7 @@ TEST(RollCycleDb, TheFixedTableMatchesTheData) {
         EXPECT_EQ(m.value().cycle(), want.value()) << root << " years " << m.value().years;
         ++checked;
     }
-    // the 36 roots, and MGC and SIL where loaded (MM: measured on their own .v.0, from the listing)
+    // the 36 roots, and MGC and SIL where loaded (measured on their own .v.0, from the listing)
     EXPECT_EQ(checked, static_cast<int>(roots.size()));
     EXPECT_GE(checked, 36);
 }

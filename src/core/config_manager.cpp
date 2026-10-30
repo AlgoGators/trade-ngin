@@ -273,8 +273,8 @@ std::vector<ConfigValidationError> LoggingValidator::validate(const nlohmann::js
     // The two enumerated fields. Anything outside the enum would be silently coerced to
     // the default by the loader, so a typo would quietly change the log level rather than
     // being reported.
-    // Exactly the strings LoggerConfig::from_json accepts (logger.hpp:133-146) and
-    // level_to_string emits (logger.hpp:42-58). "ERROR", not "ERR": the enumerator is
+    // Exactly the strings LoggerConfig::from_json accepts and
+    // level_to_string emits (logger.hpp). "ERROR", not "ERR": the enumerator is
     // LogLevel::ERR but the wire form has always been "ERROR", and a validator that
     // rejected the only string to_json writes for that level would fail every start of
     // a configuration the logger itself produced.

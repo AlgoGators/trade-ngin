@@ -10,7 +10,7 @@ namespace trade_ngin {
  * @brief The live runners' own read of yesterday's stored position rows for the daily report
  *        (the settled positions table of the email).
  *
- * T-8D-2 R55: a query that feeds the report reads ONE book, by its strategy_id and its
+ * A query that feeds the report reads ONE book, by its strategy_id and its
  * portfolio_id, and, on a table that carries a portfolio_type (trading.positions, migration
  * 001), the system book only: a row another writer stores under the same two ids with another
  * portfolio_type is not the engine's and is not reported. The charts' queries follow the same
@@ -37,8 +37,8 @@ inline std::string yesterday_positions_report_query(const std::string& strategy_
 
 
 /**
- * @brief The quantity each of `symbols` held at its last stored row BEFORE `date` (T-EMAIL,
- *        HD ruling Q11): a position closed on the settled day is stored with quantity 0, and the
+ * @brief The quantity each of `symbols` held at its last stored row BEFORE `date`:
+ *        a position closed on the settled day is stored with quantity 0, and the
  *        settled table prints the quantity it had when it closed.
  *
  * One row per symbol: (symbol, quantity, average_price), the latest row dated before `date` (UTC date), for the

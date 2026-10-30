@@ -239,7 +239,7 @@ TEST(ListingDates, PredecessorsAreAddedOnlyToAWindowThatStartsBeforeTheListing) 
     EXPECT_EQ(rule.stored_symbols(with), symbols);
 }
 
-// MM (HD 2026-10-27): GC.v.0 and SI.v.0 keep stored rows of their own (the gold and silver micros'
+// GC.v.0 and SI.v.0 keep stored rows of their own (the gold and silver micros'
 // grid before the listing). While MGC.v.0 and SIL.v.0 are stored, the pair is one instrument and the
 // predecessor is not in the run's universe; a window starting before the listing adds it back. A
 // predecessor whose listed contract is not stored stays, and with nothing declared nothing moves.
@@ -277,7 +277,7 @@ Bar dated(const std::string& symbol, const std::string& date, double close, doub
 }
 }  // namespace
 
-// MM fix round 1 (audits A and B, MUST-FIX): a predecessor still holds the full-size contract, so
+// A predecessor still holds the full-size contract, so
 // its copied bars carry the full-size contract's own volume for the cost feed (Bar::cost_volume).
 // SIL (the full-size grid kind, change 2013-06-17): before the change the copy IS SIN3's bar, so
 // none is set; the change bar and the bars after it carry SIN3's volume from the change marker;
@@ -319,7 +319,7 @@ TEST(ListingDates, APredecessorsCopiesCarryTheFullSizeContractsVolumeFromTheChan
     EXPECT_EQ(copy.at("2013-06-18")->volume, 30.0) << "the classifier and the strategies still read SILU3's own";
 }
 
-// The equity micros (R6, the micro's own .v.0 carries the full-size bars until 2026-02-22): the
+// The equity micros (the micro's own .v.0 carries the full-size bars until 2026-02-22): the
 // predecessor's copy at the 2019 listing is ESM9's own bar, so none is set; from the vendor's change
 // the change marker's ESH6 volume. A pair whose listed root has no micro alias: none, ever.
 TEST(ListingDates, TheEquityMicrosPredecessorReadsItsOwnVolumeUntilTheChangeAndNoAliasSetsNone) {
@@ -343,7 +343,7 @@ TEST(ListingDates, TheEquityMicrosPredecessorReadsItsOwnVolumeUntilTheChangeAndN
     EXPECT_FALSE(bars[stored + 2].cost_volume.has_value()) << "TMIC has no micro alias";
 }
 
-// MM fix round 1 (the equity micros, R6's reverse case): MES.v.0 carries ESM9's bars at its
+// The equity micros' reverse case: MES.v.0 carries ESM9's bars at its
 // 2019-05-06 listing, with MESM9's own volume along (Bar::own_contract_volume). The listing date's
 // bar and the Sunday stub before it (the cost feed merges it into Monday) price MES's own legs on
 // MESM9's volume (cost_volume); no other bar, and none of the predecessor ES.v.0's copies, which are
@@ -372,7 +372,7 @@ TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSessi
     EXPECT_FALSE(bars[0].cost_volume.has_value());
     EXPECT_EQ(bars[1].cost_volume, std::optional<double>(787.0)) << "the stub merged into the listing session";
     EXPECT_EQ(bars[2].cost_volume, std::optional<double>(162154.0)) << "MESM9's own, not ESM9's 1,865,666";
-    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session R6's series volume stands";
+    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session the series volume stands";
     for (size_t i = 0; i < stored.size(); ++i) EXPECT_EQ(bars[i].volume, stored[i].volume);
     for (size_t i = stored.size(); i < bars.size(); ++i) {
         EXPECT_EQ(bars[i].symbol, "ES.v.0");
@@ -381,7 +381,7 @@ TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSessi
     }
 }
 
-// MM fix round 1 (audits A S-1, C S-2): the pairs a run refuses on the stored symbol list. MGC and SIL
+// The pairs a run refuses on the stored symbol list. MGC and SIL
 // declared with GC.v.0 and SI.v.0 stored but not MGC.v.0 and SIL.v.0 (part B missing): GC and SI would
 // read no bars, refused. The full-size grid pairs with per_contract_rolls off: refused. The equity
 // pairs run either way (ES.v.0 not stored, MES.v.0 stored; not the full-size grid kind), and nothing
@@ -410,9 +410,9 @@ TEST(ListingDates, APairWithoutItsListedRowsOrWithoutThePerContractSourceIsRefus
     EXPECT_TRUE(rule.refusals({"ZN.v.0"}, true).empty()) << "neither contract of a pair stored: nothing to read";
 }
 
-// MM's gate 5 finding (HD 2026-10-29): the reverse of the refusals above. A micro of the code's alias
+// The reverse of the refusals above. A micro of the code's alias
 // table stored beside its full-size root with no pair declared refuses (the run would trade GC and
-// MGC side by side). Nothing valid is refused: the scratch copy of production stores no ES, NQ, YM
+// MGC side by side). Nothing valid is refused: a copy of production that stores no ES, NQ, YM
 // or RTY .v.0 (the equity micros run with or without their pairs), the conservative template's
 // symbols on tune_base (no micro metals), and fill_mm's symbols with both metal pairs declared.
 TEST(ListingDates, AMicroStoredBesideItsFullSizeRootWithoutAPairIsRefused) {
@@ -594,7 +594,7 @@ TEST(ListingDates, SleeveSwitchesContractOnTheListingDateAndKeepsTheHistory) {
 }
 
 // A held E-mini at the switch: on the listing date's rebalance the sleeve's answers make the
-// predecessor a close-out (one fill to flat, LOOP_SPEC section 6.2) and the micro a free row opened
+// predecessor a close-out (one fill to flat) and the micro a free row opened
 // from flat, in the one pass the engine runs.
 TEST(ListingDates, AHeldPredecessorIsClosedAndTheMicroOpenedOnTheListingDatesRebalance) {
     Guard guard;
@@ -661,7 +661,7 @@ TEST(ListingDates, AHeldPredecessorIsClosedAndTheMicroOpenedOnTheListingDatesReb
     }
 }
 
-// ---- the switch day: an exact conversion (HD 2026-10-08) ----
+// ---- the switch day: an exact conversion ----
 
 namespace {
 ListingLegCost test_cost(const std::string& symbol, double signed_qty, double price) {
@@ -780,7 +780,7 @@ TEST(ListingDates, ConvertAFlatPositionDoesNothing) {
 }
 
 // Rule open_at_target: the predecessor is closed and the micro opened at its rounded target whatever
-// was held: HD's cases (0.2 of an E-mini against none held; 0.6 against one held; a short; near zero).
+// was held: the cases 0.2 of an E-mini against none held; 0.6 against one held; a short; near zero.
 TEST(ListingDates, OpenAtTargetIgnoresWhatWasHeld) {
     const auto rule = ListingSwitchRule::kOpenAtTarget;
     ListingSwitch p = plan_listing_switch(rule, 10.0, 0.0, 0.0, 2.0, 40.0);  // target 0.2 E-mini, held 0
@@ -1177,10 +1177,10 @@ TEST(ListingDates, TheEquitySlowRuleRulesThePredecessorThroughItsListedContract)
     EXPECT_EQ(sleeve.target(kBig), 0.0);
 }
 
-// R6: with per_contract_rolls on the declared relabels are not read (the rule names the micros' change
+// With per_contract_rolls on the declared relabels are not read (the rule names the micros' change
 // as one alias roll): the runners install relabels_read's list, so a bar carrying the new id keeps it and
 // the per-contract roll on the change bar stays an id change. With the switch off the declared list is
-// read as before.
+// read.
 TEST(InstrumentIdRelabel, TheSwitchOnReadsNoRelabel) {
     const std::vector<InstrumentIdRelabel> declared = {{"MES", "2026-02-22", "42140878", "42003800"},
                                                        {"M2K", "2026-02-22", "42005017", "42002147"}};

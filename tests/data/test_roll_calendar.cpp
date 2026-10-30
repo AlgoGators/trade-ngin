@@ -1,7 +1,7 @@
-// The trading-day calendar of the per-contract roll rule and the exchange rules ported from step 0's
-// r0lib.py (HD 2026-10-23, ruling 1): Monday to Friday less the exchange holidays; a Saturday (MBT)
-// or Sunday bar never counts; outside the holiday file's coverage the calendar fails closed. The
-// last trading day and first notice day per root family are checked against published exchange dates.
+// The trading-day calendar of the per-contract roll rule and the exchange rules: Monday to Friday
+// less the exchange holidays; a Saturday (MBT) or Sunday bar never counts; outside the holiday
+// file's coverage the calendar fails closed. The last trading day and first notice day per root
+// family are checked against published exchange dates.
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -76,7 +76,7 @@ TEST(ExchangeRules, LastTradingDayPerRootFamily) {
         const char* ltd;
     };
     const Case cases[] = {
-        {"GC", 2024, 2, "2024-02-27"},   // third-last trading day of the month (R0 GC 2024)
+        {"GC", 2024, 2, "2024-02-27"},   // third-last trading day of the month
         {"GC", 2025, 12, "2025-12-29"},
         {"6N", 2025, 6, "2025-06-16"},   // two trading days before the third Wednesday
         {"6E", 2023, 6, "2023-06-16"},   // ... across Juneteenth
@@ -97,7 +97,7 @@ TEST(ExchangeRules, LastTradingDayPerRootFamily) {
         {"GF", 2026, 1, "2026-01-29"},   // last Thursday
         {"ES", 2025, 12, "2025-12-19"},  // third Friday
         {"MES", 2026, 3, "2026-03-20"},
-        {"MBT", 2026, 8, "2026-08-28"},  // last Friday (R0 MBTQ6)
+        {"MBT", 2026, 8, "2026-08-28"},  // last Friday (MBTQ6)
     };
     for (const auto& k : cases) {
         EXPECT_EQ(ymd(ExchangeRules::last_trading_day(k.root, k.y, k.m, cal(k.root))), k.ltd)
@@ -124,7 +124,7 @@ TEST(ExchangeRules, FirstNoticeDayPerRootFamily) {
     }
 }
 
-// R2 fix round 1 (HD 2026-10-23): the roll calendar is the futures exchange's own, per product group,
+// The roll calendar is the futures exchange's own, per product group,
 // from include/trade_ngin/core/futures_holidays.json, not the NYSE's.
 namespace {
 
@@ -157,10 +157,10 @@ TEST(FuturesCalendar, MapsEveryTradedRootToItsExchangeAndGroup) {
     }
 }
 
-// MM (HD 2026-10-27): MGC and SIL are COMEX metals like GC and SI, on the metals group's calendar,
+// MGC and SIL are COMEX metals like GC and SI, on the metals group's calendar,
 // with their full-size roots' last trading day (the third-last business day of the month) and first
 // notice day (the last trading day of the prior month); their vendor expirations equal GC's of the
-// same month (MM step 0).
+// same month.
 TEST(FuturesCalendar, TheGoldAndSilverMicrosAreMetalsWithTheirFullSizeRootsRules) {
     const auto& c = contract_rolls_test::shipped_calendars();
     for (const char* r : {"MGC", "SIL"}) {

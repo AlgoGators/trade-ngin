@@ -71,7 +71,7 @@ std::filesystem::path template_with(const std::string& key, const std::string& v
 
 }  // namespace
 
-// Rolls step 4, ruling 19: per_contract_switch_bar is "held" in both templates, "held" when absent,
+// per_contract_switch_bar is "held" in both templates, "held" when absent,
 // "vendor" when set so, refused otherwise, and not written to the stored run metadata.
 TEST(PerContractRollsSwitch, TheSwitchBarSettingIsHeldInBothTemplatesAndParsedStrictly) {
     const auto dir = template_dir();
@@ -257,7 +257,7 @@ TEST_F(ContractRollsApiDbTest, TheMicrosBeforeTheChangeAreWaitingOnData) {
     EXPECT_EQ(from_change.value().days().front().held.raw_symbol, "MESH6");
 }
 
-// R6: with ES contract bars loaded, MES's series runs from the vendor's first bar on ES contracts and
+// With ES contract bars loaded, MES's series runs from the vendor's first bar on ES contracts and
 // rolls once into MES's own on Monday 2026-02-23 (trigger alias), the two contracts of one expiry.
 TEST_F(ContractRollsApiDbTest, TheMicrosReadTheFullSizeContractsBeforeTheChange) {
     pqxx::read_transaction t(*conn_);

@@ -1,6 +1,6 @@
 // tests/data/test_day_execution_replace.cpp
 //
-// T-DATED R3 (HD 2026-10-10). The sweep of a sleeve's executions of a day and the store of the
+// The sweep of a sleeve's executions of a day and the store of the
 // run's rows are ONE transaction. These tests EXECUTE replace_day_executions_in, the function
 // PostgresDatabase::replace_roll_day_executions runs on its pqxx transaction, against an in-memory
 // stand-in for the transaction: no database is needed, and the stand-in's store can be made to
@@ -109,7 +109,7 @@ TEST(DayExecutionReplace, TheSweepTheOrderIdDeleteAndTheInsertRunInThatOrderThen
         "sweep TREND_FOLLOWING_FAST", "insert TREND_FOLLOWING_FAST", "commit"};
     EXPECT_EQ(txn.steps, want_steps) << "a sleeve with no order is swept and has no id delete";
 
-    // The order the re-run no longer makes is gone; the sleeve the run makes no order for is
+    // The order the re-run does not make is gone; the sleeve the run makes no order for is
     // emptied; another day and another portfolio are untouched.
     const std::vector<Row> want = {
         {"2026-04-30", "TREND_FOLLOWING", kBook, "EXEC_MBT.v.0_20260430"},
@@ -121,8 +121,8 @@ TEST(DayExecutionReplace, TheSweepTheOrderIdDeleteAndTheInsertRunInThatOrderThen
 }
 
 TEST(DayExecutionReplace, AStoreThatFailsCommitsNothingSoTheSleevesDayIsNotLost) {
-    // The defect (audit A F2): the sweep committed in its own transaction, and a store that then
-    // failed lost every execution of the sleeve's day.
+    // A sweep committed in its own transaction would lose every execution of the sleeve's day
+    // when the store then fails.
     std::vector<Row> table = first_run();
     const std::vector<Row> before = table;
     StandInTxn txn(table, kDay, kBook);

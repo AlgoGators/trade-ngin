@@ -1,9 +1,9 @@
 // The trend strategies read the back-adjusted series for every RETURN consumer and the raw close
-// for every LEVEL (LOOP_SPEC v6.1 sections 2.3 and 2.4; T-ROLLX commit 1):
+// for every LEVEL:
 //   * a contract switch (a bar whose instrument_id differs from the previous consumed bar's) is a
 //     price gap, not a return: the vol estimate and the EMA spread of a series with a switch equal
-//     those of the same series without it, bit for bit (on 9fe44f1a the log-return estimator sees
-//     the gap as a +10 percent return and the vol differs);
+//     those of the same series without it, bit for bit (an estimator reading the raw log returns
+//     sees the gap as a +10 percent return and the vol differs);
 //   * the EMAs read the adjusted level, the vol the adjusted returns, and the forecast divides by
 //     the RAW close (the estimate of the last bar against a hand recomputation);
 //   * nothing persists across bars: the forecast and the vol of the last bar are the same whether

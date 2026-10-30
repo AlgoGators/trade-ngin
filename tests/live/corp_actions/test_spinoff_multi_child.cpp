@@ -1,24 +1,23 @@
 // tests/live/corp_actions/test_spinoff_multi_child.cpp
 //
-// E2-F49 / BA-22 -- a spinoff can distribute more than one company, and every one of them
-// has to arrive.
+// A spinoff can distribute more than one company, and every one of them has to arrive.
 //
-// The routing map was `spinoff_terms[{ticker, ex_date}] = {child, ratio}` -- a scalar value
-// on a key that is not unique. Fifteen (parent, ex-date) pairs in
+// A routing map `spinoff_terms[{ticker, ex_date}] = {child, ratio}` -- a scalar value on a
+// key that is not unique -- loses children. Fifteen (parent, ex-date) pairs in
 // `equities_data.corporate_action` carry more than one `spinoff` row, so the last row read
-// silently overwrote every earlier one and exactly one arbitrary child was delivered:
+// would silently overwrite every earlier one and exactly one arbitrary child be delivered:
 //
 //   RTX  2020-04-03   OTIS 0.5   AND  CARR 1.0
 //   HLT  2017-01-04   PK   0.6   AND  HGV  0.33333
 //
-// The parent's basis was still divided by the FULL factor, so the value of the missing
-// children left the parent and went nowhere: the book lost cost basis outright.
+// The parent's basis would still be divided by the FULL factor, so the value of the missing
+// children would leave the parent and go nowhere: the book would lose cost basis outright.
 //
 // ALLOCATION. With one child, `B(1-1/F)/r` is forced -- the whole pool goes to the only
 // recipient. With several, the pool has to be split, and the split is by relative fair market
 // value at each child's first close, which is both the US holder's own basis-allocation rule
-// and the rule the vendor's own factor already encodes (B-4 verified MMM's div_cash 17.3875
-// = 0.25 x SOLV's 69.55). The single-child case must come out UNCHANGED, and the first test
+// and the rule the vendor's own factor already encodes (MMM's div_cash 17.3875 = 0.25 x
+// SOLV's 69.55). The single-child case must come out UNCHANGED, and the first test
 // below is the statement of that.
 
 #include <gtest/gtest.h>
@@ -44,8 +43,8 @@ Position held(const std::string& symbol, double qty, double avg, double realized
     return p;
 }
 
-// RTX 2020-04-03: split_factor 1.589 AND div_cash 13.28 on a close of 49.93 -- the E2-F47
-// both-columns shape -- distributing OTIS at 0.5 and CARR at 1.0. First closes on or after
+// RTX 2020-04-03: split_factor 1.589 AND div_cash 13.28 on a close of 49.93 -- a bar
+// with both columns -- distributing OTIS at 0.5 and CARR at 1.0. First closes on or after
 // the ex-date: OTIS 47.32, CARR 16.92.
 SpinoffEvent rtx_otis_carr() {
     SpinoffEvent ev;
@@ -61,7 +60,7 @@ SpinoffEvent rtx_otis_carr() {
 
 TEST(SpinoffMultiChild, OneChildStillGetsTheWholePoolAndTheOldFormulaExactly) {
     // The FMV allocation must reduce to B(1-1/F)/r when there is one recipient, or every
-    // number B-4 hand-checked would have moved. Checked against the formula itself, not
+    // hand-checked number would move. Checked against the formula itself, not
     // against a recorded output.
     const double B = 70.0, q = 100.0, F = 1.327, r = 0.33333, P = 53.0;
     std::unordered_map<std::string, Position> positions;
@@ -78,7 +77,7 @@ TEST(SpinoffMultiChild, OneChildStillGetsTheWholePoolAndTheOldFormulaExactly) {
     ASSERT_EQ(log.size(), 1u);
     ASSERT_EQ(log[0].children.size(), 1u);
     EXPECT_NEAR(log[0].children[0].avg_price, B * (1.0 - 1.0 / F) / r, 1e-9);
-    EXPECT_NEAR(log[0].children[0].avg_price, 51.748822, 1e-6);  // B-4's number, unmoved
+    EXPECT_NEAR(log[0].children[0].avg_price, 51.748822, 1e-6);  // the hand-checked number, unmoved
     EXPECT_NEAR(log[0].avg_price_after, 52.750565, 1e-6);
 }
 
@@ -90,7 +89,7 @@ TEST(SpinoffMultiChild, EveryChildIsDeliveredOnceWithItsOwnRatioAndFirstClose) {
                                                         SpinoffChildPolicy::HOLD);
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].outcome, LifecycleOutcome::SPUN_OFF_CHILD_HELD);
-    ASSERT_EQ(log[0].children.size(), 2u) << "the second child was dropped again (E2-F49)";
+    ASSERT_EQ(log[0].children.size(), 2u) << "the second child was dropped again";
     EXPECT_EQ(log[0].children_joined(), "OTIS, CARR");
 
     // Both positions exist, each with its own share count from its own ratio.
@@ -134,7 +133,7 @@ TEST(SpinoffMultiChild, CostBasisIsConservedOverTheParentAndEVERYChild) {
         book += (c.quantity + c.fractional) * c.avg_price;
     }
     EXPECT_NEAR(book, 100.0 * 86.01, 1e-5)
-        << "the distribution created or destroyed cost basis. Before E2-F49 the parent's "
+        << "the distribution created or destroyed cost basis. The known shape: the parent's "
            "basis was divided by the full factor while only ONE child received an "
            "allocation, so the second child's share of the pool vanished from the book";
 

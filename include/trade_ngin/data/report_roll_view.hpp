@@ -15,15 +15,15 @@
 namespace trade_ngin::contract_rolls {
 
 /**
- * @brief Rolls step 4 (R4b): what the daily report says about rolls, read for one run with
- *        per_contract_rolls on (report_rolls.hpp renders it).
+ * @brief What the daily report says about rolls, read for one run with per_contract_rolls on
+ *        (report_rolls.hpp renders it).
  *
  * For each held futures symbol, its root's outlook on `date` (the settled day): the rule's series
  * built from the root's series start to `date` (build_held_series, warnings not logged), then
  * ContractRollSeries::outlook(date): the contract held, the deadline (first notice day or last trading
  * day), the window's first day, the last actionable bar (its run date is the next calendar day) and the
  * target, the cycle's front month (the contract the rule rolls into when it prints that day, else the
- * cycle front's code). The micros are read by the rule like every other root (R6): before the
+ * cycle front's code). The micros are read by the rule like every other root: before the
  * vendor's 2026-02-22 change their series holds the full-size root's contract, printed in the micro's
  * IB format (ESZ5 under MES prints "MESZ5"), the micro of the same expiry the account holds.
  *

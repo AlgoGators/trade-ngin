@@ -1,9 +1,9 @@
 // tests/live/test_email_delivery.cpp
 //
-// T-EMAIL P2-4 (HD ruling Q2b). The three live runners finish the daily report through
+// The three live runners finish the daily report through
 // deliver_email_report: the day's flags, then the body file or the one send, then a result. These
-// cases RUN that function with a stand-in sender; they replace the source-text test that used to
-// check the runners' text for the same order.
+// cases RUN that function with a stand-in sender, so the runners' order is checked by
+// executing it rather than by reading their text.
 
 #include <gtest/gtest.h>
 
@@ -99,7 +99,7 @@ TEST(EmailDelivery, ARiskModuleFailureAndACarriedDayFlagTheBodyAndTheSubject) {
                                         s.fn());
     EXPECT_NE(d.subject, "subject");
     EXPECT_NE(d.subject.find("subject"), std::string::npos);
-    // HD 10-14: no carried-day banner is added; the report's own plain note says it
+    // No carried-day banner is added; the report's own plain note says it
     EXPECT_EQ(s.body.find("NO SESSION - BOOK CARRIED"), std::string::npos);
 }
 

@@ -1,21 +1,20 @@
 // include/trade_ngin/core/report_rolls.hpp
 //
-// Rolls step 4 (R4b; HD 2026-10-23, rulings 10 and 18): what the daily report says about the futures
-// book's rolls with portfolio.json's per_contract_rolls on.
+// What the daily report says about the futures book's rolls with portfolio.json's
+// per_contract_rolls on.
 //
 //   * The roll line, one per roll in the roll legs block: the symbol's name as the Symbols Reference
 //     has it, the two contract months by name, the market move booked on the roll bar, the price
 //     difference between the two contracts (points and dollars, never profit or loss) and the roll's
 //     cost (both legs). The figures are the closing leg's split (migration 040).
-//   * The Rollover Warning box, the design and format of the box removed on 2026-10-13 (b3fbb849 on
-//     main-nonQT; c00dd1d6 on main): a held contract is listed once its roll window opens (five CME
+//   * The Rollover Warning box: a held contract is listed once its roll window opens (five CME
 //     trading days before its deadline), with the contract the rule rolls into (the cycle's front
 //     month), the run date by which the roll happens at the latest (the last actionable bar's run) and
 //     the deadline it guards. Built from the per-contract rule's outlook, never a hand-coded calendar.
 //   * The Symbols Reference's Front Month column (the contract held) and its Contract Months column
 //     read from the root's cycle.
 //
-// With the switch off the runner hands nothing here and the report is today's, byte for byte. Pure
+// With the switch off the runner hands nothing here and the report prints none of it. Pure
 // and header-only: the runners fill the structs (PostgresDatabase::report_roll_view), the report
 // renders them, the tests pin both.
 #pragma once
@@ -32,8 +31,7 @@
 namespace trade_ngin {
 
 /// One held futures root's roll outlook on the settled day (contract_rolls::ContractRollSeries::outlook).
-/// The contracts print as the removed box printed them (git show c00dd1d6^:src/core/email_sender.cpp,
-/// get_front_month_symbol): the IB symbol, the month code and the year's last digit ("JPYZ5").
+/// The contracts print as the IB symbol, the month code and the year's last digit ("JPYZ5").
 struct ReportRollOutlook {
     std::string root;            ///< "6J": the Databento symbol (the Symbols Reference's key)
     std::string label;           ///< "JPY": the IB symbol the box prints (the root when not known)
@@ -144,7 +142,7 @@ inline std::string report_cents(double value) {
  *
  * `closing` is the roll's closing leg (its split, migration 040), `roll_cost` both legs' costs. A
  * roll whose names were not found reads its symbol and no months. The difference prints unsigned. A
- * leg with no split gets no line (R6: with the switch on every root rolls by the rule and every
+ * leg with no split gets no line (with the switch on every root rolls by the rule and every
  * closing leg stores its split, the micros' included; the leg itself is in the roll legs table).
  */
 inline std::string report_roll_line(const ReportRollNames& names, const std::string& symbol,
@@ -153,7 +151,7 @@ inline std::string report_roll_line(const ReportRollNames& names, const std::str
     if (!names.from_month.empty() && !names.to_month.empty())
         text += ", " + names.from_month + " to " + names.to_month;
     if (!closing.roll_bar_move || !closing.roll_gap_points || !closing.roll_gap_value) return std::string();
-    // The difference is not profit or loss: printed without a sign (lead, R4b fix round 1); stored signed.
+    // The difference is not profit or loss: printed without a sign; stored signed.
     char points[64];
     std::snprintf(points, sizeof(points), "%.*f", names.gap_places, std::abs(*closing.roll_gap_points));
     text += ": market move booked " + report_whole_dollars(*closing.roll_bar_move) +
@@ -169,7 +167,7 @@ inline std::string report_month_day(const std::string& ymd) {
 }
 
 /**
- * @brief The Rollover Warning box (the 2026-10-13 design: the red box, "Currently holding X -> Switch
+ * @brief The Rollover Warning box (the red box, "Currently holding X -> Switch
  *        to Y"), one line per held root whose window is open, in root order, with the latest run date
  *        of the roll and the deadline: "by 07-30, first notice 07-31", the micros' too. Empty when no
  *        held contract is inside its window.

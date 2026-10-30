@@ -1,17 +1,15 @@
-// J3 (OPT-N4): the reserve-capital knob is deleted. Nothing ever sized on it: the last
-// reader went on 2026-02-11 (d833f189), and the figure was only written to config, one log
-// line and the run-metadata JSON. HD ruled delete, history rows left as they are.
+// The reserve-capital knob is deleted. Nothing sized on it; the figure was only written to
+// config, one log line and the run-metadata JSON. Stored history rows keep it as they are.
 //
-// These tests pin the deletion and compile against the parent source as well, so each one
-// is shown RED there:
+// These tests pin the deletion:
 //   - PortfolioConfig::to_json() (stored verbatim in backtest.run_metadata.portfolio_config
 //     and inside .hyperparameters) carries no "reserve_capital";
-//   - a stored object that still has the key (every row before the cut-over) still parses;
+//   - a stored object that still has the key (a row written while the knob existed) still parses;
 //   - a portfolio.json that still carries "reserve_capital_pct" keeps loading (production
-//     configs must still start), even with a value the old [0, 1) check refused, and the run
+//     configs must still start), even with a value outside [0, 1), and the run
 //     logs ONE WARN naming the key as deleted;
-//   - the config summary line no longer prints reserve_pct=, and AppConfig::to_json() no
-//     longer emits the key;
+//   - the config summary line prints no reserve_pct=, and AppConfig::to_json() does not
+//     emit the key;
 //   - no runner or backtest app writes "reserve_capital" into run metadata, and no template
 //     portfolio.json carries the key.
 
@@ -206,7 +204,7 @@ protected:
 };
 
 TEST_F(ReserveCapitalDeletedLoader, ALeftoverKeyStillLoadsIsIgnoredAndWarnsOnce) {
-    // 1.5 is outside the deleted [0, 1) check: the parent source REFUSED this config.
+    // 1.5 is outside the deleted [0, 1) check, which refused this config.
     const auto [error, lines] = load({{"reserve_capital_pct", 1.5}});
     ASSERT_EQ(error, "") << "a portfolio.json still carrying reserve_capital_pct must load "
                             "(production configs keep the key until an operator deletes it)";

@@ -1,15 +1,15 @@
 // tests/live/test_held_feed_ruling.cpp
 //
-// T-DATED (HD 2026-10-10). Every case here EXECUTES the function the live runners call; none
+// Every case here EXECUTES the function the live runners call; none
 // reads source text.
 //
-//   R1  the held-hole refusal is for a run made on the host's own date; the same date run on
-//       another day is a warning. The boundaries: the run date equal to, one day before and one
-//       day after the host's date, and a run that crosses local midnight before the test.
-//   R2a a HELD symbol with no bar anywhere in the loaded history is a hole past every tolerance.
-//   R2b a requested symbol the book does not hold stops nothing: one line names it.
-//   R2c an empty feed refuses every run; a requested symbol with no bar, and a feed staler than
-//       the tolerance, refuse a run with no date; on a dated run the one WARN is the held check's.
+//   * the held-hole refusal is for a run made on the host's own date; the same date run on
+//     another day is a warning. The boundaries: the run date equal to, one day before and one
+//     day after the host's date, and a run that crosses local midnight before the test.
+//   * a HELD symbol with no bar anywhere in the loaded history is a hole past every tolerance.
+//   * a requested symbol the book does not hold stops nothing: one line names it.
+//   * an empty feed refuses every run; a requested symbol with no bar, and a feed staler than
+//     the tolerance, refuse a run with no date; on a dated run the one WARN is the held check's.
 
 #include <gtest/gtest.h>
 
@@ -70,7 +70,7 @@ const std::vector<HeldFeedHole> kOneHole = {{"6M.v.0", 5, "2026-04-20", 1.0}};
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
-// R1: the host-date boundaries
+// The host-date boundaries
 // ---------------------------------------------------------------------------------------------
 
 TEST(HeldFeedRuling, ARunOnTheHostsOwnDateRefusesWithOneErrorLineAHole) {
@@ -112,7 +112,7 @@ TEST(HeldFeedRuling, TheFirstAndTheLastSecondOfTheHostsDateBothRefuse) {
 TEST(HeldFeedRuling, ARunThatCrossesLocalMidnightBeforeTheTestIsRuledAsMadeOnAnotherDay) {
     // The host clock is read when the test is reached. A run started at 23:59:50 for its own
     // date that reaches the test five seconds after midnight is a run made on the next day: a
-    // warning, the symbols held at their last price. Pinned as it is (HD 2026-10-10, R1).
+    // warning, the symbols held at their last price. Pinned as it is.
     const auto run = local_midnight(2026, 4, 26);
     EXPECT_FALSE(rule_held_feed_holes(kOneHole, 4, run, local_midnight(2026, 4, 27, 0, 0, 5)).refuse);
 }
@@ -125,7 +125,7 @@ TEST(HeldFeedRuling, NoHeldHoleRulesNothingOnAnyDate) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// R2a, R2b: what is held, and what is not
+// What is held, and what is not
 // ---------------------------------------------------------------------------------------------
 
 TEST(HeldFeedRuling, AHeldSymbolWithNoBarAnywhereIsAHolePastEveryTolerance) {
@@ -199,7 +199,7 @@ TEST(HeldFeedRuling, TheEquityRunnersSelectionFromItsNewestBarsFollowsTheSameRul
               "FEED_HOLE_NOT_HELD 1 requested symbol(s) the book does not hold are past "
               "live.data_staleness_tolerance_days=4 and cannot be entered today: DDD (no bar for "
               "14 day(s) (last bar 2026-06-01));");
-    // the same ruling as the futures runners
+    // the same rule as the futures runners
     EXPECT_TRUE(rule_held_feed_holes(holes.held, 4, local_midnight(2026, 6, 16),
                                      local_midnight(2026, 6, 16, 9, 30))
                     .refuse);
@@ -209,7 +209,7 @@ TEST(HeldFeedRuling, TheEquityRunnersSelectionFromItsNewestBarsFollowsTheSameRul
 }
 
 // ---------------------------------------------------------------------------------------------
-// R2c: the feed-freshness arms, on a dated run and on a run with no date
+// The feed-freshness arms, on a dated run and on a run with no date
 // ---------------------------------------------------------------------------------------------
 
 TEST(FeedFreshnessRuling, AnEmptyFeedRefusesADatedRunAndARunWithNoDate) {
@@ -270,7 +270,7 @@ TEST(FeedFreshnessRuling, AStaleFeedIsOneInfoLineOnADatedRunAndRefusesARunWithNo
 }
 
 TEST(FeedFreshnessRuling, ADatedRunsOneWarningForWhatTheBookDoesNotHoldIsTheHeldChecks) {
-    // The two forms of R2b through the functions the runners call in order: a symbol stale past
+    // The two forms of a requested symbol the book does not hold, through the functions the runners call in order: a symbol stale past
     // the tolerance and a requested symbol with no bar in the window. Counted together: one WARN.
     T1Classification t1;
     t1.verdicts = {no_bar("6M.v.0", 5, "2026-04-20"), no_bar("GC.v.0", 753, "2024-03-31"),

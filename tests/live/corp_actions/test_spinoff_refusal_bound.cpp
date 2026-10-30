@@ -1,23 +1,23 @@
 // tests/live/corp_actions/test_spinoff_refusal_bound.cpp
 //
-// BA-24, both halves.
+// The spinoff refusal and the child's first close, both halves.
 //
-// (a) A REFUSED SPINOFF PARENT escaped the basis-vs-mark bound entirely. The runner runs one
-//     bound over events that APPLIED (G1) and a second over class-1 events it REFUSED (G3,
-//     E2-F17). E2-F31 suppresses the class-1 event for a spinoff bar, so a refused spinoff
+// (a) A REFUSED SPINOFF PARENT must not escape the basis-vs-mark bound. The runner runs one
+//     bound over events that APPLIED and a second over class-1 events it REFUSED. The
+//     class-1 event is suppressed for a spinoff bar, so a refused spinoff
 //     parent is in neither list -- and it is the one shape whose basis is KNOWN to be out of
 //     frame, because the runner says so itself in the refusal WARN: "carries a PRE-spinoff
 //     cost basis against a POST-spinoff price series". The only case with a certain
-//     unrestated basis was the only case nothing measured.
+//     unrestated basis would be the only case nothing measured.
 //
-// (b) `child_first_close` was keyed on the CHILD ALONE and filled with the first positive
-//     close in a series that starts at the BATCH's earliest ex-date. A child whose own
-//     ex-date is later than that gets a close from before its own distribution, and both the
+// (b) `child_first_close` must not be keyed on the CHILD ALONE and filled with the first
+//     positive close in a series that starts at the BATCH's earliest ex-date: a child whose
+//     own ex-date is later than that would get a close from before its own distribution, and both the
 //     basis allocated to it and the realized booked when it is liquidated are struck at that
 //     pre-event price. The number is a real close of the right symbol, so nothing downstream
 //     can see it is the wrong one.
 //
-// The selection is now a pure function and is tested directly; the bound is inside the
+// The selection is a pure function and is tested directly; the bound is inside the
 // runner's main() and is asserted in the source, the approach
 // tests/live/test_day_t_write_ordering.cpp takes for the same reason.
 
@@ -98,7 +98,7 @@ TEST(SpinoffRefusalBound, NoUsableBarYieldsNothingRatherThanAGuess) {
 
 TEST(SpinoffRefusalBound, ZeroAndNonFiniteClosesAreSkippedNotDelivered) {
     // A 0 is what the loader leaves when it has nothing. Pricing a distribution at 0 gives
-    // the child a zero basis and books its whole value as realized gain (the E2-F48 shape).
+    // the child a zero basis and books its whole value as realized gain.
     const std::map<std::string, double> holes = {
         {"2026-04-20", 0.0}, {"2026-04-21", -1.0}, {"2026-04-22", 26.00}};
     const auto hit = LiveDailyCycle::first_close_on_or_after(holes, "2026-04-20");
@@ -120,9 +120,9 @@ TEST(SpinoffRefusalBound, TheRunnerKeysTheChildCloseOnItsOwnExDate) {
     // The map is keyed on the pair, and the lookup passes the ROW's ex-date.
     EXPECT_NE(src.find("child_first_close;  // (child, ex_date) -> (date used, close)"),
               std::string::npos)
-        << "child_first_close is keyed on the child alone again (BA-24)";
+        << "child_first_close is keyed on the child alone again";
     EXPECT_NE(src.find("child_first_close.find({t.first, row.date_str})"), std::string::npos)
-        << "the child close is looked up without its ex-date again (BA-24)";
+        << "the child close is looked up without its ex-date again";
     EXPECT_NE(src.find("LiveDailyCycle::first_close_on_or_after("), std::string::npos);
 }
 
@@ -134,18 +134,18 @@ TEST(SpinoffRefusalBound, TheRefusedSpinoffParentIsInsideTheBasisVsMarkBound) {
     ss << in.rdbuf();
     const std::string src = ss.str();
 
-    // The G3 bound iterates ONE list built from both refusal paths, and the spinoff half is
-    // in it. Before BA-24 the loop ran over `events` alone, which a suppressed spinoff parent
-    // is never in.
-    const auto guard = src.find("E2-F17 / G3 -- THE SAME BOUND, ON THE EVENTS WE REFUSED.");
-    ASSERT_NE(guard, std::string::npos) << "the G3 bound is gone entirely";
-    const auto guard_end = src.find("E2-F19 cleanup", guard);
+    // The bound on refused events iterates ONE list built from both refusal paths, and the
+    // spinoff half is in it: a loop over `events` alone would never see a suppressed spinoff
+    // parent.
+    const auto guard = src.find("THE SAME BOUND, ON THE EVENTS WE REFUSED.");
+    ASSERT_NE(guard, std::string::npos) << "the bound on refused events is gone entirely";
+    const auto guard_end = src.find("// CLEANUP: nothing to persist", guard);
     ASSERT_NE(guard_end, std::string::npos);
     const std::string block = src.substr(guard, guard_end - guard);
 
     EXPECT_NE(block.find("for (const auto& adj : spinoff_log)"), std::string::npos)
         << "the bound does not inspect refused spinoffs, so the one shape with a KNOWN "
-           "unrestated basis is the one shape nothing measures (BA-24)";
+           "unrestated basis is the one shape nothing measures";
     EXPECT_NE(block.find("SPINOFF to {"), std::string::npos)
         << "a refused spinoff must be NAMED in the guard's message, not folded into a "
            "class-1 label it does not have";

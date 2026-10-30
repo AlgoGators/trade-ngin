@@ -32,7 +32,7 @@ struct TrendFollowingConfig {
     size_t max_history_size{0};   // Set to the estimators' window (trend_estimator::kWindowBars)
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
-    // The equity slow rule (LOOP_SPEC section 2.5, D40): for these symbols (base names, "MES" for
+    // The equity slow rule: for these symbols (base names, "MES" for
     // "MES.v.0") a negative combined forecast stands only when every one of these pairs' scaled
     // forecasts is negative, and is 0 otherwise. Empty symbols: the sleeve is not ruled. The runner
     // sets both on the book's first sleeve from portfolio.json's equity_slow_rule; every pair
@@ -48,7 +48,7 @@ struct TrendFollowingConfig {
     // removed from a ruled symbol: anything else is refused when the sleeve is built. Empty: every
     // contract runs every pair. The runner sets it from portfolio.json's trading_rule_removals.
     std::map<std::string, std::vector<std::pair<int, int>>> rule_removals;
-    // Carry (trade-ngin #185; Carver, strategies ten and eleven): the carry style's weight in the
+    // Carry (Carver, strategies ten and eleven): the carry style's weight in the
     // blend (0 is off: every value is today's), its spans and its forecast scalar. With weight above
     // 0 an instrument whose window holds a carry quote trades FDM x ((1 - weight) x its trend average
     // + weight x its carry average), capped at 20, the FDM table 52's for its number of rules
@@ -92,9 +92,9 @@ struct InstrumentData {
     // Market data (deque for O(1) front removal)
     std::deque<double> price_history;
     std::deque<Timestamp> bar_timestamps;  // each price_history bar's date (vol annualisation)
-    std::deque<std::string> bar_instrument_ids;  // each bar's vendor contract id (T-ROLLX, roll_series.hpp)
-    std::deque<std::optional<RollFrom>> bar_roll_from;  // each bar's roll field (rolls step 3)
-    std::deque<std::optional<CarryQuote>> bar_carry;     // each bar's carry quote (trade-ngin #185)
+    std::deque<std::string> bar_instrument_ids;  // each bar's vendor contract id (roll_series.hpp)
+    std::deque<std::optional<RollFrom>> bar_roll_from;  // each bar's roll field
+    std::deque<std::optional<CarryQuote>> bar_carry;     // each bar's carry quote
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
@@ -110,12 +110,12 @@ struct InstrumentData {
     // before any limit: (forecast / 10) x capital x IDM x weight x tau / (multiplier x price x
     // FX x sigma).
     trend_estimator::Estimate estimate;
-    // The symbol's last bars that have a return, for the risk overlay's gate window (section 4):
+    // The symbol's last bars that have a return, for the risk overlay's gate window:
     // each bar's date as a whole day number and its adjusted percentage return, oldest first. The
     // window is 252 dates on which any participant has a return, so 300 own bars cover it.
     std::vector<double> overlay_days;
     std::vector<double> overlay_returns;
-    // The symbol's last 756 consumed bars for the optimiser's covariance (section 5.1): the date,
+    // The symbol's last 756 consumed bars for the optimiser's covariance: the date,
     // the raw close and the adjusted level of each.
     std::vector<double> opt_days;
     std::vector<double> opt_closes;
@@ -123,7 +123,7 @@ struct InstrumentData {
     double optimal_position = 0.0;
     // the equity slow rule set the last forecast to 0 (with carry on: the trend part of the blend)
     bool slow_rule_zeroed = false;
-    // Carry (trade-ngin #185), with carry on: the carry rules and the blend at the last signal bar,
+    // Carry, with carry on: the carry rules and the blend at the last signal bar,
     // and whether the blend was used (false: no carry quote yet in the window, the trend alone).
     carry_estimator::Estimate carry;
     carry_estimator::Blend blend;
@@ -244,10 +244,10 @@ public:
     /// trend_estimator::kWindowBars (a symbol with less history starts at its first bar).
     const std::map<std::string, std::size_t>& short_window_rows() const { return short_window_rows_; }
 
-    /// Carry (trade-ngin #185): whether this sleeve trades the blend (carry weight above 0).
+    /// Carry: whether this sleeve trades the blend (carry weight above 0).
     bool carry_on() const { return trend_config_.carry_weight > 0.0; }
 
-    /// Carry (trade-ngin #185): the carry-driven equity shorts of this run, per symbol.
+    /// Carry: the carry-driven equity shorts of this run, per symbol.
     const std::map<std::string, std::size_t>& carry_driven_shorts() const { return carry_driven_shorts_; }
 
     /**
@@ -260,7 +260,7 @@ public:
 
     /**
      * @brief false while `symbol`'s price history is shorter than the longest EMA window (on_data
-     *        skips it: no forecast and no target of its own); true from then on (T-OPT E-7)
+     *        skips it: no forecast and no target of its own); true from then on
      */
     bool is_signalling(const std::string& symbol) const override;
 
@@ -297,7 +297,7 @@ public:
      * @brief The trend sleeve's own checks of its config (risk target, IDM, EMA pairs, the
      *        equity slow rule, the trading-rule removals), the part of validate_config a sleeve's
      *        settings decide; a contract name is checked against `registry` when one is given.
-     *        Static so a settings change can be checked before it is saved (HD D-17), with no
+     *        Static so a settings change can be checked before it is saved, with no
      *        strategy built.
      */
     static Result<void> validate_trend_config(const TrendFollowingConfig& trend_config,
@@ -320,11 +320,11 @@ private:
 
     std::unordered_map<std::string, InstrumentData> instrument_data_;
     /// Per symbol, the bars of this run sized on an estimator window shorter than
-    /// trend_estimator::kWindowBars (LOOP_SPEC section 1: flagged and counted).
+    /// trend_estimator::kWindowBars (flagged and counted).
     std::map<std::string, std::size_t> short_window_rows_;
-    /// Carry (trade-ngin #185): per symbol, the TRADEABLE signal bars of this run on which an equity
+    /// Carry: per symbol, the TRADEABLE signal bars of this run on which an equity
     /// symbol the slow rule names went short on the blend while its trend part alone was not short
-    /// (HD's Q1: carry-driven equity shorts are allowed, counted and reported). A bar outside the
+    /// (carry-driven equity shorts are allowed, counted and reported). A bar outside the
     /// symbol's tradeable window (listing dates) is not counted.
     std::map<std::string, std::size_t> carry_driven_shorts_;
 

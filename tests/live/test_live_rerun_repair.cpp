@@ -1,9 +1,9 @@
 // tests/live/test_live_rerun_repair.cpp
 //
-// Issue #188: the re-run repair after late bars that confirm a roll. When a day's bars arrive late,
+// The re-run repair after late bars that confirm a roll. When a day's bars arrive late,
 // the first pass books the roll a day (or more) late; the repair re-runs the dates in order, oldest
 // first. The re-run of the roll's own date books it there; the re-run of the date the first pass
-// booked it on must not read its own stale legs as the contract held coming in (it did, and booked
+// booked it on must not read its own stale legs as the contract held coming in (that would book
 // the roll a second time: the cost twice, the legs moved to the wrong date). The contract held
 // coming in is decided by contract_held_coming_into, which both futures runners call.
 //
@@ -81,7 +81,7 @@ std::vector<Bar> series(const std::string& symbol, const std::vector<std::string
     return out;
 }
 
-// ZS.v.0, the measured case (T-DATED case B): 42009683 to 194904, the change bar 04-27, the
+// ZS.v.0, the measured case: 42009683 to 194904, the change bar 04-27, the
 // confirming bar 04-28.
 const std::string A = "42009683", B = "194904";
 std::vector<Bar> zs() { return series("ZS.v.0", {A, A, A, A, A, B, B, B, B, B, B}, 1160.0); }
@@ -142,7 +142,7 @@ using Decision = std::function<HeldComingIn(const std::unordered_map<std::string
                                             const std::unordered_map<std::string, std::string>&,
                                             const EarlierRolls&)>;
 
-// The rule before #188: the day's own legs always win.
+// old_rule: the day's own legs always win.
 HeldComingIn old_rule(const std::unordered_map<std::string, std::string>& t1_row,
                       const std::unordered_map<std::string, std::string>& todays_legs,
                       const EarlierRolls&) {
@@ -154,7 +154,7 @@ HeldComingIn old_rule(const std::unordered_map<std::string, std::string>& t1_row
     return out;
 }
 
-// The rule of cfbf7dd5 (audit A, SHOULD-FIX 1): stale only when the LATEST earlier roll rolls out of
+// latest_only_rule: stale only when the LATEST earlier roll rolls out of
 // the day's contract. It misses a symbol whose repair re-booked two rolls before the stale date.
 HeldComingIn latest_only_rule(const std::unordered_map<std::string, std::string>& t1_row,
                               const std::unordered_map<std::string, std::string>& todays_legs,
@@ -377,7 +377,7 @@ TEST(ContractHeldComingInto, AFirstRunTakesTheT1Row) {
 
 // A re-run of a roll day whose bars were on time: the first run re-wrote the T-1 row with the
 // incoming contract; the day's legs carry the outgoing one, and the earlier rolls are the symbol's
-// previous roll, INTO that contract. The legs win, as before #188.
+// previous roll, INTO that contract. The legs win.
 TEST(ContractHeldComingInto, AReRunOfARollDayTakesItsOwnLegs) {
     const auto held = contract_held_coming_into({{"ZS.v.0", B}, {"6A.v.0", "1419"}}, {{"ZS.v.0", A}},
                                                 {{"ZS.v.0", {{"41000001", A}}}, {"6A.v.0", {{"1300", "1419"}}}});
@@ -402,10 +402,10 @@ TEST(ContractHeldComingInto, LegsOfARollAnEarlierDateBookedAreStale) {
     EXPECT_EQ(held.stale, (std::vector<std::string>{"ZM.v.0", "ZS.v.0"}));
 }
 
-// Audit A's P1 at the decision: the repair re-booked TWO rolls before the stale date (A to B, then
+// P1 at the decision: the repair re-booked TWO rolls before the stale date (A to B, then
 // B to C) where the first pass legged one A to C here. The latest earlier roll rolls out of B, not
-// A, but A was rolled out of since it was last rolled into: stale. (cfbf7dd5 took A and booked both
-// rolls again.)
+// A, but A was rolled out of since it was last rolled into: stale. (latest_only_rule takes A and
+// books both rolls again.)
 TEST(ContractHeldComingInto, LegsOfTwoRollsTheEarlierDatesBookedAreStale) {
     const auto held = contract_held_coming_into({{"ZW.v.0", "C"}}, {{"ZW.v.0", "A"}},
                                                 {{"ZW.v.0", {{"Z", "A"}, {"A", "B"}, {"B", "C"}}}});
@@ -545,7 +545,7 @@ TEST(LiveRerunRepair, AFlipThatResolvesLateEndsIdenticalToTheCleanChain) {
     EXPECT_TRUE(repaired.stale_seen.empty()) << listing(repaired.stale_seen);
 }
 
-// ---- fix round 1: audit A's probes, kept as tests ------------------------------------------------
+// ---- probes of the rule, kept as tests -----------------------------------------------------------
 
 namespace {
 // One symbol's bars with the given contract per weekday (the eleven dates of series()).
@@ -554,7 +554,7 @@ std::vector<Bar> contracts(const std::string& symbol, const std::vector<std::str
 }
 }  // namespace
 
-// P1 (audit A, SHOULD-FIX 1): ZW holds A, A to B confirmed 04-24, B to C confirmed 04-28. The two
+// P1: ZW holds A, A to B confirmed 04-24, B to C confirmed 04-28. The two
 // confirming bars are late for the runs 04-25 .. 04-30. The first pass legs ONE roll, A to C, on
 // the 04-30 run; the repair books A to B on 04-25 and B to C on 04-29; the 04-30 re-run's own legs
 // roll out of A, which the earlier rolls rolled out of since they last rolled into it: stale.
@@ -629,7 +629,7 @@ TEST(LiveRerunRepair, ASecondRollOnTheStaleDateARecurrenceAndRepeatedReRunsEndId
     }
 }
 
-// A late FLIP the old rule fails (audit A, note 1): zs_flip's confirming bar (04-30) late for the
+// A late FLIP old_rule fails: zs_flip's confirming bar (04-30) late for the
 // runs 05-01 .. 05-02. The first pass legs the roll on 05-02 (ids dated 05-01); the 05-01 re-run
 // books it where it belongs; the 05-02 re-run's legs are stale. Identical to the clean chain; the
 // old rule books the roll a second time.
@@ -646,10 +646,10 @@ TEST(LiveRerunRepair, AFlipWhoseConfirmingBarIsLateEndsIdenticalToTheCleanChain)
         << "the old rule must fail this shape";
 }
 
-// The sweep (audit A, P5): for each bar shape, every one or two late days among 04-22 .. 04-30, the
+// The sweep (P5): for each bar shape, every one or two late days among 04-22 .. 04-30, the
 // first pass lasting two to four days past the last of them, then the repair in order. Every case
 // ends identical to the clean chain. Each earlier rule fails some case of the shapes it was wrong
-// on (the old rule every shape, cfbf7dd5's the two-roll shapes), so the sweep has teeth.
+// on (old_rule every shape, latest_only_rule the two-roll shapes), so the sweep has teeth.
 TEST(LiveRerunRepair, EveryLateDayPairOnEveryShapeEndsIdenticalToTheCleanChain) {
     struct Shape {
         std::string name;

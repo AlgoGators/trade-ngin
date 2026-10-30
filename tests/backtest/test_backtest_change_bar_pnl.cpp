@@ -1,8 +1,8 @@
 // tests/backtest/test_backtest_change_bar_pnl.cpp
 //
-// LOOP_SPEC v6.1 sections 2.1, 6.6 and 7 in the futures backtest (T-ROLLX-FIX commit 2): the daily
-// P&L of a held position is q x (close - previous CONSUMED close) x M on every consumed bar, 0 on a
-// change bar (the splice's price gap) and 0 on a WITHHELD bar (K-01: never consumed, it moves no
+// In the futures backtest the daily P&L of a held position is q x (close - previous CONSUMED close)
+// x M on every consumed bar, 0 on a change bar (the splice's price gap) and 0 on a WITHHELD bar
+// (never consumed, it moves no
 // previous close, so the next consumed bar books against the last consumed close); every stored row
 // carries the contract held after its bar.
 //
@@ -70,7 +70,7 @@ public:
     }
 };
 
-// R4B audit A, S3: the same book short 2.
+// The same book short 2.
 class HoldMinusTwo : public HoldTwo {
 public:
     using HoldTwo::HoldTwo;
@@ -181,9 +181,9 @@ TEST_F(BacktestChangeBarPnlTest, ChangeAndWithheldBarsBookNothingAndRowsCarryThe
     roll_cost[3] = 0.0;
     EXPECT_EQ(roll_cost, std::vector<double>(roll_cost.size(), 0.0));
     // The book is 2 contracts from cycle 1 on and never trades again, so each cycle's equity move plus
-    // its roll cost is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (the parent booked
-    // 2 x 7 x 50 = 700); d4 against the change bar's close 110; d5 100; d6 withheld 0 (the parent
-    // booked 2 x (50 - 112) x 50); d7 against d5's 112, the last CONSUMED close (not d6's 50).
+    // its roll cost is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (not the gap's
+    // 2 x 7 x 50 = 700); d4 against the change bar's close 110; d5 100; d6 withheld 0 (not
+    // 2 x (50 - 112) x 50); d7 against d5's 112, the last CONSUMED close (not d6's 50).
     const std::vector<double> want{200.0, 0.0, 100.0, 100.0, 0.0, 100.0};
     ASSERT_EQ(move.size(), want.size());
     for (size_t i = 0; i < want.size(); ++i) EXPECT_NEAR(move[i], want[i], 1e-6) << "cycle " << i + 2;
@@ -191,7 +191,7 @@ TEST_F(BacktestChangeBarPnlTest, ChangeAndWithheldBarsBookNothingAndRowsCarryThe
         << "the change bar's row is held in the outgoing contract, the confirming bar's in the new one";
 }
 
-// Rolls step 3 (per_contract_rolls on): the roll bar books the old contract's own move over it,
+// With per_contract_rolls on, the roll bar books the old contract's own move over it,
 // q x (old close on the roll bar - previous close) x M, and both ROLL legs are priced on the roll
 // bar (closing at the old contract's close, opening at the new contract's), booked on the cycle that
 // consumes the bar a run first knows the roll from.
@@ -275,8 +275,8 @@ TEST_F(BacktestPerContractPnlTest, AnUnconfirmedVendorSwitchBooksTheOldContracts
 }
 
 TEST_F(BacktestPerContractPnlTest, AWithheldRollBarIsBookedOnTheNextConsumedBarAtItsCloses) {
-    // d3's roll bar is a locked print (withheld, K-01): d4 books the roll, A's move 103 -> 105 and
-    // both legs at d4's closes (HD 10-23).
+    // d3's roll bar is a locked print (withheld): d4 books the roll, A's move 103 -> 105 and
+    // both legs at d4's closes.
     const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
                          rolled(bar(3, 110, "B", true), 104, "A", RollFromKind::KNOWN),
                          rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL),
@@ -287,7 +287,7 @@ TEST_F(BacktestPerContractPnlTest, AWithheldRollBarIsBookedOnTheNextConsumedBarA
     EXPECT_EQ(b.held, (std::vector<std::string>{"A", "A", "B", "B"}));
 }
 
-// Rolls step 4 (ruling 18, migration 040): the roll's split on its closing leg, as the cycle booked it.
+// The roll's split on its closing leg, as the cycle booked it.
 // roll_bar_move is exactly the move the cycle consuming the roll bar booked (cycle 3's 100 for the
 // crossover and the vendor switch, whose roll bar is the switch bar; cycle 4's 200 when the roll bar
 // was withheld), the gap the two legs' difference and its value 2 x gap x 50; the opening leg none.
@@ -350,7 +350,7 @@ TEST_F(BacktestChangeBarPnlTest, ARollOfTheVendorsSeriesCarriesNoSplit) {
     EXPECT_EQ(rolls, 2);
 }
 
-// R4B audit A, S3: short 2, the closing leg's split is signed with the position, as the coordinator books
+// Short 2: the closing leg's split is signed with the position, as the coordinator books
 // it: a crossover from 103 to A's 104 is -2 x 1 x 50 = -100 (the cycle's own P&L), the gap 6 points, its
 // value -2 x 6 x 50 = -600.
 class BacktestPerContractShortTest : public BacktestPerContractPnlTest {

@@ -1,7 +1,7 @@
 // The session set and a book with NO overlay sleeve.
 //
-// A futures book is rebalanced by the one pass, which carries the hold set of LOOP_SPEC section
-// 6.1 itself (tests/portfolio/test_one_pass_book.cpp: a symbol outside the session set is held,
+// A futures book is rebalanced by the one pass, which carries the hold set itself
+// (tests/portfolio/test_one_pass_book.cpp: a symbol outside the session set is held,
 // never opened at a stale price, and fills on its next session). A book that names no overlay
 // sleeve (the equity book; no caller passes it a session set) keeps the plain rule these tests
 // pin: no usable price means no fill, and the book moves to the target.
@@ -191,7 +191,7 @@ protected:
     std::shared_ptr<ScriptedStrategy> strategy_;
 };
 
-// The parent's behaviour, kept for every caller that passes no set (live runners, equities).
+// The behaviour for every caller that passes no set (live runners, equities).
 TEST_F(PmSessionHoldTest, WithoutASetTheOldSkipStillMovesTheBookWithoutAFill) {
     make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
              {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 4, 50)}}});
@@ -203,8 +203,8 @@ TEST_F(PmSessionHoldTest, WithoutASetTheOldSkipStillMovesTheBookWithoutAFill) {
     EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
 }
 
-// Controls: without a set (every live caller, the equity backtest) both paths keep the parent's
-// behaviour byte for byte.
+// Controls: without a set (every live caller, the equity backtest) both paths keep the plain
+// rule byte for byte.
 TEST_F(PmSessionHoldTest, WithoutASetASymbolAbsentFromTheTargetLeavesTheBookWithNoFill) {
     make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
              {{"ZZA", make_pos("ZZA", 2, 100)}}});
@@ -239,8 +239,8 @@ TEST(PmSessionHoldSource, TheCoordinatorPassesTheSetForFuturesOnly) {
     EXPECT_NE(src.find("classify_bar_group(session_classifier_, bars_for_signals)"),
               std::string::npos)
         << "the verdict is taken on the SIGNAL group's bars (the previous group)";
-    // T-7b-1 7a: the PM is fed the signal group with its JUNK bars delayed one cycle (as live);
-    // the session set still goes with it.
+    // The PM is fed the signal feed (the signal group without its withheld bars, as live); the
+    // session set goes with it.
     EXPECT_NE(src.find("portfolio->process_market_data(*signal_feed, is_warmup, timestamp,\n"
                        "                                                              session_symbols);"),
               std::string::npos);

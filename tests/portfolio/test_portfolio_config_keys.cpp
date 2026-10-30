@@ -1,4 +1,4 @@
-// LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run, in
+// The design keys a futures book records with every run, in
 // backtest.run_metadata.portfolio_config and live_run_metadata.portfolio_config. Both are
 // PortfolioConfig::to_json() (the backtest runners add strategy_allocations and strategy_names,
 // the live runners their marks). This test pins EVERY key and value of the shipped CONSERVATIVE
@@ -92,8 +92,8 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("cost_penalty_scalar").get<double>(), 100.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("sign_close_band").get<double>(), 2.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("b_sigma_floor").get<double>(), 0.05);
-    // overlay_covariance: "sample" is not recorded (the object a sample book stored before the
-    // key), "carver" is.
+    // overlay_covariance: "sample" is not recorded (a sample book's object carries no such key),
+    // "carver" is.
     EXPECT_FALSE(j.at("risk_config").contains("overlay_covariance"));
     AppConfig carver_app = loaded.value();
     for (auto& module : carver_app.risk_schema.portfolio) {
@@ -112,7 +112,7 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     EXPECT_EQ(j.at("equity_slow_rule").dump(),
               "{\"pairs\":[[32,128],[64,256]],\"symbols\":[\"M2K\",\"MES\",\"MNQ\",\"MYM\"]}");
     EXPECT_EQ(j.at("oracle_hash_list").get<std::string>(), "oracle_sha256_frozen_v6_4.txt");
-    // The keys the object carried before and keeps.
+    // The keys every book's object carries.
     EXPECT_EQ(j.at("use_optimization").get<bool>(), true);
     EXPECT_EQ(j.at("allow_fractional_positions").get<bool>(), false);
     EXPECT_DOUBLE_EQ(j.at("max_strategy_allocation").get<double>(), 1.0);
@@ -146,7 +146,7 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
 }
 
 // A book with no overlay sleeve (the equity book) writes the object it always wrote: the same
-// keys, the optimiser's and the gate's old ones included, and none of the loop's.
+// keys, the optimiser's and the gate's generic ones included, and none of the loop's.
 TEST(PortfolioConfigKeys, ABookWithNoOverlaySleeveWritesTheObjectItAlwaysWrote) {
     PortfolioConfig pc{100000.0, 1.0, 0.0, false};
     pc.allow_fractional_positions = true;

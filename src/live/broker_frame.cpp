@@ -68,7 +68,7 @@ double expected_pnl_gap(double quantity, double raw_basis_value,
                         const std::vector<AppliedEvent>& applied) {
     if (!basis_is_known(raw_basis_value) || !std::isfinite(quantity)) return 0.0;
 
-    // BA-23: per-share cash may NOT be summed across a split.
+    // Per-share cash may NOT be summed across a split.
     //
     // `quantity` is the share count TODAY. A dividend paid before a 4:1 split was paid on a
     // quarter of today's shares, so charging it at today's count over-states the cash by the

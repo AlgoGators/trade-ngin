@@ -1,17 +1,16 @@
-// The session classifier's instrument-id continuity limb (T-7b-2 C10a; HD 2026-09-24 ruling 16:
-// "a bar whose instrument id differs from the previous and the next session's is JUNK").
+// The session classifier's instrument-id continuity limb: a bar whose instrument id differs from
+// the previous and the next session's is JUNK.
 //
 // The verdict of the bar dated D reads the bars dated <= D only. Live classifies T-1 before T's
 // bar exists; the backtest holds the cycle's group before it classifies the signal group, and must
 // not use it. So on its own day an id change is UNCONFIRMED and held (JUNK, the default
-// id_change_hold_fraction, ruled 0.10: a change printing below 0.10 of the symbol's norm), and
+// id_change_hold_fraction, 0.10: a change printing below 0.10 of the symbol's norm), and
 // the next session's bar confirms it a roll or a one-day flip
 // (id_note). The norm's SESSION flags read each earlier bar with that hindsight.
 //
 // Three layers: the limb on constructed series; the query builder and the feed helper; and a
 // database test (TRADE_NGIN_TEST_DSN only, read-only) on the clone's real bars and ids: 6E, 6J, ZN
-// on 2025-11-05 and 2025-09-03, and the 2026 table against the Python reference
-// (T-7b-2_evidence/tooling/c10_idflip.py, analysis/c10/C10a_2026_counts.txt).
+// on 2025-11-05 and 2025-09-03, and the 2026 table against a Python reference.
 
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
@@ -92,7 +91,7 @@ SymbolDayVerdict at(const SessionClassifier& c, const std::string& symbol,
 // ---------------------------------------------------------------------------------------------
 
 // A thin flip: 5,000 lots against a norm of 100,000 is above both volume cuts (1 % and the
-// 1,000-lot ceiling), so the volume limbs call it a session, but below the ruled 0.10.
+// 1,000-lot ceiling), so the volume limbs call it a session, but below the 0.10 hold fraction.
 TEST(InstrumentIdLimb, AOneDayFlipIsHeldOnItsDayAndConfirmedByTheNextSession) {
     SessionClassifier c;
     add_history(c, "F", "2026-03-04", 20, 100000, "A");
@@ -126,7 +125,7 @@ TEST(InstrumentIdLimb, AOneDayFlipIsHeldOnItsDayAndConfirmedByTheNextSession) {
 }
 
 TEST(InstrumentIdLimb, AFullVolumeRollTradesOnItsDayAndIsConfirmedARoll) {
-    // HD 2026-09-25: a change at full volume (a roll's usual first day, as the volume leader) is
+    // A change at full volume (a roll's usual first day, as the volume leader) is
     // not held; the next session still confirms it.
     SessionClassifier c;
     add_history(c, "F", "2026-03-04", 20, 100000, "A");
@@ -160,7 +159,7 @@ TEST(InstrumentIdLimb, AThinRollIsHeldOnItsFirstDayOnly) {
 }
 
 TEST(InstrumentIdLimb, ATwoDayExcursionIsTwoChangesNotAFlip) {
-    // HD's rule is the one-day flip: X on two sessions differs from its neighbour on one side
+    // The rule is the one-day flip: X on two sessions differs from its neighbour on one side
     // only, so each end of the excursion is an id change (each held on its day when thin).
     SessionClassifier c;
     add_history(c, "F", "2026-03-04", 20, 100000, "A");
@@ -205,7 +204,7 @@ TEST(InstrumentIdLimb, AConfirmedFlipDoesNotTeachTheNorm) {
         add(c, "F", "2026-03-06", 90, with_ids ? "A" : "");
         return c;
     };
-    // Without ids (the parent's classifier) the flip is a session and teaches the norm:
+    // Without ids the flip is a session and teaches the norm:
     // median(100, 100000) = 50,050, so 90 lots on 03-06 is a corrupt print.
     const auto no_ids = build(false);
     const auto a = at(no_ids, "F", "2026-03-06");
@@ -259,7 +258,7 @@ TEST(InstrumentIdLimb, TheHoldFractionDecidesWhichUnconfirmedChangesAreHeldOnThe
     const auto none = build(0.0);
     EXPECT_EQ(at(none, "ROLL", "2026-03-04").verdict, SessionVerdict::SESSION);
     EXPECT_EQ(at(none, "FLIP", "2026-03-04").verdict, SessionVerdict::SESSION);
-    EXPECT_EQ(kIdChangeHoldFraction, 0.10) << "HD 2026-09-25";
+    EXPECT_EQ(kIdChangeHoldFraction, 0.10) << "the id-change hold fraction";
     EXPECT_EQ(SessionClassifierConfig{}.id_change_hold_fraction, kIdChangeHoldFraction)
         << "the ruled value is the default";
     // At the boundary: exactly 0.10 of the norm is not below it.
@@ -397,7 +396,7 @@ TEST(InstrumentIdWiring, BothTwinsFeedTheIdsAfterTheBarsAndBeforeTheT1Classifica
         const std::string src = read_repo_file(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
         const auto bars = src.find("session_classifier.add_bars(all_bars);");
-        // T-ROLLX-FIX commit 4 (N-2): the ids are fed from the classifier's history start, the
+        // The ids are fed from the classifier's history start, the
         // prefix before the window included.
         const auto feed = src.find(
             "db->get_futures_instrument_ids(symbols, k01_history_start, end_date));", bars);
@@ -408,7 +407,7 @@ TEST(InstrumentIdWiring, BothTwinsFeedTheIdsAfterTheBarsAndBeforeTheT1Classifica
         EXPECT_LT(feed, t1);
         blocks[i++] = src.substr(bars, t1 - bars);
     }
-    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' C10a hunks differ";
+    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' hunks differ";
 }
 
 TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {
@@ -416,7 +415,7 @@ TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {
     if (src.empty()) GTEST_SKIP() << "coordinator source not found";
     // The ids are read from the classifier's history start, the prefix before the window
     // included, as the live runners read them (the window's first bars are judged on the id limb
-    // against the prefix's ids; the read used to start at the window).
+    // against the prefix's ids; the read does not start at the window).
     const auto feed =
         src.find("pg->get_futures_instrument_ids(symbols, k01_classifier_history_start(start_date),");
     ASSERT_NE(feed, npos) << "the backtest does not feed the instrument ids from the prefix's start";
@@ -432,11 +431,11 @@ TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {
     EXPECT_NE(src.find("process_portfolio_day(timestamp, bars", loop), npos);
 }
 
-// LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing history,
-// the same in every engine. The backtest's window classifier started cold, so a 2-year run consumed
-// two thin Sunday prints in its first weeks (RB 2024-05-05, 6M 2024-05-12) that the longer runs
-// and live withhold. It is given the prefix live gives its own (the bars of the 120 calendar days
-// before the window, from the history the run already loads), before the first cycle.
+// A bar's withhold verdict reads the classifier's trailing history, the same in every engine.
+// Started cold, the backtest's window classifier would let a 2-year run consume two thin Sunday
+// prints in its first weeks (RB 2024-05-05, 6M 2024-05-12) that the longer runs and live withhold.
+// It is given the prefix live gives its own (the bars of the 120 calendar days before the window,
+// from the history the run already loads), before the first cycle.
 TEST(InstrumentIdWiring, TheBacktestWindowClassifierIsFedThePrefixBeforeTheFirstCycle) {
     const std::string src = read_repo_file("src/backtest/backtest_coordinator.cpp");
     if (src.empty()) GTEST_SKIP() << "coordinator source not found";
@@ -550,8 +549,8 @@ TEST_F(InstrumentIdDb, TheThreeBarIdSequencesOnTheClone) {
         return r.empty() ? std::make_pair(std::string(), -1.0)
                          : std::make_pair(r[0][0].as<std::string>(), r[0][1].as<double>());
     };
-    // symbol, (previous, day, next) ids around 2025-09-03 and 2025-11-05. R6: the 213-row fix of
-    // algogators #36 replaced 6E's and 6J's stray one-day ids of 2025-11-05 (42040878, 42039890) with
+    // symbol, (previous, day, next) ids around 2025-09-03 and 2025-11-05. A corrected copy of the
+    // table (213 rows) replaces 6E's and 6J's stray one-day ids of 2025-11-05 (42040878, 42039890) with
     // their own contracts' bars (108,452 and 125,478 lots, ids 4274 and 4197); a replaced day names its
     // corrected volume, and the test reads which row the table holds. ZN's stray of 2025-09-03 stays.
     struct Seq {
@@ -576,9 +575,9 @@ TEST_F(InstrumentIdDb, TheThreeBarIdSequencesOnTheClone) {
         EXPECT_EQ(id_at(e.symbol, SessionClassifier::ymd(dd + std::chrono::days{1})), e.next);
     }
     // 6A 2025-11-05: on the reference clone the raw table holds the 196-lot copy and the loader keeps
-    // the 76,895-lot one: not the same print, so no id (its neighbours have one). R6: derived from the
-    // tables, so it holds on any copy: an id exactly when the raw row is the kept print (the 213-row
-    // fix made the two one print on the tuning copy: id 7103).
+    // the 76,895-lot one: not the same print, so no id (its neighbours have one). Derived from the
+    // tables, so it holds on any copy: an id exactly when the raw row is the kept print (the corrected
+    // copy makes the two one print: id 7103).
     const auto kept = w.exec(
         "SELECT volume FROM futures_data.ohlcv_1d WHERE symbol = '6A.v.0' AND "
         "time = ('2025-11-05'::date AT TIME ZONE 'UTC') ORDER BY volume DESC, close, open, high, low LIMIT 1");
@@ -602,7 +601,7 @@ TEST_F(InstrumentIdDb, TheNamedCellsOnTheRealBarsLiveAndBacktestViews) {
         SessionVerdict verdict;
         const char* reason_has;
     };
-    // R6: 6E's and 6J's 2025-11-05 were replaced by the 213-row fix (their own contracts' bars, 108,452
+    // 6E's and 6J's 2025-11-05 are replaced on the corrected copy (their own contracts' bars, 108,452
     // and 125,478 lots, ids 4274 and 4197): on a copy that holds the corrected bar they are SESSION.
     pqxx::connection pc(conn_);
     pqxx::work w(pc);
@@ -636,7 +635,7 @@ TEST_F(InstrumentIdDb, TheNamedCellsOnTheRealBarsLiveAndBacktestViews) {
         EXPECT_EQ(lv.reason, v.reason);
     }
     // The next session confirms each flip.
-    // (R6: a flip the 213-row fix replaced is no flip: only the ones the table holds)
+    // (a flip the corrected copy replaces is no flip: only the ones the table holds)
     std::vector<std::pair<std::string, std::string>> flips = {{"ZN.v.0", "2025-09-04"}};
     if (!e_fixed) flips.push_back({"6E.v.0", "2025-11-06"});
     if (!j_fixed) flips.push_back({"6J.v.0", "2025-11-06"});

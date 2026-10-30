@@ -1,14 +1,14 @@
-// FIX-0 end-to-end: does what LiveResultsManager writes come back through the read the
-// runner actually performs?
+// End to end: does what LiveResultsManager writes come back through the read the runner
+// actually performs?
 //
 // The unit tests pin the key at the store_* call boundary against a mock. That proves the
-// threading but not the round trip -- the defect was precisely that write key and read key
-// disagreed, and only a real server shows whether a row written one way is found the other
-// way. So: write positions through LiveResultsManager under a scratch identity, then read
-// them back with db->load_positions_by_date() using the same three columns the equity
-// runner reads with, and separately confirm the pre-FIX-0 key finds nothing.
+// threading but not the round trip -- a write key and a read key that disagree, and only a
+// real server shows whether a row written one way is found the other way. So: write positions
+// through LiveResultsManager under a test identity, then read them back with
+// db->load_positions_by_date() using the same three columns the equity runner reads with, and
+// separately confirm the wrong keys find nothing.
 //
-// Writes touch trading.positions but only ever under the scratch triple below, which no
+// Writes touch trading.positions but only ever under the test triple below, which no
 // live or backtest book uses; every row is deleted in TearDown. Nothing production-keyed
 // is read, written, or removed.
 //
@@ -34,7 +34,7 @@ using namespace trade_ngin;
 
 namespace {
 
-// Scratch identity. Deliberately unlike any configured book so a stray row cannot be
+// Test identity. Deliberately unlike any configured book so a stray row cannot be
 // mistaken for, or collide with, real results.
 constexpr const char* kScratchStrategyId = "FIX0_ROUNDTRIP_PROBE_ID";
 constexpr const char* kScratchStrategyName = "FIX0_ROUNDTRIP_PROBE_NAME";
@@ -86,7 +86,7 @@ protected:
         if (conn_.empty()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not set, "
-                          "so the FIX-0 write/read key agreement goes unverified";
+                          "so the write/read key agreement goes unverified";
             }
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
@@ -95,7 +95,7 @@ protected:
         if (connected.is_error() || !db_->is_connected()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but the database is unreachable, so the "
-                          "FIX-0 write/read key agreement goes unverified";
+                          "write/read key agreement goes unverified";
             }
             GTEST_SKIP() << "database unreachable; key agreement needs a real server";
         }
@@ -156,9 +156,8 @@ TEST_F(LiveResultsKeyRoundTripTest, ThePreFixKeyFindsNothing) {
     mgr.set_positions({make_position("AAPL", 12.0, 190.5)});
     ASSERT_TRUE(mgr.save_positions_snapshot(date).is_ok());
 
-    // Pre-FIX-0 the row landed under (id, id, BASE_PORTFOLIO). Reading that way must now
-    // come back empty -- if it does not, the id is still being reused as the name, or the
-    // configured portfolio is still being ignored.
+    // Reading under (id, id, BASE_PORTFOLIO) must come back empty -- if it does not, the id is
+    // being reused as the name, or the configured portfolio is being ignored.
     auto wrong_name = db_->load_positions_by_date(kScratchStrategyId, kScratchStrategyId,
                                                   kScratchPortfolio, date, "trading.positions");
     ASSERT_TRUE(wrong_name.is_ok()) << wrong_name.error()->what();
@@ -171,7 +170,7 @@ TEST_F(LiveResultsKeyRoundTripTest, ThePreFixKeyFindsNothing) {
         << "the row landed on the futures book instead of the configured portfolio";
 }
 
-// E2-F22: what is loaded must equal what was stored, and re-storing the loaded book must be
+// What is loaded must equal what was stored, and re-storing the loaded book must be
 // a fixed point -- no +5 h per pass, no migration onto the next date after four passes.
 TEST_F(LiveResultsKeyRoundTripTest, LoadedTimestampEqualsStoredAndRewritesDoNotMigrate) {
     Position p = make_position("AAPL", 10.0, 100.0);

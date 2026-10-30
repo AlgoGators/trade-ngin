@@ -1,7 +1,6 @@
-// The risk overlay's arithmetic in capital terms (LOOP_SPEC v6.2 section 4): the gate window, the
-// four readings and the multiplier, against values the frozen reference implementation
-// (docs/after_equities/stage3/oracle/book.py: gate, readings, multiplier) gives on the same
-// returns. The returns come from one deterministic generator written the same way on both sides.
+// The risk overlay's arithmetic in capital terms: the gate window, the four readings and the
+// multiplier, against values an independent reference implementation gives on the same returns. The
+// returns come from one deterministic generator written the same way on both sides.
 #include <gtest/gtest.h>
 
 #include <cmath>

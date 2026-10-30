@@ -45,7 +45,7 @@ struct TerminationEvent {
 };
 
 /**
- * @brief Class-1-encoded event that is really a SPINOFF (E2-F31).
+ * @brief Class-1-encoded event that is really a SPINOFF.
  *
  * A spinoff is not a price restatement of one symbol. The parent distributes shares of a
  * NEW company: the parent's price series steps down by the value distributed, the holder
@@ -56,8 +56,8 @@ struct TerminationEvent {
  * split and mints 32.7 phantom parent shares, or as a dividend and books income that never
  * arrived. The CHILD, which is the whole point of the event, is never created.
  *
- * The ratio is not inferred from the magnitude of the step -- that is exactly the provenance
- * rule E2-F9 exists to enforce. It comes from the `spinoff` row in
+ * The ratio is not inferred from the magnitude of the step -- the provenance rule forbids
+ * that. It comes from the `spinoff` row in
  * equities_data.corporate_action, whose `value` IS the child ratio (verified 5/5:
  * GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5, MMM/SOLV 0.25).
  */
@@ -65,12 +65,11 @@ struct TerminationEvent {
  * @brief The class-1 columns one spinoff ex-date bar carries, and the factor they amount to.
  *
  * `get_per_bar_corporate_actions` emits a bar's `split_factor` and its `div_cash` as TWO
- * rows (postgres_database.cpp:2599-2626), and both carry the same (ticker, ex_date). Seven
+ * rows, and both carry the same (ticker, ex_date). Seven
  * real bars in this database carry both -- HLT 2017-01-04, K 2023-10-02, MET 2017-08-07,
  * LDOS 2013-09-30, RTX 2020-04-03, ABT 2004-05-03, BX 2015-10-01 -- and every one of them is
  * a spinoff ex-date. Matching each row against the terms key separately routes the SAME
- * distribution twice: the child is delivered twice and its realized P&L booked twice
- * (E2-F47).
+ * distribution twice: the child is delivered twice and its realized P&L booked twice.
  *
  * The bar is one event. This collects its columns so it can be routed once, and computes the
  * factor the parent's ADJUSTED price series actually took across it -- the product of what
@@ -115,18 +114,18 @@ struct SpinoffBarColumns {
     /** The whole step the parent's price series took across this bar. */
     double total_factor() const { return split_step() * dividend_factor(); }
 
-    /** True when the bar carries both columns -- the E2-F47 shape, worth naming in a log. */
+    /** True when the bar carries both columns -- a shape worth naming in a log. */
     bool carries_both_columns() const { return has_split && has_dividend; }
 
     /**
      * @brief The part of the bar's step that is a REVERSE SPLIT, not the distribution.
      *
-     * E2-F48. A `split_factor < 1` on a spinoff ex-date is a reverse split that happened on
+     * A `split_factor < 1` on a spinoff ex-date is a reverse split that happened on
      * the same day as the spinoff -- HLT's 1-for-3 on 2017-01-04, LDOS's 1-for-4 on
      * 2013-09-30, DD's 1-for-3 on 2019-06-03 -- and it is a genuine SHARE COUNT change,
      * which a distribution never is. Reading it as the spinoff's own factor makes
      * `1 - 1/F` negative, so the child is allocated a NEGATIVE cost basis, and it suppresses
-     * a real split that used to apply correctly before the spinoff path existed at all.
+     * a real split that the class-1 path applies correctly.
      *
      * A `split_factor > 1` on a spinoff ex-date is NOT treated as a forward split: on all
      * five such bars in this database (ABT, BX, K, MET, RTX) the vendor is encoding part of
@@ -156,7 +155,7 @@ struct SpinoffBarColumns {
      *    which IS `total_factor()`, so the basis is already CORRECT. What is wrong is the
      *    SHARE COUNT -- a `split_factor` above 1 on a spinoff bar is part of the
      *    distribution and the holder's shares never moved, so the class-1 split minted
-     *    phantom ones (E2-F31). A `split_factor` below 1 is a genuine reverse split and
+     *    phantom ones. A `split_factor` below 1 is a genuine reverse split and
      *    applying it was right, so it inflates nothing.
      *
      * In both cases the child was never delivered; that is reported separately.
@@ -173,10 +172,10 @@ struct SpinoffBarColumns {
         //
         // A coincident REVERSE split (`split_factor < 1`: HLT 2017-01-04, LDOS 2013-09-30,
         // DD 2019-06-03) is a genuine share-count change that the class-1 path applies on its
-        // own account (E2-F48 / b11bdea8). It is therefore not part of what the spinoff owes
+        // own account. It is therefore not part of what the spinoff owes
         // the basis, and it must not appear in a "short by" figure: with only the DIVIDEND
         // dedup present, total_factor()/dividend_factor() IS that reverse-split step -- a
-        // number below 1 -- and reporting it told the operator the basis was short by
+        // number below 1 -- and reporting it would tell the operator the basis was short by
         // something class-1 was about to apply anyway.
         //
         // spinoff_factor() == total_factor() / reverse_split_factor(), so this is the bar's
@@ -193,9 +192,9 @@ struct SpinoffBarColumns {
     }
 
     /**
-     * @brief Is a split_factor ABOVE 1 being folded into the distribution's factor? (E2-F51)
+     * @brief Is a split_factor ABOVE 1 being folded into the distribution's factor?
      *
-     * The silent half of the E2-F48 rule. A `split_factor < 1` is separated out as a real
+     * The silent half of the reverse-split rule. A `split_factor < 1` is separated out as a real
      * reverse split; a `split_factor > 1` is NOT — it stays inside `spinoff_factor()` and the
      * parent's share count does not move. That is correct on all five such bars in this
      * database (ABT, BX, K, MET, RTX: the vendor encodes part of the distribution there and no
@@ -217,7 +216,7 @@ struct SpinoffBarColumns {
     double spinoff_factor() const { return total_factor() / reverse_split_factor(); }
 
     /**
-     * @brief How a spinoff bar must be routed given what has ALREADY been applied (E2-F50).
+     * @brief How a spinoff bar must be routed given what has ALREADY been applied.
      *
      * A refused distribution writes no dedup row and retries every run; the reverse split it
      * was decomposed from is not refused with it, applies through class 1, and IS dedup'd. So
@@ -244,7 +243,7 @@ struct SpinoffBarColumns {
      * weights cancel) the same allocated bases. Nothing is pending for the basis-vs-mark bound.
      *
      * When it has not — the ordinary same-run path — the ratios stand as the vendor wrote them
-     * and the bound is told a division is still to come (E2-F48).
+     * and the bound is told a division is still to come.
      */
     RetryFrame retry_frame(bool coincident_split_already_applied) const {
         RetryFrame f;
@@ -273,11 +272,11 @@ struct SpinoffBarColumns {
 /**
  * @brief One company distributed by a spinoff, with the terms that price it.
  *
- * E2-F49: a spinoff is not one child. RTX 2020-04-03 distributed OTIS (0.5) AND CARR (1.0);
+ * A spinoff is not one child. RTX 2020-04-03 distributed OTIS (0.5) AND CARR (1.0);
  * HLT 2017-01-04 distributed PK (0.6) AND HGV (0.33333). Fifteen (parent, ex-date) pairs in
- * `equities_data.corporate_action` carry more than one `spinoff` row, and the routing map
- * was keyed on (ticker, date) with a scalar value, so the last row read silently overwrote
- * every earlier one: one arbitrary child was delivered and the rest were never created.
+ * `equities_data.corporate_action` carry more than one `spinoff` row, so a routing map
+ * keyed on (ticker, date) with a scalar value would let the last row read silently overwrite
+ * every earlier one: one arbitrary child delivered and the rest never created.
  */
 struct SpinoffChildTerms {
     std::string symbol;
@@ -302,7 +301,7 @@ struct SpinoffEvent {
      * DISTRIBUTION's own factor: the whole step the bar took (`split_factor x
      * (1 + div_cash/close)`, SpinoffBarColumns::total_factor) with any coincident reverse
      * split divided back out, because that part is a share-count change the class-1 applier
-     * owns (E2-F47, E2-F48). Strictly greater than 1 for a real distribution.
+     * owns. Strictly greater than 1 for a real distribution.
      */
     double parent_restatement_factor{1.0};
     /** Every child the (parent, ex-date) pair delivers. Never just the last one read. */
@@ -313,7 +312,7 @@ struct SpinoffEvent {
  * @brief What to do with a child the strategy cannot trade.
  *
  * A spinoff hands you a company you never chose to own, and usually one that is not in the
- * configured universe. Holding it makes an F-4 orphan: no bars are loaded for it, so the
+ * configured universe. Holding it makes an orphan: no bars are loaded for it, so the
  * next run reports "Missing T-1 price for symbol with a non-zero position" and rolls the
  * target back forever. The default therefore sells it at the first close, which is what an
  * index-tracking mandate does and what a discretionary holder usually does within days.
@@ -336,10 +335,10 @@ enum class LifecycleOutcome {
     RENAMED,                ///< class 2: position re-keyed to the current symbol
     SKIPPED_NO_POSITION,    ///< event for a symbol we do not hold
     SKIPPED_NO_PRICE,       ///< exit required but no final close available
-    SPUN_OFF_CHILD_HELD,    ///< E2-F31: parent restated, child position created and kept
-    SPUN_OFF_CHILD_SOLD,    ///< E2-F31: parent restated, child created and sold at first close
-    SKIPPED_NO_CHILD_PRICE,  ///< E2-F31: the child has no close, so NOTHING was applied
-    SKIPPED_NO_PARENT_BASIS  ///< B-iii: the parent's cost basis is unknown (<= 0), so the
+    SPUN_OFF_CHILD_HELD,    ///< parent restated, child position created and kept
+    SPUN_OFF_CHILD_SOLD,    ///< parent restated, child created and sold at first close
+    SKIPPED_NO_CHILD_PRICE,  ///< the child has no close, so NOTHING was applied
+    SKIPPED_NO_PARENT_BASIS  ///< the parent's cost basis is unknown (<= 0), so the
                              ///< allocation would hand every child a basis of zero and book
                              ///< the child's entire market value as realized gain. NOTHING
                              ///< is applied and no dedup row is written.
@@ -354,8 +353,8 @@ enum class LifecycleOutcome {
  *     w_i                   = r_i * P_i            child i's value per parent share
  *     basis per child share = pool * P_i / sum(w)
  *
- * With one child this is exactly `B (1 - 1/F) / r`, the formula E2-F31 shipped with, so the
- * single-child cases are unmoved. With several it is the rule a US holder's own basis
+ * With one child this is exactly `B (1 - 1/F) / r`. With several it is the rule a US
+ * holder's own basis
  * allocation follows, and it conserves cost basis over the parent and EVERY child:
  * `sum_i r_i * basis_i == pool`, identically.
  */
@@ -385,11 +384,11 @@ struct LifecycleAdjustment {
     double realized_delta{0.0};   ///< cash P&L booked by an exit
     std::string contra_ticker;    ///< populated on CONVERTED_TO_CONTRA
 
-    // ---- E2-F31 spinoff detail (empty / zero on every other outcome) ----
+    // ---- spinoff detail (empty / zero on every other outcome) ----
     double avg_price_before{0.0};    ///< parent basis before the restatement
     double avg_price_after{0.0};     ///< parent basis after: B / F
     double ratio_change{1.0};        ///< F, the parent restatement factor
-    /** One entry per child delivered (E2-F49). Empty on a refusal and on every other
+    /** One entry per child delivered. Empty on a refusal and on every other
      *  outcome; the refusal WARNs name the children from the event, not from here. */
     std::vector<SpinoffChildDelivery> children;
 
@@ -447,7 +446,7 @@ public:
      *
      * Same chain, same era test, same as-of guard as apply_renames -- shared so the
      * universe the runner loads bars for cannot disagree with the re-keying that
-     * happens later in the same run (E2-F34). Empty when no rename applies.
+     * happens later in the same run. Empty when no rename applies.
      */
     static std::vector<std::string> rename_chain(const RenameMap& renames,
                                                  const std::string& symbol,
@@ -464,8 +463,7 @@ public:
      * key removed -- the two rows are the same holding.
      *
      * Aliases are a curated subset, not the full rename history: an unmapped
-     * historical ticker simply stays as-is, which is the pre-existing
-     * behaviour and never loses a position.
+     * historical ticker simply stays as-is, which never loses a position.
      *
      * **Renames are era-bound by position inception.** Tickers get reused: our
      * own backfill maps META -> METV (effective_until 2022-01-31), but META has
@@ -486,7 +484,7 @@ public:
      * with, is skipped with a WARN. A skipped rename is retried next run; a
      * wrong re-key is silent corruption. Never pass class-1's fail-wide
      * bulk-start sentinel dates in here -- a sentinel two years back satisfies
-     * the era test for any recent alias and reintroduces the bug.
+     * the era test for any recent alias and re-keys a live holding.
      *
      * @param position_inception symbol -> YYYY-MM-DD the holding was established.
      */
@@ -514,9 +512,8 @@ public:
      * @param feed_last_date MEASURED last row date of
      *        equities_data.corporate_action, YYYY-MM-DD. Quoted in the "no deal
      *        terms" WARNs so the operator reads what the database actually holds
-     *        rather than a date compiled into the binary (E4 item 3). Empty
-     *        falls back to `kCorpActionTableFrozenAfter`, which is what every
-     *        caller got before the measurement existed.
+     *        rather than a date compiled into the binary. Empty
+     *        falls back to `kCorpActionTableFrozenAfter`.
      */
     static std::vector<LifecycleAdjustment> apply_terminations(
         std::unordered_map<std::string, Position>& positions,
@@ -525,7 +522,7 @@ public:
         const std::string& feed_last_date = "");
 
     /**
-     * @brief E2-F31 -- receive the child of a spinoff instead of mangling the parent.
+     * @brief Receive the child of a spinoff instead of mangling the parent.
      *
      * Pure, in place, and cross-symbol, which is why it lives here and not in the applier:
      * a spinoff changes WHAT is held.
@@ -539,7 +536,7 @@ public:
      *     q*B/F  +  q*r * B(1-1/F)/r  ==  q*B                (exactly, for any F > 1, r > 0)
      *
      * `B/F` is the same restatement the adjusted price series applies to the parent, so
-     * returns stay continuous across the ex-date -- the E2-F15 frame rule, honoured rather
+     * returns stay continuous across the ex-date -- the basis-and-mark frame rule, honoured rather
      * than worked around. `B(1-1/F)/r` is the fair-value allocation the vendor already
      * computed for us: the fraction of value that LEFT the parent, spread over the shares
      * that received it.
@@ -562,7 +559,7 @@ public:
      * @param policy  what to do with the child. LIQUIDATE_AT_FIRST_CLOSE (the default)
      *                books the child and immediately sells it at `child_first_close`,
      *                realizing against `B_child`; HOLD keeps it, which strands an
-     *                unpriceable position unless the child is in the universe (F-4).
+     *                unpriceable position unless the child is in the universe.
      * @return one LifecycleAdjustment per event that had a held parent.
      */
     static std::vector<LifecycleAdjustment> apply_spinoffs(
@@ -593,7 +590,7 @@ public:
      * @brief May a deal-terms row become a TerminationEvent for its own ticker?
      *
      * The one place the two class-3 hazards are decided together, so the runner's
-     * terms loop and the tests answer the same question (E2-F26):
+     * terms loop and the tests answer the same question:
      *
      *  1. **Keying.** `acquisitionof`, `mergerfrom` and `spunofffrom` are the
      *     SURVIVOR's row -- the acquirer, the surviving merger party, the spinoff

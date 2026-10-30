@@ -1,8 +1,8 @@
 // tests/backtest/test_consumed_series_record.cpp
 //
-// The futures backtest's own record of what it consumed (consumed_series_record.hpp, T-ROLLX-FIX
-// commit 1): the oracle is fed the engine's withheld set, hold set and rebalance calendar, and the
-// engine's series is the one built on the bars it actually fed (LOOP_SPEC v6.1 section 11). A
+// The futures backtest's own record of what it consumed (consumed_series_record.hpp): a reference
+// checker is fed the engine's withheld set, hold set and rebalance calendar, and the engine's
+// series is the one built on the bars it actually fed. A
 // disabled record writes nothing; an enabled one writes the four files, the series built once over
 // each symbol's whole consumed sequence.
 
@@ -78,7 +78,7 @@ TEST(ConsumedSeriesRecord, TheFourFilesCarryTheCyclesAndTheSeriesOfTheFedBarsOnl
               (std::vector<std::string>{"date", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08",
                                         "2026-01-09"}));
     EXPECT_EQ(lines(dir / "withheld.csv"), (std::vector<std::string>{"date,symbol", "2026-01-07,XA"}));
-    // L-07 (F-5): a withheld date is a hold without a hold-set row.
+    // A withheld date is a hold without a hold-set row.
     EXPECT_EQ(lines(dir / "hold.csv"), (std::vector<std::string>{"date,symbol"}));
     const auto s = lines(dir / "series.csv");
     ASSERT_EQ(s.size(), 5u) << "a header and the four FED bars";
@@ -113,9 +113,9 @@ TEST(ConsumedSeriesRecord, TheFourFilesCarryTheCyclesAndTheSeriesOfTheFedBarsOnl
     std::filesystem::remove_all(dir);
 }
 
-// LOOP_SPEC section 6.1: a symbol with no verdict in the signal group is held, and the hold set the
-// reference is fed must say so. hold.csv listed only the symbols with a bad bar, so a checker fed
-// the file alone traded a symbol on a day it printed no bar.
+// A symbol with no verdict in the signal group is held, and the hold set the reference is fed must
+// say so: a hold.csv listing only the symbols with a bad bar would let a checker fed the file alone
+// trade a symbol on a day it printed no bar.
 TEST(ConsumedSeriesRecord, ASymbolThatPrintsNoBarInTheGroupIsInTheHoldSet) {
     const auto dir = std::filesystem::temp_directory_path() / "tngin_csr_no_bar_hold";
     std::filesystem::remove_all(dir);
@@ -164,7 +164,7 @@ TEST(ConsumedSeriesRecord, EnablingTheRecordRemovesAnEarlierRunsFiles) {
     std::filesystem::remove_all(dir);
 }
 
-// T-ROLLX-FIX commit 2: the last marked group (never a signal group) is written with the marks' own
+// The last marked group (never a signal group) is written with the marks' own
 // reading: withheld, change, the contract held after the bar.
 TEST(ConsumedSeriesRecord, TheFinalMarkedGroupIsWrittenWithTheMarksReading) {
     const auto dir = std::filesystem::temp_directory_path() / "tngin_csr_final";

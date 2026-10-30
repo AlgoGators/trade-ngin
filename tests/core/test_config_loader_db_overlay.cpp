@@ -454,7 +454,7 @@ TEST_F(StrategyConfigOverlay, ARowOfAnotherPortfolioIsRefused) {
     ASSERT_TRUE(r.is_error());
 }
 
-// Rejoin R-6: a settings row applies to a desk-editable portfolio only. Our books (no qt block)
+// A settings row applies to a desk-editable portfolio only. Our books (no qt block)
 // and the model twin (qt.desk_editable false) run on their files, as their backtests do; an
 // active row for one, even an empty one, refuses the run and names its version. No row is not a
 // refusal on any of them.
@@ -486,7 +486,7 @@ TEST_F(StrategyConfigOverlay, ARowForABookThatIsNotDeskEditableIsRefused) {
     }
 }
 
-// The save check (D-17) answers as the run would: a row for a book that is not desk-editable is
+// The save check answers as the run would: a row for a book that is not desk-editable is
 // refused before it is saved.
 TEST_F(StrategyConfigOverlay, TheSaveCheckRefusesARowForABookThatIsNotDeskEditable) {
     auto checked = check_live_settings_overlay(desk_tmpl(), "conservative", Json::object());
@@ -497,7 +497,7 @@ TEST_F(StrategyConfigOverlay, TheSaveCheckRefusesARowForABookThatIsNotDeskEditab
         check_live_settings_overlay(desk_tmpl(), "qt_conservative", Json::object()).is_ok());
 }
 
-// Rejoin R-17: the three per-contract blocks are engine data, not desk settings: an override of
+// The three per-contract blocks are engine data, not desk settings: an override of
 // any of them is refused, on a book whose files hold them (ours and the desk's) and by the save
 // check, even when the value is the files' own.
 TEST_F(StrategyConfigOverlay, ThePerContractBlocksAreRefused) {

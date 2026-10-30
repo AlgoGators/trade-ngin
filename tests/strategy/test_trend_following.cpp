@@ -254,7 +254,7 @@ protected:
     double last_position_{0.0};
 };
 
-// LOOP_SPEC sections 3.2 and 7.7 (D4, D13): the strategy has no buffer and no rounding, and the
+// The strategy has no buffer and no rounding, and the
 // tracked config_template names none of the retired buffer keys (the loader refuses each on a
 // futures book).
 TEST(TrendFollowingConfigDefaults, TheTemplateCarriesNoRetiredBufferKey) {
@@ -335,8 +335,8 @@ public:
 
 // The sector cap must survive normalization: a single-symbol sector is capped to
 // 50% of its sector budget and the freed weight goes to OTHER symbols only.
-// Pre-fix, the closing renormalization re-inflated the capped symbol (MBT landed
-// at 1/3 instead of 1/4).
+// A closing renormalization that re-inflated the capped symbol would land MBT at 1/3
+// instead of 1/4.
 TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
     StateManager::reset_instance();
     auto db = std::make_shared<SectorMetadataMockDb>("mock://sector");
@@ -366,12 +366,11 @@ TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
     }
 }
 
-// T2.20: the weight table is read from the database once and kept for one initialised life of the
+// The weight table is read from the database once and kept for one initialised life of the
 // strategy; initialize() drops it. The table depends on nothing else: not on the strategy's
-// symbols, its configuration or the listing dates (beyond MM's rule below: a declared predecessor
+// symbols, its configuration or the listing dates (beyond the rule below: a declared predecessor
 // whose listed contract is stored is not weighted). Within a life a changed table is NOT seen (that
-// is the cache); after initialize() it is, where the parent went on returning the first table for
-// ever.
+// is the cache); after initialize() it is.
 TEST(TrendFollowingWeights, InitializeDropsTheKeptWeightsSoAChangedTableIsReadAgain) {
     StateManager::reset_instance();
     auto db = std::make_shared<SectorMetadataMockDb>("mock://weights_hook");
@@ -407,9 +406,9 @@ TEST(TrendFollowingWeights, InitializeDropsTheKeptWeightsSoAChangedTableIsReadAg
         EXPECT_NEAR(second.at(rate), 5.0 / 24.0, 1e-12);
 }
 
-// MM (HD 2026-10-27): with MGC and SIL stored next to GC and SI and the pairs declared, the pair is
+// With MGC and SIL stored next to GC and SI and the pairs declared, the pair is
 // one instrument, the listed contract: GC and SI take no weight and Metals is HG, MGC and SIL. With
-// nothing declared every stored symbol is weighted, as before.
+// nothing declared every stored symbol is weighted.
 TEST(TrendFollowingWeights, AStoredPredecessorCarriedByItsListedContractIsNotWeighted) {
     StateManager::reset_instance();
     auto db = std::make_shared<SectorMetadataMockDb>("mock://weights_micros");
@@ -735,7 +734,7 @@ TEST_F(TrendFollowingTest, VolatilityCalculation) {
     EXPECT_GT(nq_size, 0.0) << "Expected non-zero NQ position";
 }
 
-// LOOP_SPEC section 3.2 (D4, D13, D14): the strategy publishes N* itself. The position it holds
+// The strategy publishes N* itself. The position it holds
 // for a symbol is the position before any limit: no buffer keeps an old quantity and nothing is
 // rounded or clamped.
 TEST_F(TrendFollowingTest, ThePublishedPositionIsTheUnbufferedOptimalPosition) {

@@ -1,12 +1,12 @@
 // tests/backtest/test_backtest_change_bar_hold.cpp
 //
-// LOOP_SPEC v6.1 sections 2.1 and 2.2, D37 (T-ROLLX-FIX commit 1): in the futures backtest a symbol
-// whose LAST consumed bar is pending (a change bar, either bar of a flip, an id-less bar inside a
-// pending roll: code review D2) is HELD at the rebalance: no fill, the book stays at its filled
-// quantity; the confirming bar ends the hold. The status is taken on the CONSUMED sequence (a
-// withheld bar never walks it) and persists across cycles that consume no bar of the symbol.
+// In the futures backtest a symbol whose LAST consumed bar is pending (a change bar, either bar of
+// a flip, an id-less bar inside a pending roll) is HELD at the rebalance: no fill, the book stays
+// at its filled quantity; the confirming bar ends the hold. The status is taken on the CONSUMED
+// sequence (a withheld bar never walks it) and persists across cycles that consume no bar of the
+// symbol.
 //
-// The book is rebalanced by the one pass (LOOP_SPEC sections 4 to 6), which carries the hold: the
+// The book is rebalanced by the one pass, which carries the hold: the
 // coordinator leaves a pending symbol out of the session set and the pass fixes its row. The sleeve
 // targets 3n contracts of XX on its n-th call (a contract of XX is a tenth of the book, so every
 // step is beyond the no-trade buffer): every cycle that is not held fills, and a held cycle fills
@@ -173,8 +173,9 @@ TEST_F(BacktestChangeBarHoldTest, BothBarsOfAFlipAreHeld) {
     EXPECT_EQ(f, (std::vector<double>{1, 1, 0, 0}));
 }
 
-// K-01 in the roll status: day 2 is a locked print (JUNK, withheld) carrying another contract's id.
-// It never walks the tracker, so nothing is pending and no cycle is held by D37 (cycle 3 is held by
+// A withheld bar in the roll status: day 2 is a locked print (JUNK, withheld) carrying another
+// contract's id. It never walks the tracker, so nothing is pending and no cycle is held for a pending
+// roll (cycle 3 is held by
 // the JUNK verdict itself: its signal bar is the withheld one).
 TEST_F(BacktestChangeBarHoldTest, AWithheldPrintNeverStartsAHold) {
     const auto f = run({bar("XX", 0, 100, "A"), bar("XX", 1, 101, "A"), bar("XX", 2, 90, "B", true),
@@ -183,9 +184,9 @@ TEST_F(BacktestChangeBarHoldTest, AWithheldPrintNeverStartsAHold) {
         << "only the cycle whose signal bar is the withheld print is held; day 3 is no flip";
 }
 
-// Rolls step 3 (per_contract_rolls on): a roll the source knows on its bar (crossover, deadline) is
+// With per_contract_rolls on, a roll the source knows on its bar (crossover, deadline) is
 // not held: the cycle consuming it trades. A vendor switch only the next bar confirms is held on the
-// cycle consuming it, like today's change bar, kept or not by the next bar.
+// cycle consuming it, like a change bar, kept or not by the next bar.
 namespace {
 Bar with_roll(Bar b, double old_close, const char* old_id, RollFromKind kind) {
     b.roll_from = RollFrom{old_close, old_id, kind, ""};

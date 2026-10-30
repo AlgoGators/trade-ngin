@@ -1,10 +1,10 @@
 // tests/live/test_live_results_roll_cost_columns.cpp
 //
-// T-ROLLX commit 3 (migration 017): LiveDataLoader::load_live_results appends daily_roll_costs and
-// total_roll_costs to its SELECT (33 columns) and reads them as the last two fields. A result
+// LiveDataLoader::load_live_results appends daily_roll_costs and
+// total_roll_costs (migration 017) to its SELECT (33 columns) and reads them as the last two fields. A result
 // narrower than the SELECT (the 31-column shape the sizing-read tests' double serves) must read them
-// as 0, not read a column past the table's end: the first cut did, and three LiveSizingReads tests
-// crashed on one build of it (SegFault) while surviving on another.
+// as 0, not read a column past the table's end, which crashes on one build (SegFault) and
+// survives on another.
 
 #include <gtest/gtest.h>
 

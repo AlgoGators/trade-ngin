@@ -1,33 +1,27 @@
-// E2-F17 regression pins — a corporate action must not restate a cost basis that was formed
-// AFTER its ex-date.
+// A corporate action must not restate a cost basis that was formed AFTER its ex-date.
 //
-// THE ORIGINAL FAILURE, measured over an 82-day live replay: FOUR of six dividends applied were
-// applied to positions held on no part of their ex-date. ABT's 04-15 dividend restated a
-// position first held on 04-17, moving the basis 95.47 -> 94.881429 and putting +$33.79 of
-// unrealized that does not exist onto the equity curve -- permanently, once the position sells,
-// because the sale's realized is then struck against a fabricated basis.
+// THE FAILURE SHAPE: a dividend applied to a position held on no part of its ex-date. ABT's
+// 04-15 dividend restating a position first held on 04-17 moves the basis 95.47 -> 94.881429
+// and puts +$33.79 of unrealized that does not exist onto the equity curve -- permanently, once
+// the position sells, because the sale's realized is then struck against a fabricated basis.
 //
-// THE FIRST FIX WAS WRONG IN TWO WAYS, and this file exists in its current form because of them:
+// Two ways the guard can fail:
 //
-//   1. It was INERT FOR SPLITS. The runner only populated the signal inside its DIVIDEND
-//      branch, so splits and ADR splits always reached the applier with the default and the
-//      guard could never fire -- leaving the catastrophic case (a 25:1 split restating a
-//      post-ex-date basis by 2400%) unguarded while the dividend case looked covered.
+//   1. INERT FOR SPLITS. A runner that populated the signal only inside its DIVIDEND branch
+//      would hand splits and ADR splits to the applier with the default, and the guard could
+//      never fire -- leaving the catastrophic case (a 25:1 split restating a post-ex-date basis
+//      by 2400%) unguarded while the dividend case looked covered.
 //
-//      *** THE PREVIOUS VERSION OF THIS FILE HAD A TEST NAMED "TheRuleCoversSplitsNotJustDividends"
-//      *** AND IT PASSED THE WHOLE TIME. It constructed the event directly, so it proved the
-//      *** APPLIER was type-agnostic -- which was true -- while production could never reach
-//      *** that state. Every test below has the same blind spot BY CONSTRUCTION: they pin the
-//      *** applier's RULE, and they cannot see whether the runner populates the input. Only the
-//      *** live replay can. Do not read a green run here as coverage of the wiring.
+//      *** Every test below pins the applier's RULE and constructs the event directly, so
+//      *** none can see whether the runner populates the input. Only the live replay can. Do
+//      *** not read a green run here as coverage of the wiring.
 //
-//   2. Its cutoff date was OFF BY ONE, in the drop-a-real-adjustment direction. It measured the
-//      book at `ex_date - 1`, which is the cash-eligibility cutoff for a DIVIDEND, not the
-//      basis frame. A fill on run D is priced at close(D-1), so a position opened ON the
-//      ex-date run has a PRE-event basis and must still be restated; the old rule called it
-//      "flat at the ex-date" and skipped it.
+//   2. A cutoff OFF BY ONE, in the drop-a-real-adjustment direction. `ex_date - 1` is the
+//      cash-eligibility cutoff for a DIVIDEND, not the basis frame. A fill on run D is priced
+//      at close(D-1), so a position opened ON the ex-date run has a PRE-event basis and must
+//      still be restated.
 //
-// THE RULE NOW: contaminated <=> the basis was formed after the ex-date, carried as a tri-state
+// THE RULE: contaminated <=> the basis was formed after the ex-date, carried as a tri-state
 // so that "no evidence" can never be mistaken for "verifiably flat". Dropping a real 25:1 split
 // leaves basis and mark 25x apart -- strictly worse than the double-adjustment being prevented
 // -- so UNKNOWN must APPLY.
@@ -86,7 +80,7 @@ CorpActionEvent split_event(Provenance prov) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// 1. THE FIX. Positive evidence of a post-ex-date basis -> refuse.
+// 1. THE GUARD. Positive evidence of a post-ex-date basis -> refuse.
 // ---------------------------------------------------------------------------
 
 TEST(CorpActionExDateEligibility, BasisFormedAfterExDateSkipsTheEvent) {
@@ -121,7 +115,7 @@ TEST(CorpActionExDateEligibility, TheApplierRuleIsTypeAgnostic) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. THE TWO WAYS THE FIX COULD BE WORSE THAN THE BUG. Both must hold.
+// 2. THE TWO WAYS THE GUARD COULD BE WORSE THAN THE DEFECT. Both must hold.
 // ---------------------------------------------------------------------------
 
 // A basis formed on or before the ex-date is exactly what the event is FOR.

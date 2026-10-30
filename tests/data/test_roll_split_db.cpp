@@ -1,8 +1,8 @@
-// Migration 040 through the engine's own writers (rolls step 4, ruling 18): a per-contract roll's
+// Migration 040 through the engine's own writers: a per-contract roll's
 // closing leg stores its split in trading.executions (the live writer, and the re-run's replace of the
 // day) and in backtest.executions (the small and the batched statement), every other row NULL; the
 // results row stores the two totals as typed cells. TRADE_NGIN_TEST_DSN only, a database with 040
-// applied; throwaway ids; every row deleted at the end.
+// applied; test-only ids; every row deleted at the end.
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 #include <chrono>

@@ -1,6 +1,6 @@
 // tests/live/test_console_labels.cpp
 //
-// T-8D-2 R68: the live runners' console lines name what they print. The text of each line is
+// The live runners' console lines name what they print. The text of each line is
 // built by a function of include/trade_ngin/live/console_labels.hpp, called here with values;
 // the runners are `main()`s, so that they print each line through its function is a labelled
 // source guard at the end of each block.
@@ -283,7 +283,7 @@ TEST(ConsoleCurrentForecasts, TheEquityTableNamesTheZScoreAndPrintsSharesAtSixDe
     EXPECT_EQ(count_of(table, "17.612345"), 2u);
 }
 
-// A quantity that rounds to zero prints as zero (the parent printed "-0.00"); a sleeve with no
+// A quantity that rounds to zero prints as zero (not "-0.00"); a sleeve with no
 // reading of its own prints n/a and keeps its stored quantity.
 TEST(ConsoleCurrentForecasts, AZeroQuantityHasNoSignAndASleeveWithNoReadingSaysSo) {
     const std::string table = current_forecasts_console(
@@ -339,7 +339,7 @@ TEST(ConsoleCurrentForecastsTwinSourceGuard, TheRunnersPrintEverySleeveAndTheSto
 
 // READS SOURCE (a labelled twin guard: the three labels are bare literals inside each app's
 // main, shown by the summary block of a backtest run's log). The win rate and the trade count
-// are figures of CLOSING fills (T-8D R11) and the volatility is annualised (R8); each app says so.
+// are figures of CLOSING fills and the volatility is annualised; each app says so.
 TEST(BacktestConsoleLabelsTwinSourceGuard, TheThreeAppsNameTheClosingFillFiguresAndTheVolatility) {
     for (const char* app :
          {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp",

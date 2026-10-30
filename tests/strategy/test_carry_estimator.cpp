@@ -261,7 +261,7 @@ TEST(CarryBlend, TheBlendedForecastByHandAndItsCap) {
     EXPECT_NEAR(blend(9.0, 6, 5.0, 4, 1.0).forecast, 1.23 * 5.0, 1e-12);
 }
 
-// The book's values, written out (fix round 1, audit A S2): the spans of strategy ten and the scalar 30,
+// The book's values, written out: the spans of strategy ten and the scalar 30,
 // the cap 20, pinned to literals rather than read back from the code that defines them.
 TEST(CarryEstimator, CarversSpansScalarAndCapAreTheBooks) {
     EXPECT_EQ(default_spans(), (std::vector<int>{5, 20, 60, 120}));

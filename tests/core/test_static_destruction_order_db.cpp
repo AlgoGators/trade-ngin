@@ -1,20 +1,20 @@
-// E2-F30 (with E2-F61): what happens after main() returns.
+// What happens after main() returns.
 //
-// Two defects, one shutdown, one fix each:
+// Two shutdown hazards, one guard each:
 //
-// E2-F30 -- DatabasePool and StateManager are both function-local statics.
+// DatabasePool and StateManager are both function-local statics.
 //   Statics are destroyed in reverse order of CONSTRUCTION, and a pooled
 //   PostgresDatabase calls StateManager::instance().unregister_component() from
-//   its own destructor. Reach the pool first and StateManager is constructed
-//   second, so it is destroyed FIRST, and every pooled connection's shutdown
-//   then takes a recursive_mutex inside a destroyed object. That is the five
-//   "recursive mutex" warnings on every live run.
+//   its own destructor. If the pool were reached first and StateManager
+//   constructed second, StateManager would be destroyed FIRST, and every pooled
+//   connection's shutdown would take a recursive_mutex inside a destroyed
+//   object (a "recursive mutex" warning per connection).
 //
-// E2-F61 -- the same shutdown logs "Disconnected from PostgreSQL database"
-//   through Logger::format_message, which read `static thread_local std::string
-//   current_component_`. On the main thread that string is destroyed alongside
-//   the statics, so the log line was prefixed with the freed bytes of a dead
-//   std::string.
+// The same shutdown logs "Disconnected from PostgreSQL database" through
+//   Logger::format_message. Were the component name it reads a `static
+//   thread_local std::string`, on the main thread that string would be destroyed
+//   alongside the statics, and the log line would be prefixed with the freed
+//   bytes of a dead std::string.
 //
 // Neither is observable from an ordinary test: both happen after the last test
 // body has run, when gtest can no longer assert anything. So these are DEATH
@@ -24,9 +24,9 @@
 //
 // Ordering inside the child matters and is the whole point:
 //   DatabasePool::instance() is touched BEFORE anything else registers a
-//   component. Without the fix that is what puts StateManager second in the
+//   component. Without the guard that is what would put StateManager second in the
 //   construction order. A child that touched StateManager first would shut down
-//   cleanly with or without the fix and would prove nothing.
+//   cleanly with or without the guard and would prove nothing.
 //
 // Reachability gate matches the other DB-backed tests: the pool needs a real
 // server to hold a connection whose destructor does the unregistering.
@@ -82,11 +82,11 @@ std::string child_out_path() {
 // thing to reach StateManager -- because StateManager is constructed lazily by
 // PostgresDatabase::connect() inside the pool's own initialize(). That puts the
 // pool ahead of StateManager in construction order and therefore behind it in
-// destruction order, which is E2-F30 exactly.
+// destruction order: the hazardous order.
 void shutdown_through_the_pool() {
     // 1. Logger first, as every runner's main() does. Without this the runner
     //    takes a "Logger not initialized" path that never calls
-    //    format_message(), so E2-F61's destroyed-thread_local read never
+    //    format_message(), so the destroyed-thread_local read never
     //    happens and its test would pass vacuously. Console destination keeps
     //    output on stderr and writes no files.
     LoggerConfig lc;
@@ -115,7 +115,7 @@ void shutdown_through_the_pool() {
 
     // 4. Re-point the child's output at a file the parent can read AFTER the
     //    child is gone. BOTH streams: Logger::write_to_console_unsafe uses
-    //    std::cout (logger.cpp:236) while the runtime's own destruction
+    //    std::cout while the runtime's own destruction
     //    complaints go to stderr, and this test needs both halves of the
     //    shutdown in one place.
     std::cout.flush();
@@ -188,14 +188,14 @@ protected:
         if (!db_available()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but no reachable TRADE_NGIN_TEST_DSN, so the "
-                          "E2-F30 / E2-F61 shutdown goes unverified";
+                          "static destruction order at shutdown goes unverified";
             }
             GTEST_SKIP() << "no reachable TRADE_NGIN_TEST_DSN; skipping";
         }
     }
 };
 
-// E2-F30: the process must reach the end of static destruction and exit 0.
+// The process must reach the end of static destruction and exit 0.
 TEST_F(StaticDestructionOrderTest, PoolShutdownDoesNotTouchADestroyedStateManager) {
     clear_child_stderr();
     EXPECT_EXIT(shutdown_through_the_pool(), ::testing::ExitedWithCode(0), ".*");
@@ -203,8 +203,7 @@ TEST_F(StaticDestructionOrderTest, PoolShutdownDoesNotTouchADestroyedStateManage
         << "the child never reached the exit that runs static destruction";
 }
 
-// E2-F30, sharper: the recursive-mutex warning must be gone from the shutdown.
-// This is the line the audit counted five of on every live run.
+// Sharper: the recursive-mutex warning must not appear in the shutdown.
 TEST_F(StaticDestructionOrderTest, ShutdownEmitsNoRecursiveMutexWarning) {
     clear_child_stderr();
     EXPECT_EXIT(shutdown_through_the_pool(), ::testing::ExitedWithCode(0), ".*");
@@ -215,12 +214,12 @@ TEST_F(StaticDestructionOrderTest, ShutdownEmitsNoRecursiveMutexWarning) {
         << "static destruction still fails a mutex lock:\n" << err;
 }
 
-// E2-F61: the shutdown log line's component prefix must be a LIVE registered
+// The shutdown log line's component prefix must be a LIVE registered
 // component, not a fragment of freed memory.
 //
-// The first shape of this test asked only that the prefix held printable bytes,
-// and it passed with the defect in place -- a destroyed std::string does not
-// reliably read back as unprintable rubbish. Measured pre-fix output was:
+// Asking only that the prefix holds printable bytes is not enough: a destroyed
+// std::string does not reliably read back as unprintable rubbish. A freed prefix
+// reads like:
 //
 //   [INFO] [Disconnected fro] Disconnected from PostgreSQL database
 //
@@ -231,7 +230,7 @@ TEST_F(StaticDestructionOrderTest, ShutdownEmitsNoRecursiveMutexWarning) {
 // The expected value is "PostgresDatabase", not the SHUTDOWN_PROBE_COMPONENT
 // this test registers. That is not a compromise -- it is the correct answer.
 // PostgresDatabase's constructor calls Logger::register_component("Postgres\
-// Database") (postgres_database.cpp:29), and the pool builds its connections
+// Database"), and the pool builds its connections
 // after this test registers its own name, so the last live value on the thread
 // is that one. What matters is that it is a value something actually
 // registered, still readable after main() has returned.
@@ -253,15 +252,15 @@ TEST_F(StaticDestructionOrderTest, ShutdownLogPrefixIsALiveRegisteredComponent) 
         const std::string prefix = out.substr(line_start, at - line_start);
 
         EXPECT_NE(prefix.find("[PostgresDatabase]"), std::string::npos)
-            << "the component prefix is not the component that registered last -- E2-F61, "
+            << "the component prefix is not the component that registered last -- the "
                "Logger read its thread_local after that string was destroyed. Prefix was: '"
             << prefix << "'";
 
-        // The specific corruption seen pre-fix: the prefix becomes the head of
+        // The specific corruption of a freed prefix: the prefix becomes the head of
         // the message itself, because the allocator reused the freed buffer.
         EXPECT_EQ(prefix.find(msg.substr(0, 8)), std::string::npos)
             << "the component prefix contains the head of the message it is prefixing, "
-               "which is freed memory reused by the message string (E2-F61). Prefix was: '"
+               "which is freed memory reused by the message string. Prefix was: '"
             << prefix << "'";
         ++checked;
         at = out.find(msg, at + 1);

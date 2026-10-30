@@ -33,31 +33,31 @@ struct SleeveSeed {
  * @brief Seeds EVERY sleeve of a live book from that sleeve's own stored rows of the previous day.
  *
  * Each live invocation is a fresh process, so a strategy's positions_ and the PortfolioManager's
- * per-sleeve current_positions start at zero. The held-book seed (eae0d5a7) puts the stored book
+ * per-sleeve current_positions start at zero. The held-book seed puts the stored book
  * back in both places before the day's rebalance:
- *   Fix #1  strategies[i]->seed_positions(rows): the Carver position buffer reads positions_ as
+ *   strategies[i]->seed_positions(rows): the Carver position buffer reads positions_ as
  *           its comparison anchor; without it the buffer cannot absorb day-to-day signal jitter.
- *   Fix #7  portfolio.update_strategy_position(strategy_names[i], symbol, row) per row: the
+ *   portfolio.update_strategy_position(strategy_names[i], symbol, row) per row: the
  *           optimizer's current_weights are summed from each sleeve's current_positions; without
  *           it the optimizer's coordinate descent starts from current=0 every fresh process and
  *           converges to a zero-anchored compromise (e.g. MYM=2 instead of yesterday's actual=1),
  *           producing daily +/-1 trades as market noise crosses rounding boundaries.
- * Neither mechanism is changed here. What changed (T-7a C3, T-BASE finding): the runners seeded
- * strategy_names[0] only, so on a multi-sleeve book (BASE: TREND_FOLLOWING and
- * TREND_FOLLOWING_FAST) the second sleeve was never seeded, in either place, and the optimizer
- * compared a `current` summed over one sleeve against a `target` summed over two.
+ * Every sleeve is seeded: seeding strategy_names[0] only would leave the second sleeve of a
+ * multi-sleeve book (BASE: TREND_FOLLOWING and TREND_FOLLOWING_FAST) unseeded in both places,
+ * and the optimizer would compare a `current` summed over one sleeve against a `target` summed
+ * over two.
  *
  * strategies[i] was created from strategy_names[i] (the runners' factory loop) and the PM's sleeve
  * key is that same name (the strategy's metadata.id), so the strategy object, the stored rows'
  * strategy_name and the PM slot agree. The sleeves are visited in strategy_names order; each sleeve
- * logs exactly the lines the one-sleeve seed logged, so a one-sleeve book (CONSERVATIVE) is unchanged.
+ * logs the same lines, so a one-sleeve book (CONSERVATIVE) logs one sleeve's seed.
  *
- * NOTE (ledger BASE-opposite-sleeve-anchor; designed with netting in T-7b, not here): two sleeves
+ * NOTE: two sleeves
  * may hold OPPOSITE signs on one symbol (stored on BASE: ZT.v.0 2025-11-08 and 11-09, TREND_FOLLOWING
  * +1 / TREND_FOLLOWING_FAST -1; MBT.v.0 2025-01-29, +4 / -8). This seed does not net them: each
  * sleeve gets its own signed row in its own slot, so the optimizer's anchor (current_weights, the
  * sum over sleeves) is the NET position, while the runner's per-sleeve execution diff charges each
- * sleeve's leg gross. HD's ruled shape (2026-09-19: sleeves kept gross per sleeve for attribution,
+ * sleeve's leg gross. The account's shape (sleeves kept gross per sleeve for attribution,
  * the account holds the net, the risk gate sizes on the net, the cross logged at zero cost) is not
  * implemented by this function and must not be assumed from it.
  *

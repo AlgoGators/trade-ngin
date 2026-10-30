@@ -1,15 +1,14 @@
 // tests/backtest/test_equity_cost_warmup.cpp
 //
-// T-7a commit 6 (ledger H-13; HD 2026-09-21, the root fix). The equity backtest's cost warm-up.
+// The equity backtest's cost warm-up.
 //
-// bt_equity_mr registered each symbol's liquidity-tiered cost config from the 30 days AFTER
-// start_date (a look-ahead) and loaded that window with the MarketDataBus ON, so every warm-up row
-// was a BAR event and the PortfolioManager ran a full process_market_data per row: the
-// mean-reversion sleeve entered the run holding ~21 future closes and the PM's own date-keyed
-// history held them on the warm-up query's adjustment basis (the 189 PM_HISTORY_REPEATED_DATE
-// WARNs on bteq0806). Now the window is the 30 calendar days before start_date, ending strictly
-// before it, and it is loaded with publishing disabled, so the bars reach the two cost
-// registrations and nothing else.
+// bt_equity_mr registers each symbol's liquidity-tiered cost config from the 30 calendar days
+// before start_date, ending strictly before it (the 30 days after it would be a look-ahead), and
+// loads that window with publishing disabled, so the bars reach the two cost registrations and
+// nothing else. With the MarketDataBus ON every warm-up row would be a BAR event and the
+// PortfolioManager would run a full process_market_data per row: the mean-reversion sleeve would
+// enter the run holding the window's closes and the PM's own date-keyed history would hold them on
+// the warm-up query's adjustment basis.
 //
 // The loader below does what PostgresDatabase::get_market_data does: it publishes every row it
 // returns as a BAR event (postgres_database.cpp, "Publish market data events"), then returns the
@@ -207,7 +206,7 @@ protected:
 };
 
 // The window: the 30 calendar days (24 h each, as the window has always been counted) BEFORE
-// start_date, ending strictly before it. The parent read [start, start + 30 d].
+// start_date, ending strictly before it. Reading [start, start + 30 d] would be look-ahead.
 TEST(EquityCostWarmupWindow, IsTheThirtyCalendarDaysEndingStrictlyBeforeStartDate) {
     const auto w = backtest::equity_cost_warmup_window(kStart);
     EXPECT_LT(w.end, kStart) << "the warm-up window reaches start_date or beyond (look-ahead)";
@@ -222,7 +221,7 @@ TEST(EquityCostWarmupWindow, IsTheThirtyCalendarDaysEndingStrictlyBeforeStartDat
 
 // The loader is asked for exactly that window; the bars it publishes on the bus (as
 // get_market_data does) reach neither the sleeve nor the PM's own history, and both cost managers
-// are registered from them. With the bus on (the parent) the sleeve and the PM held 21 closes per
+// are registered from them. With the bus on, the sleeve and the PM would hold 21 closes per
 // symbol before the run.
 TEST_F(EquityCostWarmupTest, TheWarmupBarsReachOnlyTheTwoCostRegistrations) {
     const auto rows = warmup_rows(volumes_);
@@ -298,8 +297,7 @@ TEST_F(EquityCostWarmupTest, TheBusIsReEnabledWhenTheLoadFailsOrThrows) {
 }
 
 // bt_equity_mr registers its cost configs only through the guarded seam, before the run, and
-// reads no other bars ahead of run_portfolio. The parent loaded [start_date, start_date + 30 d]
-// directly, with the bus on, and called both registrations itself.
+// reads no other bars ahead of run_portfolio.
 TEST(BtEquityMrCostWarmupSource, TheRunnerRegistersCostsOnlyThroughTheGuardedWindowBeforeStart) {
     const std::string src = read_source("apps/backtest/bt_equity_mean_reversion.cpp");
     if (src.empty()) GTEST_SKIP() << "runner source not found";
@@ -311,7 +309,7 @@ TEST(BtEquityMrCostWarmupSource, TheRunnerRegistersCostsOnlyThroughTheGuardedWin
     EXPECT_LT(seam, run) << "the cost warm-up must be registered before the run";
 
     EXPECT_EQ(src.find("start_date + std::chrono::hours(24 * 30)"), npos)
-        << "the runner still builds the window after start_date (H-13 look-ahead)";
+        << "the runner still builds the window after start_date (look-ahead)";
     EXPECT_EQ(count_of(src, "register_equity_costs_from_bars("), 0u)
         << "the runner registers costs outside the seam";
     EXPECT_EQ(count_of(src, "register_equity_cost_configs("), 0u)

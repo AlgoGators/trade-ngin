@@ -1,11 +1,10 @@
 // tests/backtest/test_backtest_junk_signal_feed.cpp
 //
-// The futures backtest's signal feed under LOOP_SPEC v6.1 section 2.1, K-01 (LOCKED; T-ROLLX-FIX
-// commit 1; it supersedes T-7b-1 commit 7a's one-cycle delayed feed): a JUNK bar and a thin first
-// print of the signal group are withheld from the strategies, the PortfolioManager and the cost
-// models and are never fed later (k01_signal_feed). The coordinator's behaviour is pinned in
-// test_backtest_k01_feed.cpp; this file pins the pure helper and, as controls, the PortfolioManager's
-// fill price when one feed carries two bars of a symbol (C7a amended): it is the latest-dated bar's.
+// The futures backtest's signal feed: a JUNK bar and a thin first print of the signal group are
+// withheld from the strategies, the PortfolioManager and the cost models and are never fed later
+// (k01_signal_feed). The coordinator's behaviour is pinned in test_backtest_k01_feed.cpp; this file
+// pins the pure helper and, as controls, the PortfolioManager's fill price when one feed carries
+// two bars of a symbol: it is the latest-dated bar's.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -99,7 +98,7 @@ TEST(K01SignalFeed, AnAllWithheldGroupGivesAnEmptyFeed) {
     EXPECT_EQ(keys(f.withheld), (Keys{"XX@1"}));
 }
 
-// Control (passes on the parent's helper too): nothing withheld feeds the group unchanged.
+// Control: nothing withheld feeds the group unchanged.
 TEST(K01SignalFeed, NothingWithheldFeedsTheGroupUnchanged) {
     const auto f = k01_signal_feed({bar("BB", 1, 30), bar("AA", 1, 10)}, {});
     EXPECT_EQ(keys(f.feed), (Keys{"BB@1", "AA@1"}));
@@ -202,13 +201,12 @@ protected:
 };
 
 // ------------------------------------------------------------------------------------------------
-// Controls: the fill price when one feed carries two bars of a symbol (C7a amended, lead ruling
-// C7a_HALT option 1)
+// Controls: the fill price when one feed carries two bars of a symbol
 // ------------------------------------------------------------------------------------------------
 //
-// K-01 retired the release cycle that fed a withheld bar ahead of its symbol's new bar, but the
-// PortfolioManager's rule stands for any feed with two bars of a symbol (a live window, a catch-up):
-// a fill is priced at the symbol's LATEST-dated bar, never at an older bar in the vector.
+// A withheld bar is never fed later, but the PortfolioManager's rule holds for any feed with two
+// bars of a symbol (a live window, a catch-up): a fill is priced at the symbol's LATEST-dated bar,
+// never at an older bar in the vector.
 
 namespace {
 
@@ -289,7 +287,7 @@ TEST_F(ReleaseCycleFillPriceTest, AFillOnAReleaseCycleIsPricedAtTheSignalGroupsC
         << "the portfolio-level execution takes the same price";
 }
 
-// Control (passes on the parent too): one bar per symbol, the fill is priced at it.
+// Control: one bar per symbol, the fill is priced at it.
 TEST_F(ReleaseCycleFillPriceTest, WithOneBarPerSymbolTheFillIsPricedAtThatBar) {
     auto pm = make_pm();
     const std::unordered_set<std::string> xx{"XX"};

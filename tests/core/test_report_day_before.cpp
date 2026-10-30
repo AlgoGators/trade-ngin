@@ -1,7 +1,7 @@
 // tests/core/test_report_day_before.cpp
 //
-// HD 2026-10-14 (EMAIL_FEEDBACK_HD_2026-10-13.md section 15): the original banners of `main`, word for
-// word. One test per row of the table of section 15.4: title, form, text, table shown or hidden.
+// The day banners, word for word. One test per row of the banner table: title, form, text,
+// table shown or hidden.
 
 #include <gtest/gtest.h>
 

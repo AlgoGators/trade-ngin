@@ -11,17 +11,17 @@ namespace trade_ngin {
 /**
  * @brief Type of equity corporate action this applier knows how to adjust.
  *
- * Phase 4 covers ordinary splits, ADR-ratio splits, and ordinary cash
- * dividends. Spinoffs / mergers / ticker changes are out of scope per the
- * Phase 4 plan -- those need basis-cost reallocation logic beyond per-symbol
+ * The applier covers ordinary splits, ADR-ratio splits, and ordinary cash
+ * dividends. Spinoffs / mergers / ticker changes are not applier actions --
+ * they need basis-cost reallocation logic beyond per-symbol
  * scalar adjustment.
  */
-// E2-F13: TERMINATION is a class-3 lifecycle event (delisting / acquisition), not a
+// TERMINATION is a class-3 lifecycle event (delisting / acquisition), not a
 // price-restating class-1 event like SPLIT or DIVIDEND. It is in this enum solely so a
 // termination can be written to trading.corp_action_applied and deduped like any other
-// applied event -- before this, terminations were recorded NOWHERE and left no audit trail.
+// applied event, which gives it an audit trail.
 // The applier itself never produces one; CorporateActionsLifecycle does.
-// E2-F31: SPINOFF is likewise NOT an applier action. A spinoff changes WHAT you hold --
+// SPINOFF is likewise NOT an applier action. A spinoff changes WHAT you hold --
 // the parent keeps its shares at a restated basis and a NEW child position appears -- which
 // is cross-symbol and therefore CorporateActionsLifecycle::apply_spinoffs' business, exactly
 // as TERMINATION is. It lives in this enum for the same single reason: so the parent and the
@@ -58,18 +58,17 @@ struct CorpActionEvent {
     // for cash dividends). Optional: when > 0, the applier records this on
     // PositionAdjustment.quantity_before/after for DIVIDEND events instead of
     // today's live qty, so the audit log's cash-flow figure reflects the
-    // ex-date holding even when running a catch-up apply days later
-    // (ultrareview bug_021). Has NO effect on the actual position quantity
+    // ex-date holding even when running a catch-up apply days later.
+    // Has NO effect on the actual position quantity
     // (dividends never change qty), nor on splits.
     //
-    // E2-F17: this is the DIVIDEND CASH-FLOW figure ONLY. It is deliberately measured at
+    // This is the DIVIDEND CASH-FLOW figure ONLY. It is deliberately measured at
     // `ex_date - 1` and is NOT an eligibility signal -- do not gate whether an event applies
     // on it. Whether the basis may be restated is `basis_provenance` below, which is measured
-    // at end-of-ex_date. Conflating the two dates is exactly how the first attempt at E2-F17
-    // came to skip positions it should have restated.
+    // at end-of-ex_date. Conflating the two dates skips positions that should be restated.
     double qty_at_ex_date{0.0};
 
-    // E2-F17 (complete). A class-1 event restates a basis into post-event units. That is
+    // Basis provenance. A class-1 event restates a basis into post-event units. That is
     // correct iff every share now held was acquired at a price the market had NOT yet
     // adjusted -- i.e. on a run on or before the ex-date, because a fill on run D is priced
     // at close(D-1).
@@ -79,10 +78,10 @@ struct CorpActionEvent {
     // here skips a position opened ON the ex-date run, whose basis is priced at close(E-1),
     // is therefore pre-event, and MUST be restated.
     //
-    // Tri-state on purpose. The predecessor of this field was a bool, which conflated "the
-    // book was observed flat" with "nothing is known", and could only ever justify a skip by
-    // assuming the second meant the first. Dropping a real 25:1 split is far worse than
-    // double-adjusting a basis, so UNKNOWN must APPLY.
+    // Tri-state on purpose. A bool would conflate "the book was observed flat" with
+    // "nothing is known", and could only ever justify a skip by assuming the second meant
+    // the first. Dropping a real 25:1 split is far worse than double-adjusting a basis, so
+    // UNKNOWN must APPLY.
     enum class BasisProvenance {
         UNKNOWN,                    ///< could not be established -> APPLY and warn. Never skip.
         FORMED_ON_OR_BEFORE_EX_DATE,///< basis predates the event -> APPLY.
@@ -121,7 +120,7 @@ struct PositionAdjustment {
  * passing the raw ex-date close on dividends, and persisting the adjusted
  * positions afterward. Designed for direct unit testing.
  *
- * Adjustment math (audit §1.12, §1.15):
+ * Adjustment math:
  *   - SPLIT (factor F):      qty *= F; avg_price /= F
  *   - ADR_SPLIT (factor F):  same as SPLIT
  *   - DIVIDEND (d, close_at_ex_date):

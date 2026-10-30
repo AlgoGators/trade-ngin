@@ -11,23 +11,22 @@ namespace trade_ngin {
 /**
  * @brief How current the price feed is for the symbols a run actually loaded.
  *
- * BA-12 / C-1 C8. The freshness guard used to take the GLOBAL maximum bar
- * timestamp across every loaded bar. At universe scale that is not a freshness
+ * The GLOBAL maximum bar timestamp across every loaded bar is not a freshness
  * measure at all: one symbol printing today puts the maximum at today, so 851
- * symbols could be months stale and the guard would report the feed current.
+ * symbols could be months stale and the feed would look current.
  * The question "is the feed fresh" is answered by the STALEST symbol, not the
  * freshest one.
  *
- * Two further properties the old form got wrong:
+ * Two further properties:
  *
- *  * No data at all was treated as "nothing to check" -- the guard sat behind
- *    `if (!all_bars.empty())`. An empty load is the MOST stale state reachable,
- *    not a neutral one, so it is reported as such here and the caller decides.
+ *  * No data at all is not "nothing to check". An empty load is the MOST stale
+ *    state reachable, not a neutral one, so it is reported as such here and the
+ *    caller decides.
  *
- *  * Staleness was `duration_cast<hours>(end - latest) / 24` on instants. Bars
- *    are midnight-UTC keys, so an instant subtraction is off by one whenever the
- *    two ends sit either side of a fractional day. Calendar days between two
- *    UTC date keys is the quantity the tolerance is expressed in.
+ *  * Staleness is counted in calendar days between two UTC date keys, the
+ *    quantity the tolerance is expressed in. Bars are midnight-UTC keys, so an
+ *    instant subtraction (`duration_cast<hours>(end - latest) / 24`) would be off
+ *    by one whenever the two ends sit either side of a fractional day.
  */
 struct FeedFreshness {
     /// False when no symbol had a bar. Maximally stale, never neutral.
@@ -38,10 +37,10 @@ struct FeedFreshness {
     std::string stalest_symbol;
     /// Calendar days from `stalest_date` to the as-of date. 0 when !any_data.
     long days_behind{0};
-    /// How many symbols were assessed. B-ii: this is the size of the REQUESTED
+    /// How many symbols were assessed: the size of the REQUESTED
     /// universe when one is supplied, not the number that answered.
     std::size_t symbols{0};
-    /// B-ii: requested symbols with no bar at all. A symbol that never printed
+    /// Requested symbols with no bar at all. A symbol that never printed
     /// cannot set `stalest_date` -- it is not "a few days behind", it is absent,
     /// which is a different and worse condition. Counted separately so the
     /// threshold policy on `days_behind` is unchanged.
@@ -95,12 +94,12 @@ inline long calendar_days_between_utc(const std::string& from_ymd, const std::st
  * @param last_bar_date symbol -> newest loaded bar, YYYY-MM-DD (the map the
  *        runner already builds for the corp-action horizon gate).
  * @param as_of_ymd     the run's end date, YYYY-MM-DD.
- * @param requested     B-ii: the universe the run ASKED for. `last_bar_date` only
+ * @param requested     The universe the run ASKED for. `last_bar_date` only
  *        contains symbols that returned rows, so a name with zero bars is invisible
  *        to a check driven by that map -- it cannot be the minimum and cannot set
  *        the bound, and the guard reports "stalest of 9" on a ten-name book while
  *        the tenth reaches day T unpriced. Pass the universe and absence is seen.
- *        Empty preserves the original behaviour for callers that have no universe.
+ *        Empty checks only the symbols in the map, for callers that have no universe.
  *
  * Symbols whose date will not parse are counted but cannot set the bound; a map
  * consisting only of such entries reports `any_data = false`, because nothing in
@@ -113,7 +112,7 @@ inline FeedFreshness assess_feed_freshness(
     FeedFreshness f;
     f.symbols = requested.empty() ? last_bar_date.size() : requested.size();
 
-    // B-ii: absence first, and named deterministically.
+    // Absence first, and named deterministically.
     for (const auto& symbol : requested) {
         auto it = last_bar_date.find(symbol);
         if (it != last_bar_date.end() && freshness_parse_ymd_utc(it->second) > 0) continue;
@@ -140,7 +139,7 @@ inline FeedFreshness assess_feed_freshness(
 }
 
 /**
- * @brief What a live run does with the feed-freshness assessment (T-DATED R2; HD 2026-10-10).
+ * @brief What a live run does with the feed-freshness assessment.
  *
  *   no usable bar date for ANY symbol   every run refuses: there is nothing to carry a book on;
  *   a requested symbol with no bar      a run with no date refuses; a dated run goes on and says

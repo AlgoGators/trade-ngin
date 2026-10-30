@@ -1,8 +1,8 @@
-// The risk gate's return rows and covariance read the ADJUSTED returns (LOOP_SPEC v6.1 sections
-// 2.3 and 4; T-ROLLX commit 1): a contract switch is a zero return row for its symbol, every other
-// row is the adjusted change over the raw previous close (the roll_series rule, recomputed by hand),
-// a window without a switch is the raw path bit for bit, and the levels of the WHOLE window can be
-// handed in so a switch on a date F5 drops is still removed from the level.
+// The risk gate's return rows and covariance read the ADJUSTED returns: a contract switch is a zero
+// return row for its symbol, every other row is the adjusted change over the raw previous close
+// (the roll_series rule, recomputed by hand), a window without a switch is the raw path bit for
+// bit, and the levels of the WHOLE window can be handed in so a switch on a date F5 drops is still
+// removed from the level.
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cmath>
@@ -145,8 +145,8 @@ TEST(RiskAdjustedReturns, TheWholeWindowsLevelsRemoveASwitchOnADateTheFilterDrop
     const auto md = rm.create_market_data(complete, &levels);
     const size_t ng = md.symbol_indices.at("NG");
     // day 4 -> day 6 for NG: (A6 - A4) / P4. The step on the switch bar (day 5) is the whole close-
-    // to-close change p5 - p4 (the gap plus the unknown true move of that day: section 2.3, one
-    // zero per roll), so A4 = p4 + (p5 - p4) = p5 and the return is (p6 - p5) / p4: the day-6 move
+    // to-close change p5 - p4 (the gap plus the unknown true move of that day: one zero per
+    // roll), so A4 = p4 + (p5 - p4) = p5 and the return is (p6 - p5) / p4: the day-6 move
     // over the pre-switch raw close, the step removed.
     const double p4 = close_of(all, "NG", 4), p5 = close_of(all, "NG", 5), p6 = close_of(all, "NG", 6);
     ASSERT_EQ(md.returns.size(), 6u);

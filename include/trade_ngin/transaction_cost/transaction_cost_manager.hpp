@@ -108,8 +108,7 @@ public:
      * @param symbol Instrument symbol
      * @param quantity Trade quantity. MUST be signed: negative is a sell. Every cost term
      *        takes |quantity| EXCEPT the SEC/TAF regulatory fees, which are sell-side only
-     *        and are gated on `quantity < 0`. Passing an absolute value silently drops them
-     *        (E2-F29).
+     *        and are gated on `quantity < 0`. Passing an absolute value silently drops them.
      * @param reference_price Fill price (previous day close)
      * @return Detailed cost breakdown
      *
@@ -129,7 +128,7 @@ public:
      *
      * @param symbol Instrument symbol
      * @param quantity Trade quantity. MUST be signed: negative is a sell. See the overload
-     *        above -- the sign is load-bearing for the SEC/TAF regulatory fees (E2-F29).
+     *        above -- the sign is load-bearing for the SEC/TAF regulatory fees.
      * @param reference_price Fill price
      * @param adv Average daily volume
      * @param volatility_multiplier Volatility regime multiplier (0.8-1.5)
@@ -171,7 +170,7 @@ public:
      *
      * update_market_data(s, v, c, p) is exactly record_volume(s, v) followed by
      * record_log_return(s, c, p). The two halves exist so a caller can give the two cost
-     * terms different windows (T-7b-1 C8a, the live futures feed: the fill day's own
+     * terms different windows (the live futures feed: the fill day's own
      * volume for the impact term, a 20-return walk for the volatility term).
      */
     void record_volume(const std::string& symbol, double volume);
@@ -183,7 +182,7 @@ public:
      *
      * A live futures run feeds a fresh manager one volume per symbol, the fill day's own
      * (futures_cost_feed.hpp); the backtest's managers live for the whole run, so the backtest
-     * sets the same one-observation window every cycle (T-7b-2 8c, COST-H3).
+     * sets the same one-observation window every cycle.
      */
     void set_own_day_volume(const std::string& symbol, double volume);
 
@@ -191,10 +190,10 @@ public:
      * @brief The return half of update_market_data: append ln(close / prev_close) to the
      *        spread model's volatility window, only when both prices are positive (a zero
      *        prev_close means "no previous close": nothing is recorded, nothing fabricated).
-     *        T-ROLLX (LOOP_SPEC v6.1 section 2.3, L-08): on a CHANGE bar (the bar's contract id
+     *        On a CHANGE bar (the bar's contract id
      *        differs from the previous consumed bar's) the adjusted return is exactly 0 and that
      *        is what the window takes (the date stays in it); on every other bar the engine's
-     *        own log form on the adjusted series is ln(close / prev_close), unchanged.
+     *        own log form on the adjusted series is ln(close / prev_close).
      */
     void record_log_return(const std::string& symbol, double close_price,
                            double prev_close_price, bool change_bar = false);

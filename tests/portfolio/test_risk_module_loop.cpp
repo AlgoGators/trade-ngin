@@ -241,7 +241,7 @@ protected:
     std::shared_ptr<ScriptedStrategy> strategy_;
 };
 
-// T-6b-fix F4 (commit 8's test, made real). A `none` book runs NO gate: the same 0.5x book that
+// A `none` book runs NO gate: the same 0.5x book that
 // the Carver gate (max leverage 0.29) cuts is shipped whole, no decision is recorded, and the
 // ruling is logged once, at construction, by name.
 TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
@@ -286,8 +286,8 @@ TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
     EXPECT_FALSE(pm_->last_risk_decisions().empty());
 }
 
-// The portfolio risk step runs ONCE per rebalance (LOOP_SPEC section 12, D20: nothing feeds back
-// from the rounding into the risk step). Every module is evaluated and recorded once; the SCALE
+// The portfolio risk step runs ONCE per rebalance (nothing feeds back from the rounding into the
+// risk step). Every module is evaluated and recorded once; the SCALE
 // is applied once and the book of whole contracts is then rounded once.
 TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedOnce) {
     make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
@@ -455,7 +455,7 @@ TEST_F(RiskModuleLoopTest, BeginRebalanceThenOneRiskStepPerCall) {
     EXPECT_EQ(spy->rebalance_contexts[0].scope, RiskScope::PORTFOLIO);
 }
 
-// ===== The Carver module's window (was PortfolioManager::risk_history_) =====
+// ===== The Carver module's window =====
 
 class CarverWindowTest : public RiskModuleLoopTest {
 protected:
@@ -500,19 +500,13 @@ TEST_F(CarverWindowTest, MatchesTodaysPushTrimIncludingAnEmptyBookLap) {
 }
 
 TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
-    // REWRITTEN BY T-6b COMMIT 9, which replaced the behaviour this test pinned. It used to
-    // assert the head's rule -- "every call runs five laps and appends its bars FIVE TIMES",
-    // with the window trimmed to the newest `lookback_period` BARS -- and it passed, because
-    // that is what the code did. That rule is the M-02 defect itself: on a 36-symbol book a
-    // 252-BAR window is seven sessions, and re-appending each lap evicted older dates until the
-    // window held three and |rho| was 1.0 by arithmetic.
+    // The window appends ONCE per rebalance and trims to the newest `lookback_period` DATES.
+    // Trimmed to the newest `lookback_period` BARS, with bars appended more than once a call, a
+    // 252-BAR window on a 36-symbol book is seven sessions, and re-appending evicts older dates
+    // until the window holds three and |rho| is 1.0 by arithmetic.
     //
-    // Commit 9 appends ONCE per rebalance and trims to the newest `lookback_period` DATES. The
-    // test is kept, pointed at the new rule, so the change is visible in the diff rather than
-    // looking like a deleted test.
-    //
-    // T-LOOP: the risk step itself now runs once per rebalance (LOOP_SPEC section 12, D20), so
-    // one append per call is also one evaluation per call.
+    // The risk step itself runs once per rebalance, so one append per call is also one
+    // evaluation per call.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
     RiskConfig cfg = risk_config(false).risk_config;
     cfg.lookback_period = 5;  // five DATES
@@ -737,8 +731,7 @@ TEST_F(RiskRefuseTest, PerScopeApplySkipsPinnedSleeves) {
 
 TEST_F(RiskRefuseTest, PinnedSleeveIsExcludedFromTheOptimiser) {
     // The optimiser runs only on symbols with >= 20 returns, so the call carries 40 dates of
-    // AAA and BBB bars. (The PM keeps its own history from the bars it is fed, T-6c commit B;
-    // this test used to hand both strategies the same 40-price history instead.)
+    // AAA and BBB bars. (The PM keeps its own history from the bars it is fed.)
     make_two_sleeves(false, true, {{"AAA", make_pos("AAA", 9.0, 100.0)}, {"BBB", make_pos("BBB", 4.0, 100.0)}},
                      {{"AAA", make_pos("AAA", 7.0, 100.0)}, {"BBB", make_pos("BBB", 5.0, 100.0)}});
     std::vector<Bar> bars = three_days();
@@ -809,8 +802,8 @@ TEST_F(RiskValidationTest, CompositionTermOnlyOncePerChain) {
     const RiskConfig rc = risk_config(true).risk_config;
     auto portfolio_carver = std::make_shared<CarverRiskModule>("carver", rc);
     // A COMPOSITION-term module at the portfolio and another on a sleeve: correlation/VaR/jump
-    // counted twice. The sleeve one is not a Carver: since T-6b-fix F6 a sleeve Carver is refused
-    // first, by C-2 (ACarverAtSleeveScopeIsRefusedBySetRiskModules), which would mask this rule.
+    // counted twice. The sleeve one is not a Carver: a sleeve Carver is refused first
+    // (ACarverAtSleeveScopeIsRefusedBySetRiskModules), which would mask this rule.
     class SleeveComposition final : public RiskModule {
     public:
         const std::string& id() const override { return id_; }
@@ -904,10 +897,10 @@ TEST_F(RiskReplaceTest, MultiSleevePortfolioReplaceFailsClosed) {
 
 // ===== The constructor builds the configured modules, and refuses an empty list =====
 //
-// Schema 2 replaced `use_risk_management` with a list. The failure mode a bool never had is
-// a list nobody filled in: a PortfolioConfig built in code, one line short, would run the
-// book with no risk layer and say nothing. The constructor throws instead, which is why
-// bt_equity_validation now has to spell out its `none` with a ruling.
+// Schema 2 configures the risk layer as a list. The failure mode a bool never had is a list
+// nobody filled in: a PortfolioConfig built in code, one line short, would run the book with no
+// risk layer and say nothing. The constructor throws instead, which is why bt_equity_validation
+// spells out its `none` with a ruling.
 
 class RiskModuleDispatchTest : public RiskModuleLoopTest {};
 
@@ -991,18 +984,18 @@ TEST_F(RiskModuleDispatchTest, TheConstructorBuildsTheConfiguredSleeveModulesToo
     EXPECT_EQ(sleeve.at("type").get<std::string>(), "constant_scale");
 }
 
-// ===== A-5 (T-6b commit 7d): the applied level must not over-state a partial cut =====
+// ===== the applied level must not over-state a partial cut =====
 
 // When a sleeve is pinned by a sleeve-scope REFUSE, the portfolio multiply SKIPS it, so the
 // aggregated book the portfolio modules measured was cut by LESS than the factor they were
-// handed. Before this commit RiskApplied said nothing about that and CarverRiskModule advanced
-// applied_level_ by the whole factor -- a level that claims a cut the book never took. Commit 9
-// divides by that level, so it has to know.
+// handed. RiskApplied reports it, so CarverRiskModule does not advance applied_level_ by the
+// whole factor -- a level that claims a cut the book never took; the module divides by that
+// level, so it has to know.
 TEST_F(RiskSleeveTest, APartialMultiplyIsReportedToEveryModuleOfTheScope) {
     make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
                      {{"BBB", make_pos("BBB", 4.0, 100.0)}});
-    // SA is refused, so it must have a seeded previous book to be pinned to -- the guard the
-    // previous commit added, doing its job on this test.
+    // SA is refused, so it must have a seeded previous book to be pinned to -- the guard for a
+    // refusal with no previous book, doing its job on this test.
     ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 1.0, 100.0)).is_ok());
     auto watcher = std::make_shared<SpyModule>("watcher", RiskAction::NONE);
     ASSERT_TRUE(pm_->set_risk_modules(

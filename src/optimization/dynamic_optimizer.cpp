@@ -10,7 +10,7 @@ namespace trade_ngin {
 
 namespace {
 
-// T-7b-2 9d (OPT-N1): the greedy's pass cap scales with the book. The greedy starts at zero and
+// The greedy's pass cap scales with the book. The greedy starts at zero and
 // adopts one contract of one symbol per pass, always toward that symbol's target, so symbol i moves
 // through at most ceil(|target_i| / weight_per_contract_i) contracts on its way out (it can pass a
 // fractional target by less than one contract, never more). Short asks count: the target vector

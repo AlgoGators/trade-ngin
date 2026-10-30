@@ -1,12 +1,11 @@
 // tests/live/test_live_k01_history.cpp
 //
-// N-2 (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 section 2.1): a bar's K-01 verdict reads the classifier's
+// A bar's K-01 verdict reads the classifier's
 // trailing history, the same on every run. The live runner loads the bars of a fixed prefix before
 // its window (kK01ClassifierHistoryDays) into the SessionClassifier only; the consumed set is still
 // taken over the window. Composed here as the runner composes it: a run dated R loads the window
 // [R - 730 days, R) and the prefix before it, feeds the classifier the prefix (k01_classifier_history)
-// and the window, and takes k01_consumed_bars over the window. The shapes are the second
-// adversary's N2a and N2b (lead2/evidence/T-ROLLX-FIX_ADV2/fixtures).
+// and the window, and takes k01_consumed_bars over the window.
 
 #include <gtest/gtest.h>
 
@@ -116,7 +115,7 @@ TEST(LiveK01History, ThePrefixIsBeforeTheWindowAndLongerThanTheNorm) {
     EXPECT_EQ(r.consumed.count(plus("2026-04-07", -kWindowDays - 1)), 0u) << "a prefix bar is never consumed";
 }
 
-// N2a: a 240-lot corrupt print against a 100,000-lot norm on 2024-04-08 is withheld on its own run.
+// A 240-lot corrupt print against a 100,000-lot norm on 2024-04-08 is withheld on its own run.
 // On the run whose window STARTS on it (2024-04-08 + 730 days) the window alone gives it no norm
 // (240 lots is above the 50-lot floor: SESSION), and the runner fed it. With the history it is
 // judged as on its own run: withheld, never fed later.
@@ -129,7 +128,7 @@ TEST(LiveK01History, ACorruptPrintWithheldOnItsOwnRunIsNeverFedLater) {
     EXPECT_EQ(late.consumed.count(bad), 0u) << "never fed later";
 }
 
-// N2b, the converse: a 40-lot print against a 100-lot norm is a SESSION with its history
+// The converse: a 40-lot print against a 100-lot norm is a SESSION with its history
 // (40 >= 0.25 x 100) and is consumed on its own run; at the window's start, with no norm, the
 // 50-lot floor withheld it. With the history it stays consumed.
 TEST(LiveK01History, ABarConsumedOnItsOwnRunIsNeverWithheldLater) {

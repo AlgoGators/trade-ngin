@@ -98,7 +98,7 @@ struct Estimate {
 double forecast_scalar(int fast, int slow);
 
 /**
- * @brief The equity slow rule (LOOP_SPEC section 2.5, D40) on one bar's combined forecast.
+ * @brief The equity slow rule on one bar's combined forecast.
  *
  * A NEGATIVE combined forecast stands only when the scaled forecast of every pair in `rule_pairs`
  * (each after its scalar, the attenuation and the cap, before the averaging) is negative; otherwise

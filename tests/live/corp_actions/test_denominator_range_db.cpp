@@ -1,6 +1,6 @@
 // tests/live/corp_actions/test_denominator_range_db.cpp
 //
-// FIX-2 against a real server: the collapse was in the ARGUMENTS, so only running both
+// The denominator range against a real server: a collapse is in the ARGUMENTS, so only running both
 // argument shapes against real data shows the difference. The pure tests in
 // test_denominator_frame.cpp pin the range the runner computes; these pin what that
 // range actually fetches.
@@ -30,7 +30,7 @@ using namespace trade_ngin;
 
 namespace {
 
-// The position's inception date, unambiguously "deep" against any bulk load we run. R6: the held symbol
+// The position's inception date, unambiguously "deep" against any bulk load we run. The held symbol
 // is read from the table (deep_symbol below), not named: the reference clone's KO is not in every copy
 // (the tuning copy's equity table holds 30 symbols, KO not among them).
 constexpr const char* kInception = "2005-04-01";
@@ -103,8 +103,8 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// FIX-3, measured rather than hypothesised: the frame gap is present in the data we
-// will actually run E2 against.
+// The frame gap, measured rather than hypothesised: it is present in the data the runner
+// reads.
 TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
     // Find a dividend that has a split after it -- the stacked shape the old code got
     // wrong. Located by query rather than hardcoded so a data refresh cannot rot it.
@@ -116,9 +116,9 @@ TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
         "WHERE a.div_cash > 0 AND a.close > 0 AND a.adjusted_close > 0 "
         // The premise is a row whose adjusted close already DIFFERS from its raw close
         // (a later split or dividend has restated it). Without this predicate the
-        // time-descending locator drifts with the calendar and, as of 2026-09-04, picked
-        // APH 2026-06-23 where adjusted_close == close, failing the test on a row that
-        // never carried the stacked shape (D-4-FIX F-2).
+        // time-descending locator drifts with the calendar and can pick a row where
+        // adjusted_close == close (APH 2026-06-23 is one), failing the test on a row that
+        // never carried the stacked shape.
         "  AND a.adjusted_close <> a.close "
         // Bounded so the scan stays quick; stacked pairs are common in recent history.
         "  AND a.time > now() - interval '2 years' "
@@ -171,7 +171,7 @@ TEST_F(DenominatorRangeDbTest, UnifiedRangeFetchesTheWholeHistoryTheOldTopUpMiss
 
     const std::vector<std::string> symbols = {kDeepSymbol};
 
-    // What the code used to ask for: [deep_start, window.start]. Both ends are the same
+    // The degenerate range [deep_start, window.start]. Both ends are the same
     // date, and get_historical_closes is inclusive at both ends, so this is one day.
     auto collapsed = db_->get_historical_closes(symbols, format_ymd_utc(w.deep_start),
                                                 format_ymd_utc(w.start));
@@ -188,7 +188,7 @@ TEST_F(DenominatorRangeDbTest, UnifiedRangeFetchesTheWholeHistoryTheOldTopUpMiss
     size_t full_dates = 0;
     for (const auto& [sym, by_date] : full.value()) full_dates += by_date.size();
 
-    // ~21 years of trading days. Anything near the collapsed count means the seam is back. R6: every
+    // ~21 years of trading days. Anything near the collapsed count means the seam is back. Every
     // stored bar of the range, counted from the table.
     size_t stored = 0;
     {
@@ -219,7 +219,7 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-8 / C-1 D12 -- get_delisting_dates must not hand a 2026 run a 2008 row.
+// get_delisting_dates must not hand a 2026 run a 2008 row.
 //
 // delisting_date is keyed on the TICKER and the reader takes max() over the
 // symbol's entire history, so a reused ticker inherits the dead company's
@@ -232,7 +232,7 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
 // ──────────────────────────────────────────────────────────────────────────
 class DelistingFloorDbTest : public DenominatorRangeDbTest {};
 
-// R6: the two tickers are read from the table, the oldest two delistings before the floor (the reference
+// The two tickers are read from the table, the oldest two delistings before the floor (the reference
 // clone's HPC 2008-11-24 and MER 2008-12-31; the tuning copy's equity table holds neither, its oldest are
 // ROH 2009-04-01 and HSP 2015-09-02), with their dates read directly, so the test holds on any copy.
 struct OldDelisting {
@@ -256,8 +256,8 @@ TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
     ASSERT_EQ(old.size(), 2u) << "two tickers must actually carry a delisting row, or this test proves nothing";
     const std::vector<std::string> tickers{old[0].ticker, old[1].ticker};
 
-    // No floor: the historical rows come back, which is the pre-BA-8 behaviour
-    // and the input the runner used to act on.
+    // No floor: the historical rows come back, which is the input the runner
+    // must not act on.
     auto unbounded = db_->get_delisting_dates(tickers);
     ASSERT_TRUE(unbounded.is_ok()) << unbounded.error()->what();
     ASSERT_EQ(unbounded.value().size(), 2u)
@@ -285,8 +285,8 @@ TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
 
 TEST_F(DelistingFloorDbTest, EmptyFloorPreservesTheUnboundedRead) {
     // The default argument must be behaviour-preserving: any caller that passes
-    // nothing gets exactly what it got before.
-    // R6 fix round 1 (audit A S3): the OLDEST delisting of the table, so any floor hidden in the
+    // nothing gets the unbounded read.
+    // The OLDEST delisting of the table, so any floor hidden in the
     // default path (one later than that date) drops it.
     const auto old = oldest_delistings(discover_connection_string());
     ASSERT_FALSE(old.empty()) << "a ticker must carry a delisting row, or this test proves nothing";

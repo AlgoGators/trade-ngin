@@ -57,7 +57,7 @@ std::string SessionClassifier::ymd(Day day) {
 }
 
 bool SessionClassifier::keeps_over(const DayBar& c, const DayBar& h) {
-    // The B0 loader's keep order (market_data_utils kFuturesBarKeepOrder):
+    // The loader's keep order (market_data_utils kFuturesBarKeepOrder):
     // volume DESC, then close, open, high, low ascending.
     if (c.volume != h.volume) return c.volume > h.volume;
     if (c.close != h.close) return c.close < h.close;
@@ -84,14 +84,14 @@ void SessionClassifier::add_bar(const Bar& bar) {
         it->second = b;
         changed = true;
     }
-    // MM (HD 2026-10-28): a change of price source restarts the symbol's norm from the change.
+    // A change of price source restarts the symbol's norm from the change.
     if (bar.roll_from && (bar.roll_from->kind == RollFromKind::SOURCE_CHANGE ||
                           bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE)) {
         Day change = day;
         bool known = true;
         if (bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE) {
-            // The change this bar names. MM fix round 1 (MMB's NOTE 1): a date that does not parse
-            // registers no change (the bar's own date is not the change's) and is warned once.
+            // The change this bar names. A date that does not parse registers no change (the bar's
+            // own date is not the change's) and is warned once.
             int y = 0;
             unsigned m = 0, d = 0;
             known = false;
@@ -116,7 +116,7 @@ void SessionClassifier::add_bar(const Bar& bar) {
     }
     if (changed) {
         // A bar's verdict depends on the SESSION bars before it: every cached verdict from this
-        // date on is stale, and (T-7b-2 C10a) so is the previous bar's, whose id-flip test reads
+        // date on is stale, and so is the previous bar's, whose id-flip test reads
         // its next bar.
         invalidate_flags_from_previous(bar.symbol, day);
     }
@@ -239,7 +239,7 @@ std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar
     std::vector<double> window;
     window.reserve(static_cast<std::size_t>(std::max(0, config_.norm_window_bars)));
     // Strictly before `date`: lower_bound is the first bar at or after it. Only a weekday bar
-    // whose own verdict was SESSION counts (T-7b-1 C7b R7).
+    // whose own verdict was SESSION counts.
     for (auto it = std::make_reverse_iterator(series.lower_bound(date));
          it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars &&
          !(since && it->first < *since);
@@ -250,7 +250,7 @@ std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar
         window.push_back(it->second.volume);
     }
     if (window.empty()) {
-        // No SESSION weekday bar yet: the symbol bootstraps from T-7a's norm over all its trailing
+        // No SESSION weekday bar yet: the symbol bootstraps from a norm over all its trailing
         // weekday bars, so a thin contract (6L.v.0 in 2011, a median of 6.5 lots) can start: under
         // the floor alone its first bars would be JUNK and none of them would ever count.
         for (auto it = std::make_reverse_iterator(series.lower_bound(date));
@@ -284,7 +284,7 @@ const std::map<SessionClassifier::Day, bool>& SessionClassifier::session_flags(
         const auto n = session_norm(series, flags, it->first, nullptr,
                                     source_change_before(symbol, it->first));
         bool session = judge_bar(it->second, n, nullptr) == SessionVerdict::SESSION;
-        // T-7b-2 C10a, with hindsight: a bar whose next bar exists is judged by the confirmed
+        // With hindsight: a bar whose next bar exists is judged by the confirmed
         // rule (a one-day flip is not a session; a roll counts on its volume); the last bar
         // (no next yet) by the day-of rule.
         if (session) {
@@ -360,7 +360,7 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
             if (v.norm && *v.norm > 0.0) v.ratio = b.volume / *v.norm;
             v.verdict = judge_bar(b, v.norm, &v.reason);
 
-            // T-7b-2 C10a: the instrument-id continuity limb. It reads the bars dated <= D only
+            // The instrument-id continuity limb. It reads the bars dated <= D only
             // (never the next one), so live's T-1 and the backtest's signal group see the same.
             if (const std::string* id = id_of(symbol, *series, bit)) v.instrument_id = *id;
             if (bit != series->begin()) {
@@ -416,7 +416,7 @@ SymbolDayVerdict SessionClassifier::classify_symbol_day(const std::string& symbo
             v.reason = "holiday: " + h->name;
             return v;
         }
-        // T-7b-1 C7b R8: the eve limb is for a weekend D (Christmas and New Year's Sundays).
+        // The eve limb is for a weekend D (Christmas and New Year's Sundays).
         // A weekday before a fixed-date holiday (Dec 24, Dec 31, Jul 2 or 3) is a session day,
         // so a missing print there is judged like any other weekday's.
         if (auto h = holidays(next); h && h->type == "fixed" && !is_weekday(date)) {

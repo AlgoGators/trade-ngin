@@ -1,15 +1,15 @@
 // The futures bar loader returns ONE bar per (symbol, time).
 //
 // futures_data.ohlcv_1d has no key. It stores 970 extra rows in 306 symbol-dates, all between
-// 2025-10-06 and 2026-02-05 (every symbol 9 times on 2026-02-03 and 02-04). The loader used to
-// return every copy, and the trend sleeves append every copy as a new day, so each one was a
-// zero return inside their EMAs, volatility and the optimiser's covariance. One group
+// 2025-10-06 and 2026-02-05 (every symbol 9 times on 2026-02-03 and 02-04). Returned as they
+// are, the trend sleeves would append every copy as a new day, each one a zero return inside
+// their EMAs, volatility and the optimiser's covariance. One group
 // disagrees: 6A.v.0 2025-11-05, close 0.6512 on volume 76,895 (the front contract) against
 // close 0.65095 on volume 196 (a one-day wrong-instrument bar).
 //
-// The rule (HD 2026-09-21): per (symbol, time) keep the copy with the highest volume; ties keep
+// The rule: per (symbol, time) keep the copy with the highest volume; ties keep
 // the first by (close, open, high, low), so the pick never depends on physical row order. The
-// result comes back ORDER BY time, symbol, as before; a clean series comes back unchanged.
+// result comes back ORDER BY time, symbol; a clean series comes back unchanged.
 //
 // Two layers are tested, both through TRADE_NGIN_TEST_DSN only:
 //   * the loader's own SQL (market_data_utils::build_futures_bar_query and the companion
@@ -114,7 +114,7 @@ size_t count_of(const std::string& text, const std::string& needle) {
     return n;
 }
 
-// The query the loader ran at 817c0b68, verbatim, for the no-symbol and symbol shapes.
+// The plain query with no de-duplication, for the no-symbol and symbol shapes.
 std::string previous_query(const std::string& table, bool with_symbols) {
     return "SELECT time, symbol, open, high, low, close, volume FROM " + table +
            (with_symbols ? " WHERE time BETWEEN $1 AND $2 AND symbol = ANY($3)"
@@ -380,12 +380,12 @@ TEST_F(FuturesBarDedupTest, LoaderReturnsOneBarPerSymbolDateAndLogsWhatItDropped
     db->disconnect();
 }
 
-// T-7b-1 C7b, E-31 (T-6c_CODE_REVIEW CR-6): PostgresDatabase::get_latest_prices breaks the tie
+// PostgresDatabase::get_latest_prices breaks the tie
 // between several copies of the NEWEST bar of a symbol by the loader's keep order (highest volume,
 // then close, open, high, low ascending), never by physical row order. The method reads
 // build_table_name(asset_class, data_type, freq) on its own connection, so the fixture is a
-// scratch table futures_data.c7b_e31_probe_1d, created and dropped by this test (the pattern of
-// tests/data/test_db_transaction_atomicity.cpp's scratch table); the rows go in with the losing
+// test table futures_data.c7b_e31_probe_1d, created and dropped by this test (the pattern of
+// tests/data/test_db_transaction_atomicity.cpp's test table); the rows go in with the losing
 // copy FIRST so an order-blind read returns it.
 TEST_F(FuturesBarDedupTest, C7bE31LatestPricesKeepTheLoadersCopyOfTheNewestBar) {
     const std::string table = "futures_data.c7b_e31_probe_1d";

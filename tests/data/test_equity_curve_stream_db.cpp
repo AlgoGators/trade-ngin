@@ -1,23 +1,20 @@
-// DB-equity-curve-onconflict (with the REG-F15 half).
+// The stream of a trading.equity_curve write.
 //
 // trading.equity_curve is UNIQUE (portfolio_id, strategy_id, timestamp,
-// portfolio_type) and store_trading_equity_curve's ON CONFLICT named all four
-// columns -- but the INSERT listed only three, so portfolio_type came from the
-// column DEFAULT. That works only while the default and the intended stream are
-// the same value. It is 'system' today, so nothing is broken; the writer simply
-// had no way to express which stream it meant, and no way to write a second one.
+// portfolio_type) and store_trading_equity_curve's ON CONFLICT names all four
+// columns, so the writer names the stream it means: left to the column
+// DEFAULT, portfolio_type would work only while the default and the intended
+// stream are the same value, and a second stream could not be written.
 //
 // What the tests below establish, in order:
-//   1. the default write still lands on portfolio_type='system', so no stored
-//      row moves (this is the class-A byte-identical claim);
+//   1. the default write lands on portfolio_type='system';
 //   2. re-writing the same (portfolio, strategy, timestamp, stream) UPDATES in
 //      place rather than inserting a duplicate -- the upsert genuinely resolves;
 //   3. two different streams at the same timestamp are two rows, and updating
-//      one does not touch the other. Before the fix this could not be written at
-//      all, and had the column default ever differed from the conflict target,
-//      every upsert would have silently become an insert.
+//      one does not touch the other; were the column default ever to differ
+//      from the conflict target, every upsert would silently become an insert.
 //
-// Writes are confined to a scratch portfolio id that no book uses, and TearDown
+// Writes are confined to a test portfolio id that no book uses, and TearDown
 // removes them.
 //
 // Reachability gate matches tests/data/test_delete_stale_executions_scope_db.cpp.
@@ -112,7 +109,7 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// 1. The byte-identical claim: the default write is a 'system' row, as before.
+// 1. The default write is a 'system' row.
 TEST_F(EquityCurveStreamTest, DefaultWriteLandsOnTheSystemStream) {
     ASSERT_TRUE(db_->store_trading_equity_curve(kStrategy, point_in_time(), 100010.0, kPortfolio)
                     .is_ok());
@@ -158,7 +155,7 @@ TEST_F(EquityCurveStreamTest, TwoStreamsAtTheSameTimestampAreTwoIndependentRows)
         << "writing the qt stream overwrote the system stream";
 }
 
-// The batch writer shares the defect and the fix.
+// The batch writer carries the stream too.
 TEST_F(EquityCurveStreamTest, BatchWriterCarriesTheStreamToo) {
     std::vector<std::pair<Timestamp, double>> pts{{point_in_time(), 100010.0}};
     ASSERT_TRUE(db_->store_trading_equity_curve_batch(kStrategy, pts, kPortfolio,

@@ -27,18 +27,17 @@ namespace trade_ngin {
  *
  * These live in a named place because they are ordering constraints, not
  * computations: getting them wrong produces a runner that reads correctly
- * line by line and is still silently wrong. Extracted from
- * apps/strategies/live_equity_mean_reversion.cpp so they can be tested
- * without standing up a database and a full trading day.
+ * line by line and is still silently wrong. The equity runner
+ * (apps/strategies/live_equity_mean_reversion.cpp) follows them; they live here
+ * so they can be tested without standing up a database and a full trading day.
  */
 class LiveDailyCycle {
 public:
     /**
      * @brief Is the exchange shut on this date?
      *
-     * The predicate the whole closed-day path branches on, in a named place because it
-     * was five inline copies of `dow == 0 || dow == 6 || is_holiday(...)` in main() and
-     * nothing tested any of them (T-OR.3). A closed market does NOT mean "do nothing":
+     * The predicate the whole closed-day path branches on, in one named place so it is
+     * tested. A closed market does NOT mean "do nothing":
      * the book is still held, so the day is processed as a carry-forward -- positions,
      * live_results and equity_curve written from the previous session, signals and
      * executions skipped -- which is what the futures runners already do.
@@ -66,7 +65,7 @@ public:
      * closed, so nothing was traded and nothing was re-marked. Realized is zeroed
      * because `trading.positions.daily_realized_pnl` is a FLOW and this day realized
      * nothing; carrying yesterday's figure would make the column a running total under
-     * a name that says daily, which is E2-F19 route 1.
+     * a name that says daily.
      */
     static std::unordered_map<std::string, Position> carry_forward(
         const std::unordered_map<std::string, Position>& previous_positions) {
@@ -80,15 +79,15 @@ public:
     /**
      * @brief Put a live strategy into the state signal generation assumes.
      *
-     * Seeding ONLY. This used to call on_data(bars) as well, and the caller then
-     * ran PortfolioManager::process_market_data over the same vector, which calls
-     * on_data() again (portfolio_manager.cpp). MeanReversionStrategy::on_data
+     * Seeding ONLY: it does not call on_data(bars). The caller then runs
+     * PortfolioManager::process_market_data over the same vector, which calls
+     * on_data() itself (portfolio_manager.cpp). MeanReversionStrategy::on_data
      * appends unconditionally -- price_history.push_back and volume_sample_count++
-     * per bar -- so every live session fed each bar twice: the history ran to its
-     * trim cap rather than the bar count and the ADV EMA advanced over a series
+     * per bar -- so a second feed would give each bar twice: the history would run to
+     * its trim cap rather than the bar count and the ADV EMA would advance over a series
      * twice as long as the one that traded, which is what the fractional-share
      * eligibility gate reads. A backtest feeds each bar once, so live and backtest
-     * could not agree on the same data by construction (E2-F28 / E3 NEW-6).
+     * could not agree on the same data.
      *
      * The feed belongs to the portfolio manager, which is the component that then
      * reads the targets. Fixing it here rather than in portfolio_manager.cpp is
@@ -119,14 +118,14 @@ public:
     static Result<void> prepare_strategy_for_signals(
         BaseStrategy& strategy,
         const std::unordered_map<std::string, Position>& previous_positions) {
-        // E2-F19 / E2-F20: seed quantity, basis and mark -- never yesterday's realized.
+        // Seed quantity, basis and mark -- never yesterday's realized.
         //
         // BaseStrategy::seed_positions is a wholesale copy and on_execution() adds to
-        // whatever it finds, so a seeded realized_pnl made every persisted day-T row
+        // whatever it finds, so a seeded realized_pnl would make every persisted day-T row
         // "yesterday's row + today's fills": a running total under a column named
-        // daily. Worse, on a Monday yesterday's row was Friday's, already rewritten by
+        // daily. Worse, on a Monday yesterday's row is Friday's, already rewritten by
         // the Saturday and Sunday finalizations with Friday's MARK MOVE, so a price
-        // move entered a column that is supposed to hold trades (measured: META
+        // move would enter a column that is supposed to hold trades (for example META
         // 2026-08-04 = 73.35 Friday mark + 31.31 Mon trade + 15.93 Tue trade).
         //
         // Zeroing it here makes positions_[sym].realized_pnl mean "realized by this
@@ -160,12 +159,11 @@ public:
     /**
      * @brief Give the transaction-cost model the market data it prices fills from.
      *
-     * E2-F62. `TransactionCostManager::calculate_costs` reads its ADV from
+     * `TransactionCostManager::calculate_costs` reads its ADV from
      * `impact_model_.get_adv()` and its spread widening from
-     * `spread_model_.get_volatility_multiplier()` (`transaction_cost_manager.cpp:26-27`).
-     * Both are populated ONLY by `update_market_data`, and the live equity runner
-     * never called it -- the only runner in the tree that did not. So every live
-     * equity fill was priced against the hard-coded fallbacks at `:33` and `:37`:
+     * `spread_model_.get_volatility_multiplier()`.
+     * Both are populated ONLY by `update_market_data`; without it every live
+     * equity fill is priced against the hard-coded fallbacks,
      * `adv = 100000` shares and `vol_mult = 1.0`. For a name that really trades
      * 5.4 M shares a day that overstates the participation rate 54x and selects a
      * 40 bps impact coefficient where the true ADV selects 10 bps
@@ -179,24 +177,22 @@ public:
      * unconditionally and gates the log return on `prev_close_price > 0.0`, so a
      * zero prev_close means "volume yes, return omitted". Passing the bar's own
      * close instead -- which is what `ExecutionManager::update_market_data`'s
-     * 3-arg form does for a symbol it has not seen (`execution_manager.cpp:186`),
-     * and therefore what the futures live runner gets at
-     * `live_portfolio_conservative.cpp:890` -- injects a fabricated
+     * 3-arg form does for a symbol it has not seen -- injects a fabricated
      * log(close/close) = 0 return. One false zero in a 20-return window pulls the
-     * sample stdev down and biases `vol_mult` low. `backtest_coordinator.cpp:455-464`
-     * argues the same point for the same reason; this is the live half of it.
+     * sample stdev down and biases `vol_mult` low. The backtest coordinator's feed
+     * omits that return for the same reason.
      * We call the 4-arg cost-manager form directly to keep that control.
      *
      * THE PERMANENT 1-BAR OFFSET (by construction, not a defect).
      * The backtest feeds day T's bar to the cost model and then fills at T-1's
-     * close (`backtest_coordinator.cpp:568` runs before the executions are costed),
+     * close (the backtest coordinator feeds the bar before the executions are costed),
      * so its 20-bar window ends at T. The live runner only has bars through T-1 --
      * asking for T would be lookahead -- so its window ends at T-1. The two cost
      * models therefore average volumes over windows offset by one bar forever.
      * Measured on this universe that is ~0.2-2 % of ADV and moves `vol_mult` in
      * its third decimal; it cannot change an ADV tier except for a symbol sitting
      * on a bucket boundary. It is the price of not looking ahead, and it is the
-     * one backtest/live cost difference that survives this fix.
+     * one backtest/live cost difference.
      *
      * @param tcm    the cost manager whose ADV and volatility deques to fill
      * @param symbols the effective universe -- iterated in this order so a stray
@@ -246,14 +242,13 @@ public:
      * @brief The symbols this run must load data for: config plus the successors
      *        of anything currently held.
      *
-     * The universe used to be fixed from config before the previous day's book was
-     * even read, while `apply_renames` ran ~1,500 lines later. A held position whose
-     * successor is not in config therefore got no bars, no instrument, no cost config
-     * and no target: the day-T pass reported "Missing T-1 price for symbol with a
-     * non-zero position", `execute_day_t` rule 3 rolled the target back to the carried
-     * quantity, and the position was carried again the next session and the one after
+     * A universe fixed from config before the previous day's book is read gives a
+     * held position whose successor is not in config no bars, no instrument, no cost
+     * config and no target: the day-T pass reports "Missing T-1 price for symbol with a
+     * non-zero position", `execute_day_t` rule 3 rolls the target back to the carried
+     * quantity, and the position is carried again the next session and the one after
      * -- an unpriceable zombie, persisted under the new key, that no amount of
-     * re-running clears (E2-F34 / E3 F-4). `add_rowless_exits` does not rescue it: its
+     * re-running clears. `add_rowless_exits` does not rescue it: its
      * own contract says a symbol that left the universe is "still closed out", and that
      * is only true when a price exists.
      *
@@ -269,7 +264,7 @@ public:
      * @param holding_start symbol -> YYYY-MM-DD the CURRENT holding began. Never the
      *        lifetime min(date): a ticker closed in 2021 and re-bought in 2026 would
      *        satisfy the era test for the 2021 alias and the universe would grow a dead
-     *        symbol (BA-2 / C-3 D1). A symbol absent here contributes nothing.
+     *        symbol. A symbol absent here contributes nothing.
      * @return `config_symbols` in their configured order, followed by the successors
      *         that were not already configured, sorted. Deterministic across runs.
      */
@@ -301,7 +296,7 @@ public:
     }
 
     /**
-     * @brief The first REAL close on or after `ex_date` in an ascending close series (BA-24).
+     * @brief The first REAL close on or after `ex_date` in an ascending close series.
      *
      * A spinoff's children are read in ONE range query starting at the batch's earliest
      * ex-date, which is right -- one indexed read instead of one per child. Selecting from
@@ -328,7 +323,7 @@ public:
         return {std::string{}, 0.0};
     }
 
-    /** @brief What the E2-F43 feed check found. */
+    /** @brief What the feed-ingestion check found. */
     struct FeedIngestionCheck {
         /** One entry per symbol that should have ingested a bar and did not, with the
          *  reason spelled out ready for an ERROR line. */
@@ -338,14 +333,13 @@ public:
     };
 
     /**
-     * @brief Did the strategy actually ingest the bars this run loaded? (E2-F43)
+     * @brief Did the strategy actually ingest the bars this run loaded?
      *
      * `PortfolioManager::process_market_data` LOGS an `on_data` error and then reads
      * `get_target_positions()` off un-updated instrument data. For a strategy whose state
      * starts empty every session -- which every live process is -- that yields ZERO targets
      * for every symbol, and zero targets against a held book is a full-book SELL, not a
-     * no-op. Until E2-F28 collapsed the double feed, the removed first feed returned that
-     * error to the runner and the run exited 1; nothing checks it now.
+     * no-op, and nothing else returns that error to the runner.
      *
      * The test is exact rather than approximate because it can be: `on_data` stamps the
      * bar's own timestamp on the instrument, so after a successful feed the strategy's
@@ -417,7 +411,7 @@ public:
          */
         std::unordered_map<std::string, double> execution_prices;
         /**
-         * B-iv: the level a rolled-back holding is carried at. A symbol with no close
+         * The level a rolled-back holding is carried at. A symbol with no close
          * within the staleness bound has no entry in `execution_prices` OR `t1_closes`,
          * so its day-T row would be marked 0 while the aggregate carries the T-1 level
          * the rollback copied -- and the fatal in-run unrealized identity then aborts a
@@ -497,10 +491,10 @@ public:
                 prev_it->second.quantity.as_double() != 0.0) {
                 positions[symbol] = prev_it->second;
                 positions[symbol].last_update = now;
-                // B-iv: the copy above brings the T-1 row's stored unrealized -- a LEVEL --
+                // The copy above brings the T-1 row's stored unrealized -- a LEVEL --
                 // into the day-T aggregate. Carry the level's MARK too, so the row is
-                // written against the same number instead of 0. Same policy as R-2 on the
-                // finalizer side: an unprinted symbol keeps its last mark.
+                // written against the same number instead of 0. Same policy as the
+                // finalizer's: an unprinted symbol keeps its last mark.
                 const double mark = carried_mark_from_row(prev_it->second);
                 if (mark > 0.0) outcome.carried_marks[symbol] = mark;
             } else {
@@ -582,11 +576,10 @@ public:
      * One map, so a position row and the live_results aggregate cannot disagree about
      * what a symbol was worth. `resolve_and_apply_basis` marks from the execution price
      * map -- T-1 closes plus any widened substitute -- and the aggregate sums those
-     * marks; the row loop used to recompute from the T-1 close map alone, which has no
-     * entry for a widened symbol at all. That symbol's `daily_unrealized_pnl` was
-     * therefore written as 0 while the aggregate carried its real mark, and the in-run
-     * L5 assertion covers realized only, so nothing saw it (E2-F35 / BA-4). It fires on
-     * exactly the halted and thin names the widening exists to rescue.
+     * marks. The T-1 close map alone has no entry for a widened symbol at all, so a row
+     * marked from it would write that symbol's `daily_unrealized_pnl` as 0 while the
+     * aggregate carried its real mark, and the in-run L5 assertion covers realized only.
+     * That fires on exactly the halted and thin names the widening exists to rescue.
      *
      * An EMPTY `execution_prices` -- the closed-day path, where execute_day_t never runs
      * -- returns `t1_closes` unchanged, so the carry-forward day is untouched.
@@ -598,7 +591,7 @@ public:
         const std::unordered_map<std::string, double>& execution_prices,
         const std::unordered_map<std::string, double>& carried_marks = {}) {
         std::unordered_map<std::string, double> marks = t1_closes;
-        // B-iv: a rolled-back holding first, so a real execution price still wins below.
+        // A rolled-back holding first, so a real execution price still wins below.
         // It did not trade, so it has no execution price; this is the only level it has.
         for (const auto& [symbol, price] : carried_marks) {
             if (price > 0.0) marks[symbol] = price;
@@ -612,7 +605,7 @@ public:
     /**
      * @brief The mark a carried row was last valued at, recovered from the row itself.
      *
-     * B-iv. `unrealized = qty * (mark - basis)`, so `mark = basis + unrealized / qty`.
+     * `unrealized = qty * (mark - basis)`, so `mark = basis + unrealized / qty`.
      * Recovered from the row because a rolled-back symbol has no price series to read --
      * that absence is why it was rolled back. Returns 0 ("no mark") when the row cannot
      * imply one: a flat row, or one with no basis. Absent is a better answer than zero,
@@ -645,7 +638,7 @@ public:
     //
     // The helpers below are the equity runner's contract with that definition.
     // Each is a pure function so the rule can be pinned by a unit test rather
-    // than only by a database replay (E2-F19 / E2-F20).
+    // than only by a database replay.
     // -----------------------------------------------------------------------
 
     /** Tolerance below which a quantity or a realized figure counts as zero. */
@@ -654,13 +647,13 @@ public:
     /**
      * @brief Whether a position row carries nothing worth persisting.
      *
-     * A row is dead only when it has neither quantity nor realized P&L. The old rule
-     * dropped on quantity alone, which is right for futures -- an exit there realizes
+     * A row is dead only when it has neither quantity nor realized P&L. Dropping on
+     * quantity alone is right for futures -- an exit there realizes
      * exactly zero, because average_price is reset to close(T-1) daily and the fill
      * strikes at close(T-1) -- and wrong for equities, where average_price is a true
-     * cost basis and the exit realizes the whole accumulated gain. Measured
-     * 2026-04-15: TMUS sold out for -402.65, live_results carried it, the positions
-     * table did not (E2-F19 route 3).
+     * cost basis and the exit realizes the whole accumulated gain (for example TMUS
+     * sold out on 2026-04-15 for -402.65, which live_results carries and the positions
+     * table must too).
      *
      * A closed symbol carries realized on the close day only and never has a row
      * again, so this keeps one row per close event, not one per flat day.
@@ -698,16 +691,14 @@ public:
     /**
      * @brief Put the LOADED T-1 realized figure back on each finalized T-1 row.
      *
-     * History: LivePnLManager::finalize_previous_day used to write the settlement
-     * move qty x (close(T-1) - close(T-2)) into every finalized row's realized_pnl
-     * regardless of policy. Under SETTLED that is the day's realized; under
-     * MARK_TO_MARKET it is a mark, and writing it over the trade realized the day's
-     * own run recorded is how the column came to hold price moves (three times over
-     * a weekend). Since R-1 (af1bf2c6) the finalizer itself keeps the row's realized
-     * under MARK_TO_MARKET, so this helper is belt and braces on that path.
+     * The settlement move qty x (close(T-1) - close(T-2)) is the day's realized under
+     * SETTLED; under MARK_TO_MARKET it is a mark, and writing it over the trade realized
+     * the day's own run recorded would fill the column with price moves (three times
+     * over a weekend). LivePnLManager::finalize_previous_day keeps the row's realized
+     * under MARK_TO_MARKET itself, so this helper is belt and braces on that path.
      *
      * It still matters for one case: select_finalization_book may finalize a symbol
-     * from the RESTATED book (a deferred class-1 event covering T-1, E2-F16), and the
+     * from the RESTATED book (a deferred class-1 event covering T-1), and the
      * restated entry's realized is not what T-1's own run wrote. Restoring from the
      * pre-action loaded snapshot keeps the T-1 row's realized equal to the figure
      * the day itself persisted. The finalizer's aggregate fields --
@@ -768,17 +759,17 @@ public:
      * @brief The book the Day T-1 finalization should be run from, per symbol.
      *
      * T-1 is finalized as the book actually stood on T-1, i.e. from the snapshot
-     * taken before any corporate action touched it (8a1a96ef). The exception is a
+     * taken before any corporate action touched it. The exception is a
      * DEFERRED class-1 event catching up: when its ex-date is on or before T-1 the
      * T-1 close is already post-event, so the pre-action basis would be a frame
-     * behind the price (E2-F16); that symbol is finalized from the restated book.
+     * behind the price; that symbol is finalized from the restated book.
      *
      * The restated book is the one taken AFTER the class-1 rescale and BEFORE the
      * lifecycle handlers. Terminations set quantity to 0 and add a day-T cash flow
      * to realized_pnl; renames and contra-merges re-key and merge entries. None of
      * that happened on T-1, and reading the post-lifecycle map here would finalize
      * a symbol that split and terminated in the same run as a qty-0 row with a
-     * day-T flow on the T-1 date (E2-F19 gap G4).
+     * day-T flow on the T-1 date.
      *
      * @param restated_out symbols taken from the restated book, for the caller's log.
      */

@@ -1,9 +1,9 @@
 // tests/core/test_timed_process.cpp
 //
-// T-DATED R4 (HD 2026-10-10): the report's chart process is run with a time limit. These cases
+// The report's chart process is run with a time limit. These cases
 // EXECUTE core::run_with_timeout against stand-in processes: one that finishes, one that fails,
 // one that sleeps past the limit, and one that sleeps while a grandchild keeps the output open
-// (the shape that stopped a live run for ever: the reader never saw the end of the output).
+// (a reader that waits for the end of the output would never return).
 
 #include <gtest/gtest.h>
 
@@ -46,7 +46,7 @@ TEST(TimedProcess, AProcessThatSleepsPastTheLimitIsKilledAndTheCallerGoesOn) {
 
 TEST(TimedProcess, AGrandchildHoldingTheOutputOpenDoesNotHoldTheCaller) {
     // The shell exits at once; its background child keeps the pipe's write end. Reading to the
-    // end of the output, as the run used to, would wait the full 30 seconds.
+    // end of the output with no limit would wait the full 30 seconds.
     const auto t0 = std::chrono::steady_clock::now();
     const auto r = run_with_timeout("(sleep 30) & echo started", milliseconds(300));
     EXPECT_TRUE(r.started);

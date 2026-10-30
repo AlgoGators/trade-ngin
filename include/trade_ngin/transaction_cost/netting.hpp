@@ -1,4 +1,4 @@
-// K3, the netting adjustment (T-7b-2 8b; T-4b section 6; HD 2026-09-25 item 23).
+// The netting adjustment.
 //
 // A book with several sleeves stores one execution row per sleeve, each priced as if that
 // sleeve traded alone (its own cost C(q_i) in total_transaction_costs). The account sends ONE
@@ -14,8 +14,8 @@
 //                           so the adjustments sum to credit_total exactly
 //   net_cost_i            = total_transaction_costs_i - netting_adjustment_i   (derived)
 //
-// and the net costs of the symbol-day sum to C(Q) to the last stored digit. The sign is T-4b's
-// option (i): positive when sleeves cross, negative when one account order of the summed size
+// and the net costs of the symbol-day sum to C(Q) to the last stored digit. The sign is
+// positive when sleeves cross, negative when one account order of the summed size
 // costs more than the sleeve orders priced alone (impact grows as |q|^1.5). The weight is
 // C(q_i), not |q_i|: a |q| weight can hand a sleeve a negative net cost, a C(q_i) weight cannot.
 //
@@ -87,7 +87,7 @@ NettingReport apply_netting_adjustments(
     const std::function<double(const std::string& symbol, double signed_quantity,
                                double fill_price)>& cost_of);
 
-/// The cost a fill contributes to every total, P&L and statistic (HD 2026-10-09): its own cost
+/// The cost a fill contributes to every total, P&L and statistic: its own cost
 /// MINUS the signed netting adjustment already on the fill. A positive adjustment (the sleeves
 /// offset) lowers it, a negative one (one account order of the summed size costs more) raises it;
 /// a fill that was never netted (one sleeve row, a ROLL leg, a BORROW row, rows at different
