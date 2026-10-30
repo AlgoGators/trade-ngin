@@ -13,7 +13,7 @@ namespace trade_ngin {
 /**
  * @brief The values a futures runner CARRIES into its positions file on a day with no session.
  *
- * HD 2026-09-18 (the Sunday positions CSV): with the MarketDataBus off at the load, a day with
+ * With the MarketDataBus off at the load, a day with
  * no session (the previous calendar day was a Saturday or a holiday, so no T-1 close exists)
  * feeds the strategies nothing and runs no rebalance, so a strategy's forecast, volatility and
  * EMAs are empty that day. The per-strategy positions file keeps the real details instead of
@@ -62,12 +62,12 @@ inline std::string carried_forecasts_log_line(const std::string& sleeve, std::si
 }
 
 /**
- * @brief Why a whole-book carry had no session, from the day's T-1 classification (T-7b-1 C7b R2,
- *        T-7a_CODE_REVIEW R2). A carry happens when no symbol has a T-1 price, so every verdict
+ * @brief Why a whole-book carry had no session, from the day's T-1 classification. A carry
+ *        happens when no symbol has a T-1 price, so every verdict
  *        is a no-bar one: when any of them is a feed hole the reason is the FEED HOLE and its
  *        count (the dead Sundays 2026-05-17 and 05-24), otherwise a closure with the first
- *        verdict's reason ("holiday: ...", "not expected: ..."). The runners used to derive it
- *        from the weekday and the calendar, which named nothing on a feed-hole carry.
+ *        verdict's reason ("holiday: ...", "not expected: ..."). The weekday and the calendar
+ *        alone would name nothing on a feed-hole carry.
  */
 inline std::string carried_day_reason(const T1Classification& t1) {
     if (t1.feed_hole > 0) {

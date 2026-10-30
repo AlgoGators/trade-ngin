@@ -79,13 +79,12 @@ struct LoggerConfig : public ConfigBase {
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
     /**
-     * Optional sub-directory of `log_directory` for this session's files (drift-F).
+     * Optional sub-directory of `log_directory` for this session's files.
      *
-     * EMPTY by default, which is exactly the previous behaviour. A replay sets it to the
+     * EMPTY by default: the files go in `log_directory` itself. A replay sets it to the
      * date being replayed, so `logs/2026-04-17/` holds that date's run and the retention
-     * budget below is spent per date instead of globally: a 126-day chain used to leave
-     * eight files behind and every dividend-applying run in the middle of it was
-     * unreconcilable after the fact.
+     * budget below is spent per date instead of globally, which keeps every run of a long
+     * replay chain on disk.
      */
     std::string log_subdirectory{};
     std::string filename_prefix{"trade_ngin"};  // Prefix for log files

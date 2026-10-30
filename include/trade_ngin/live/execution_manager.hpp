@@ -20,15 +20,13 @@ namespace trade_ngin {
  * transaction costs via TransactionCostManager. There is no order routing,
  * no broker network call, no partial-fill handling.
  *
- * This is paper-trading by design per the 2026-05-03 audit §7. A real
- * broker adapter (and the broker-reconciliation work in audit §1.13) lands
- * in a separate phase if and when live brokerage integration ships.
+ * This is paper-trading by design. A real broker adapter, with broker
+ * reconciliation, is separate work for when live brokerage integration ships.
  *
  * For historical simulation, see backtest::BacktestExecutionManager.
  *
- * History: extracted from live_trend.cpp lines 717-833 during the Phase 3
- * refactor. The "live" prefix is preserved for path stability; this
- * docstring is the authoritative description of the role.
+ * The "live" prefix is kept for path stability; this docstring is the
+ * authoritative description of the role.
  */
 
 /**
@@ -37,7 +35,7 @@ namespace trade_ngin {
  *
  * The distinction exists because Position::average_price does not mean the same
  * thing in every strategy. Futures trend-following assigns it the latest mark
- * (trend_following.cpp:623, matching REALIZED_ONLY daily settlement), so falling
+ * (TrendFollowingStrategy, matching REALIZED_ONLY daily settlement), so falling
  * back to it yields a real price. Equity mean reversion maintains it as a weighted
  * cost basis, which for a position opened today is 0.00 until the fill being priced
  * is itself processed -- so the same fallback books the trade at zero.
@@ -79,10 +77,10 @@ public:
      * @param timestamp Execution timestamp
      * @param pricing How to handle a symbol with no usable price in market_prices.
      *
-     *        MARK_FALLBACK (default) is the long-standing behaviour: the fill is priced at
+     *        MARK_FALLBACK (default): the fill is priced at
      *        Position::average_price, which for futures is price_history.back(), the latest
      *        mark (trend_following.cpp). That mark can be several sessions old on a feed hole
-     *        (MYM 2026-04-24 filled at a four-day-old close), so since T-7a C4 the futures
+     *        (MYM 2026-04-24 filled at a four-day-old close), so the futures
      *        runners pass STRICT: their book gate holds every symbol without a T-1 SESSION,
      *        so nothing reaches this step unpriced (session_book_gate.hpp).
      *

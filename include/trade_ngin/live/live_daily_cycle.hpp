@@ -27,18 +27,17 @@ namespace trade_ngin {
  *
  * These live in a named place because they are ordering constraints, not
  * computations: getting them wrong produces a runner that reads correctly
- * line by line and is still silently wrong. Extracted from
- * apps/strategies/live_equity_mean_reversion.cpp so they can be tested
- * without standing up a database and a full trading day.
+ * line by line and is still silently wrong. The equity runner
+ * (apps/strategies/live_equity_mean_reversion.cpp) follows them; they live here
+ * so they can be tested without standing up a database and a full trading day.
  */
 class LiveDailyCycle {
 public:
     /**
      * @brief Is the exchange shut on this date?
      *
-     * The predicate the whole closed-day path branches on, in a named place because it
-     * was five inline copies of `dow == 0 || dow == 6 || is_holiday(...)` in main() and
-     * nothing tested any of them (T-OR.3). A closed market does NOT mean "do nothing":
+     * The predicate the whole closed-day path branches on, in one named place so it is
+     * tested. A closed market does NOT mean "do nothing":
      * the book is still held, so the day is processed as a carry-forward -- positions,
      * live_results and equity_curve written from the previous session, signals and
      * executions skipped -- which is what the futures runners already do.
@@ -119,14 +118,14 @@ public:
     static Result<void> prepare_strategy_for_signals(
         BaseStrategy& strategy,
         const std::unordered_map<std::string, Position>& previous_positions) {
-        // E2-F19 / E2-F20: seed quantity, basis and mark -- never yesterday's realized.
+        // Seed quantity, basis and mark -- never yesterday's realized.
         //
         // BaseStrategy::seed_positions is a wholesale copy and on_execution() adds to
-        // whatever it finds, so a seeded realized_pnl made every persisted day-T row
+        // whatever it finds, so a seeded realized_pnl would make every persisted day-T row
         // "yesterday's row + today's fills": a running total under a column named
-        // daily. Worse, on a Monday yesterday's row was Friday's, already rewritten by
+        // daily. Worse, on a Monday yesterday's row is Friday's, already rewritten by
         // the Saturday and Sunday finalizations with Friday's MARK MOVE, so a price
-        // move entered a column that is supposed to hold trades (measured: META
+        // move would enter a column that is supposed to hold trades (for example META
         // 2026-08-04 = 73.35 Friday mark + 31.31 Mon trade + 15.93 Tue trade).
         //
         // Zeroing it here makes positions_[sym].realized_pnl mean "realized by this
@@ -160,12 +159,11 @@ public:
     /**
      * @brief Give the transaction-cost model the market data it prices fills from.
      *
-     * E2-F62. `TransactionCostManager::calculate_costs` reads its ADV from
+     * `TransactionCostManager::calculate_costs` reads its ADV from
      * `impact_model_.get_adv()` and its spread widening from
-     * `spread_model_.get_volatility_multiplier()` (`transaction_cost_manager.cpp:26-27`).
-     * Both are populated ONLY by `update_market_data`, and the live equity runner
-     * never called it -- the only runner in the tree that did not. So every live
-     * equity fill was priced against the hard-coded fallbacks at `:33` and `:37`:
+     * `spread_model_.get_volatility_multiplier()`.
+     * Both are populated ONLY by `update_market_data`; without it every live
+     * equity fill is priced against the hard-coded fallbacks,
      * `adv = 100000` shares and `vol_mult = 1.0`. For a name that really trades
      * 5.4 M shares a day that overstates the participation rate 54x and selects a
      * 40 bps impact coefficient where the true ADV selects 10 bps
@@ -179,24 +177,22 @@ public:
      * unconditionally and gates the log return on `prev_close_price > 0.0`, so a
      * zero prev_close means "volume yes, return omitted". Passing the bar's own
      * close instead -- which is what `ExecutionManager::update_market_data`'s
-     * 3-arg form does for a symbol it has not seen (`execution_manager.cpp:186`),
-     * and therefore what the futures live runner gets at
-     * `live_portfolio_conservative.cpp:890` -- injects a fabricated
+     * 3-arg form does for a symbol it has not seen -- injects a fabricated
      * log(close/close) = 0 return. One false zero in a 20-return window pulls the
-     * sample stdev down and biases `vol_mult` low. `backtest_coordinator.cpp:455-464`
-     * argues the same point for the same reason; this is the live half of it.
+     * sample stdev down and biases `vol_mult` low. The backtest coordinator's feed
+     * omits that return for the same reason.
      * We call the 4-arg cost-manager form directly to keep that control.
      *
      * THE PERMANENT 1-BAR OFFSET (by construction, not a defect).
      * The backtest feeds day T's bar to the cost model and then fills at T-1's
-     * close (`backtest_coordinator.cpp:568` runs before the executions are costed),
+     * close (the backtest coordinator feeds the bar before the executions are costed),
      * so its 20-bar window ends at T. The live runner only has bars through T-1 --
      * asking for T would be lookahead -- so its window ends at T-1. The two cost
      * models therefore average volumes over windows offset by one bar forever.
      * Measured on this universe that is ~0.2-2 % of ADV and moves `vol_mult` in
      * its third decimal; it cannot change an ADV tier except for a symbol sitting
      * on a bucket boundary. It is the price of not looking ahead, and it is the
-     * one backtest/live cost difference that survives this fix.
+     * one backtest/live cost difference.
      *
      * @param tcm    the cost manager whose ADV and volatility deques to fill
      * @param symbols the effective universe -- iterated in this order so a stray
@@ -246,14 +242,13 @@ public:
      * @brief The symbols this run must load data for: config plus the successors
      *        of anything currently held.
      *
-     * The universe used to be fixed from config before the previous day's book was
-     * even read, while `apply_renames` ran ~1,500 lines later. A held position whose
-     * successor is not in config therefore got no bars, no instrument, no cost config
-     * and no target: the day-T pass reported "Missing T-1 price for symbol with a
-     * non-zero position", `execute_day_t` rule 3 rolled the target back to the carried
-     * quantity, and the position was carried again the next session and the one after
+     * A universe fixed from config before the previous day's book is read gives a
+     * held position whose successor is not in config no bars, no instrument, no cost
+     * config and no target: the day-T pass reports "Missing T-1 price for symbol with a
+     * non-zero position", `execute_day_t` rule 3 rolls the target back to the carried
+     * quantity, and the position is carried again the next session and the one after
      * -- an unpriceable zombie, persisted under the new key, that no amount of
-     * re-running clears (E2-F34 / E3 F-4). `add_rowless_exits` does not rescue it: its
+     * re-running clears. `add_rowless_exits` does not rescue it: its
      * own contract says a symbol that left the universe is "still closed out", and that
      * is only true when a price exists.
      *
@@ -269,7 +264,7 @@ public:
      * @param holding_start symbol -> YYYY-MM-DD the CURRENT holding began. Never the
      *        lifetime min(date): a ticker closed in 2021 and re-bought in 2026 would
      *        satisfy the era test for the 2021 alias and the universe would grow a dead
-     *        symbol (BA-2 / C-3 D1). A symbol absent here contributes nothing.
+     *        symbol. A symbol absent here contributes nothing.
      * @return `config_symbols` in their configured order, followed by the successors
      *         that were not already configured, sorted. Deterministic across runs.
      */
@@ -654,13 +649,13 @@ public:
     /**
      * @brief Whether a position row carries nothing worth persisting.
      *
-     * A row is dead only when it has neither quantity nor realized P&L. The old rule
-     * dropped on quantity alone, which is right for futures -- an exit there realizes
+     * A row is dead only when it has neither quantity nor realized P&L. Dropping on
+     * quantity alone is right for futures -- an exit there realizes
      * exactly zero, because average_price is reset to close(T-1) daily and the fill
      * strikes at close(T-1) -- and wrong for equities, where average_price is a true
-     * cost basis and the exit realizes the whole accumulated gain. Measured
-     * 2026-04-15: TMUS sold out for -402.65, live_results carried it, the positions
-     * table did not (E2-F19 route 3).
+     * cost basis and the exit realizes the whole accumulated gain (for example TMUS
+     * sold out on 2026-04-15 for -402.65, which live_results carries and the positions
+     * table must too).
      *
      * A closed symbol carries realized on the close day only and never has a row
      * again, so this keeps one row per close event, not one per flat day.

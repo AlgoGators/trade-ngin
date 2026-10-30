@@ -63,7 +63,7 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
             continue;
         }
 
-        // E2-F17: refuse an event for a position the book did NOT hold on the ex-date.
+        // Refuse an event for a position the book did NOT hold on the ex-date.
         //
         // A class-1 event restates a basis into post-event units. That is only right when the
         // basis was formed BEFORE the event. A position opened after the ex-date was bought at
@@ -80,10 +80,8 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
         // name bought within 14 days after an ex-date lands here. Magnitude scales with the
         // event: 0.62% for that dividend, 2400% for a 25:1 split.
         //
-        // Decided by BASIS PROVENANCE, not by a quantity, and it runs for EVERY class-1 type.
-        // The predecessor gated on `book_state_known_at_ex_date && qty_at_ex_date == 0`, which
-        // the runner only ever populated inside its DIVIDEND branch -- so the guard was inert
-        // for SPLITS, the case where the magnitude is catastrophic rather than small.
+        // Decided by BASIS PROVENANCE, not by a quantity, and it runs for EVERY class-1 type,
+        // SPLITS included, the case where the magnitude is catastrophic rather than small.
         //
         // Only POSITIVE evidence of contamination may skip. UNKNOWN applies, because dropping a
         // real 25:1 split leaves basis and mark 25x apart, which is strictly worse than the

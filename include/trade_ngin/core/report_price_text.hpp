@@ -63,8 +63,8 @@ inline std::string report_dollars(double value, int decimals = 2) {
 }
 
 /**
- * @brief The decimals every price of one contract prints with, in every table and file (HD
- *        10-13): four, or the decimals of the contract's tick when four cannot show a tick
+ * @brief The decimals every price of one contract prints with, in every table and file:
+ *        four, or the decimals of the contract's tick when four cannot show a tick
  *        exactly (6J 0.0000005 -> 7, ZF 1/64 -> 6), so a row still multiplies out.
  */
 inline int report_price_places(double tick_size) {

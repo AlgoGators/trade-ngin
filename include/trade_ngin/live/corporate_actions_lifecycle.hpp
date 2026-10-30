@@ -45,7 +45,7 @@ struct TerminationEvent {
 };
 
 /**
- * @brief Class-1-encoded event that is really a SPINOFF (E2-F31).
+ * @brief Class-1-encoded event that is really a SPINOFF.
  *
  * A spinoff is not a price restatement of one symbol. The parent distributes shares of a
  * NEW company: the parent's price series steps down by the value distributed, the holder
@@ -56,8 +56,8 @@ struct TerminationEvent {
  * split and mints 32.7 phantom parent shares, or as a dividend and books income that never
  * arrived. The CHILD, which is the whole point of the event, is never created.
  *
- * The ratio is not inferred from the magnitude of the step -- that is exactly the provenance
- * rule E2-F9 exists to enforce. It comes from the `spinoff` row in
+ * The ratio is not inferred from the magnitude of the step -- the provenance rule forbids
+ * that. It comes from the `spinoff` row in
  * equities_data.corporate_action, whose `value` IS the child ratio (verified 5/5:
  * GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5, MMM/SOLV 0.25).
  */
@@ -65,12 +65,11 @@ struct TerminationEvent {
  * @brief The class-1 columns one spinoff ex-date bar carries, and the factor they amount to.
  *
  * `get_per_bar_corporate_actions` emits a bar's `split_factor` and its `div_cash` as TWO
- * rows (postgres_database.cpp:2599-2626), and both carry the same (ticker, ex_date). Seven
+ * rows, and both carry the same (ticker, ex_date). Seven
  * real bars in this database carry both -- HLT 2017-01-04, K 2023-10-02, MET 2017-08-07,
  * LDOS 2013-09-30, RTX 2020-04-03, ABT 2004-05-03, BX 2015-10-01 -- and every one of them is
  * a spinoff ex-date. Matching each row against the terms key separately routes the SAME
- * distribution twice: the child is delivered twice and its realized P&L booked twice
- * (E2-F47).
+ * distribution twice: the child is delivered twice and its realized P&L booked twice.
  *
  * The bar is one event. This collects its columns so it can be routed once, and computes the
  * factor the parent's ADJUSTED price series actually took across it -- the product of what
@@ -302,7 +301,7 @@ struct SpinoffEvent {
      * DISTRIBUTION's own factor: the whole step the bar took (`split_factor x
      * (1 + div_cash/close)`, SpinoffBarColumns::total_factor) with any coincident reverse
      * split divided back out, because that part is a share-count change the class-1 applier
-     * owns (E2-F47, E2-F48). Strictly greater than 1 for a real distribution.
+     * owns. Strictly greater than 1 for a real distribution.
      */
     double parent_restatement_factor{1.0};
     /** Every child the (parent, ex-date) pair delivers. Never just the last one read. */
@@ -464,8 +463,7 @@ public:
      * key removed -- the two rows are the same holding.
      *
      * Aliases are a curated subset, not the full rename history: an unmapped
-     * historical ticker simply stays as-is, which is the pre-existing
-     * behaviour and never loses a position.
+     * historical ticker simply stays as-is, which never loses a position.
      *
      * **Renames are era-bound by position inception.** Tickers get reused: our
      * own backfill maps META -> METV (effective_until 2022-01-31), but META has
@@ -486,7 +484,7 @@ public:
      * with, is skipped with a WARN. A skipped rename is retried next run; a
      * wrong re-key is silent corruption. Never pass class-1's fail-wide
      * bulk-start sentinel dates in here -- a sentinel two years back satisfies
-     * the era test for any recent alias and reintroduces the bug.
+     * the era test for any recent alias and re-keys a live holding.
      *
      * @param position_inception symbol -> YYYY-MM-DD the holding was established.
      */
@@ -514,9 +512,8 @@ public:
      * @param feed_last_date MEASURED last row date of
      *        equities_data.corporate_action, YYYY-MM-DD. Quoted in the "no deal
      *        terms" WARNs so the operator reads what the database actually holds
-     *        rather than a date compiled into the binary (E4 item 3). Empty
-     *        falls back to `kCorpActionTableFrozenAfter`, which is what every
-     *        caller got before the measurement existed.
+     *        rather than a date compiled into the binary. Empty
+     *        falls back to `kCorpActionTableFrozenAfter`.
      */
     static std::vector<LifecycleAdjustment> apply_terminations(
         std::unordered_map<std::string, Position>& positions,

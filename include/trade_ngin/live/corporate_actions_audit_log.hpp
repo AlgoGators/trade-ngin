@@ -103,11 +103,11 @@ public:
      * @brief The run's own as-of date, which every row this pass writes is stamped
      *        with and which load() refuses to run behind.
      *
-     * E2-F23 (audit option C-prime). A live run is correct exactly when the dedup
+     * A live run is correct exactly when the dedup
      * rows and the T-1 position row come from the SAME pass. Reset the book but
      * not this table and it is not: the event is skipped as "already applied"
      * against a T-1 row that predates it, T-1 is finalized in the wrong frame, and
-     * nothing notices -- the G3 basis/mark guard only inspects events that were
+     * nothing notices -- the basis/mark guard only inspects events that were
      * APPLIED, and a deduped event never enters that list. Measured: BKNG 25:1,
      * ex-date 2026-04-06, re-run of 2026-04-07 over an un-reset dedup table,
      * -4,824 of phantom unrealized P&L.
@@ -120,7 +120,7 @@ public:
      * Pass the runner's as-of date -- the replay date, NOT today's wall clock -- or
      * a replay of 2026-04-07 executed tonight would stamp tonight and every later
      * chain would look stale. Leaving it empty disables both the stamping and the
-     * check, which is the pre-005 behaviour and what the file-backed tests use.
+     * check, which is what the file-backed tests use.
      */
     enum class RunDateCheck {
         /// Stamp writes AND refuse to load behind a later pass's rows.
@@ -215,7 +215,7 @@ public:
 
     /**
      * @brief Cumulative dividend cash through a row's date, on the shares that carried each
-     *        ex-date (T-8D-2 R44 (b)).
+     *        ex-date.
      *
      * The sum, over the recorded dividend events with ex_date <= row_date, of
      * dividend_per_share x the shares `shares_on_ex_date_row` returns for the event. A fill

@@ -221,28 +221,17 @@ public:
      * weekends, or 9/11-style multi-day exchange closures).
      *
      * **The candidate is tested in UTC, because that is the frame it is
-     * returned in.** This used to test with `safe_localtime` and return the raw
-     * `candidate`, which every caller then formats with `gmtime` -- the two
-     * frames agree only while a candidate's local and UTC calendar dates are the
-     * same day. Since `95679ea2` the equity runner's run date is UTC MIDNIGHT
-     * (`parse_utc_date`; `now_tm` is `gmtime_r` at every consumer), so on a
-     * negative-offset host the candidate's local date is the day BEFORE its UTC
-     * date: the walk validated day D-1 and handed back day D. Measured on the
-     * 2026-06-15 replay in America/New_York -- Monday resolved to Saturday
-     * 2026-06-13, no T-1 close existed, the Day T-1 finalization was refused for
-     * the whole window, and every day-T row was marked from the widened fallback
-     * (E2-F45).
+     * returned in.** Every caller formats the result with `gmtime`, and the
+     * equity runner's run date is UTC MIDNIGHT (`parse_utc_date`; `now_tm` is
+     * `gmtime_r` at every consumer). Testing in local time would, on a
+     * negative-offset host, validate the day before the UTC date it hands back:
+     * a Monday would resolve to a Saturday with no T-1 close.
      *
-     * Testing in the returned frame makes the function self-consistent for any
-     * caller. The two futures runners still parse their CLI date with
-     * `std::mktime` (local midnight, E2-F42); on a negative-offset host that
-     * lands at 04:00/05:00Z on the SAME calendar day, so the walk sees the same
-     * days and their answer does not move -- pinned by
+     * The two futures runners parse their CLI date with `std::mktime` (local
+     * midnight); on a negative-offset host that lands at 04:00/05:00Z on the
+     * SAME calendar day, so the walk sees the same days and their answer does
+     * not move -- pinned by
      * `PreviousTradingDayFrameTest.LocalMidnightRunDateResolvesTheSameCalendarDate`.
-     *
-     * The previous comment justified local time as consistency with
-     * `EquityInstrument::is_market_open`. That function has no production
-     * callers (only tests), so it was never a constraint on this one.
      *
      * @param start Reference timestamp; the search begins at `start - 24h`.
      * @param max_lookback_days Maximum days to walk back before giving up.

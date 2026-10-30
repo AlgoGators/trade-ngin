@@ -1,9 +1,9 @@
 #pragma once
 
-// The over-limit lines of a futures book's daily report (T-8D R20 as LOOP_SPEC v6.2 restates it):
+// The over-limit lines of a futures book's daily report:
 // the stored book's gross and net leverage ON THE SIZING CAPITAL E_t, each beside the limit the
-// overlay ran with (section 12: L_max, L_net_max) and the per-name cap L, and the day's marks from
-// risk_detail (sections 6.4, 7.3 and 10): over_limit_after_rounding (terms and excess),
+// overlay ran with (L_max, L_net_max) and the per-name cap L, and the day's marks from
+// risk_detail: over_limit_after_rounding (terms and excess),
 // over_limit_by_hold (terms and symbols) and CAP. A day with no mark says so; a day whose row
 // carries no risk_detail (no sized rebalance, a refused overlay) says it has no reading and
 // prints no figure.
@@ -23,7 +23,7 @@
 namespace trade_ngin {
 
 /// The labels of the report's leverage lines, each naming its denominator in plain words: the text
-/// a reader of the report sees carries no symbol of the specification (the lead, 2026-10-12). "The
+/// a reader of the report sees carries no formula symbol. "The
 /// account value" is the day's current portfolio value and nothing else in the report.
 inline constexpr const char* kReportGrossOnAccount = "Gross Leverage (on the account value)";
 inline constexpr const char* kReportNetOnAccount = "Net Leverage (on the account value)";
@@ -96,8 +96,8 @@ inline bool over_limit_terms_name_cap(const std::string& terms) {
     return false;
 }
 
-/// One stored term of a mark in the words of LOOP_SPEC section 4's table of checks (and section
-/// 6.4's cap): the report prints no symbol of the specification. A term this does not know is
+/// One stored term of a mark in plain words (the overlay's checks and the per-name cap): the
+/// report prints no formula symbol. A term this does not know is
 /// returned as stored, so nothing is ever hidden.
 inline std::string over_limit_term_words(const std::string& term) {
     if (term == "R")

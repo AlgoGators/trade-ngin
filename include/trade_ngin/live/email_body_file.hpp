@@ -1,4 +1,4 @@
-// The daily report's body as a file (T-NETTING; HD 2026-10-10: --send-email wins).
+// The daily report's body as a file (--send-email wins).
 //
 // TRADE_NGIN_EMAIL_BODY_DIR names a directory. On a run that does NOT send (no --send-email and a
 // date given: every test run), a futures runner with the variable set builds the report body

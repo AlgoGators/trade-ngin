@@ -44,7 +44,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     }
 
     double total_finalized_pnl = 0.0;
-    // STAT_QUALITY (T-8D F10, T-8D-2 R82): the held symbols of the settled book and, of them, the
+    // STAT_QUALITY: the held symbols of the settled book and, of them, the
     // ones with no close on the settled date. A log line only: nothing below reads the two.
     std::set<std::string> held_symbols;
     std::set<std::string> held_no_bar;
@@ -124,7 +124,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // Get point value for the symbol
         double point_value = get_point_value(symbol);
 
-        // Calculate Day T-1 PnL. T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): a change bar or a
+        // Calculate Day T-1 PnL. A change bar or a
         // withheld bar books no settlement move (zero_pnl_symbols).
         double yesterday_position_pnl =
             zero_pnl_symbols.count(symbol)

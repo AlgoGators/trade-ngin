@@ -217,9 +217,9 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             const bool is_whole = std::abs(exact - nearest) < 1e-6;
             d.quantity = is_whole ? nearest : std::floor(exact);
             // When the entitlement WAS a whole number, the remainder is zero on BOTH sides of
-            // it -- not just below. Clamping a negative to 0 covered `exact` sitting just
-            // under the integer (59.9999994) and left the mirror case standing: an `exact` of
-            // 60.0000004 rounds to 60 and then reports a 4e-7 "fraction", which becomes a
+            // it -- not just below. Clamping only a negative to 0 would cover `exact` sitting just
+            // under the integer (59.9999994) and leave the mirror case standing: an `exact` of
+            // 60.0000004 rounds to 60 and then would report a 4e-7 "fraction", which becomes a
             // cash-in-lieu SELL of four ten-millionths of a share and a realized figure to
             // match. Dust either way, and dust that reaches trading.executions.
             d.fractional = is_whole ? 0.0 : (exact - d.quantity);
@@ -550,7 +550,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
 
         // The handler still performs the rollover when it is handed genuine terms -- that
         // capability is deliberately preserved so a revived deal-terms feed activates it
-        // with no code change (tests/live/corp_actions/test_effect_classes.cpp:324).
+        // with no code change (tests/live/corp_actions/test_effect_classes.cpp).
         // The protection lives at the CALLER: the runner must not manufacture `has_terms`
         // and `ratio` out of corporate_action.value, which is a deal value, not a ratio.
         // Trust is a question of provenance, not of magnitude -- a plausibility band cannot

@@ -80,7 +80,7 @@ inline std::string cumulative_pnl_heading() {
 inline std::string cumulative_pnl_title(const std::string& date) {
     return "Cumulative PnL by Symbol, all-time as of " + date;
 }
-/// The contracts chart (HD 2026-10-14): contracts traded each day, strategy fills and roll legs.
+/// The contracts chart: contracts traded each day, strategy fills and roll legs.
 inline std::string contracts_per_day_heading() {
     return "Contracts Traded per Day";
 }
@@ -444,7 +444,7 @@ public:
         const std::string& date);
 
     /// Contracts traded per day, strategy fills and roll legs stacked, over the `days` ending on
-    /// the run date (HD 2026-10-14).
+    /// the run date.
     static std::string generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
                                                         const std::string& portfolio_id,
                                                         const std::string& date, int days = 30);
@@ -493,13 +493,13 @@ public:
                                                const std::string& date);
 
 
-    /// The drawdown from the running peak of the stored equity curve, in percent (HD 10-13).
+    /// The drawdown from the running peak of the stored equity curve, in percent.
     static std::string generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
                                                const std::string& strategy_id,
                                                const std::string& portfolio_id,
                                                const std::string& date, int lookback_days = 30);
 
-    /// The stored gross and net leverage on the sizing capital over the last days (HD 10-13).
+    /// The stored gross and net leverage on the sizing capital over the last days.
     static std::string generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
                                                      const std::string& strategy_id,
                                                      const std::string& portfolio_id,

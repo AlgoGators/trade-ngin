@@ -150,7 +150,7 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
     grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
 
     size_t next = 0;             // the first stored row not yet passed
-    double level = series.base;  // the last stored level on or before the grid date (R6)
+    double level = series.base;  // the last stored level on or before the grid date
     bool on_row = false;         // that level is a row of the grid date itself
     double previous = series.base;
     for (const auto& date : grid) {
@@ -168,7 +168,7 @@ StatisticsSeries build_statistics_series(const std::vector<DatedLevel>& stored_l
             }
             ++next;
         }
-        // R5 as amended by R77 (c): the start date is the base, not a return row, when its
+        // The start date is the base, not a return row, when its
         // level is the initial capital; a start row that carries P&L is a return row.
         if (date == anchor && level == series.base) {
             continue;
@@ -237,8 +237,8 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
     metrics.total_days = grid.size();
     metrics.total_annualized_return = grid_annualized_return_pct(grid, sessions_per_year);
     metrics.total_trades = total_trades_executions;
-    // The profit factor divides by the losing sessions' loss: with none it has no value (T-8D
-    // R12). It was 999.99 with a profit and no loss, and 0 with neither.
+    // The profit factor divides by the losing sessions' loss: with none it has no value (not
+    // 999.99 with a profit and no loss, and not 0 with neither).
     metrics.profit_factor = kNoRatio;
 
     // An empty series: everything stays at 0
@@ -265,7 +265,7 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(const StatisticsSer
 
     // Winning, losing and flat days over the grid returns, with the average win and loss and
     // the best and worst day; win_rate = W / (W + L) in percent, so a flat session is in
-    // neither count and in no denominator (B5A D7, T-8D R10).
+    // neither count and in no denominator.
     double sum_wins = 0.0;
     double sum_losses_abs = 0.0;
     metrics.best_day = grid.returns_pct.front();

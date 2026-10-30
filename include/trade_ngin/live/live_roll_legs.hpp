@@ -18,8 +18,7 @@
 namespace trade_ngin {
 
 /**
- * @brief The live runners' ROLL legs, booked by STATE (LOOP_SPEC v6.2 sections 2.1, 2.2, 6.5;
- *        T-ROLLX-FIX commit 4, B8).
+ * @brief The live runners' ROLL legs, booked by STATE.
  *
  * A run legs every roll confirmed since the contract recorded on the symbol's stored T-1 positions
  * row, never the rolls of a calendar span. The symbol's CONSUMED sequence is walked bar by bar from
@@ -30,21 +29,21 @@ namespace trade_ngin {
  *                       bar confirms; the roll is legged on this run.
  *   a late confirming   a feed hole on the confirming bar's own T-1 run, the bar back-filled before
  *   bar                 the next run: that run finds the roll confirmed after the recorded contract
- *                       and legs it, with ids dated the confirming bar. A calendar span never did.
+ *                       and legs it, with ids dated the confirming bar.
  *   a re-run            the first run re-wrote the T-1 row with the contract held after the T-1 bar,
  *                       so the caller passes the contract its stored legs rolled out of
  *                       (PostgresDatabase::get_stored_roll_contracts) as the recorded one, unless an
- *                       earlier date already booked that roll (contract_held_coming_into, #188).
- *   a replay after a    the runner stores a run's legs BEFORE it re-writes the T-1 row (commit 5), so a
+ *                       earlier date already booked that roll (contract_held_coming_into).
+ *   a replay after a    the runner stores a run's legs BEFORE it re-writes the T-1 row, so a
  *   stopped run         stopped run leaves either the row as it was (the roll is still owed) or the
  *                       legs (the re-run case). A row re-written with no leg stored (a run of an older
  *                       binary): a roll the T-1 bar itself confirms is always owed to the run whose
  *                       T-1 it is, so it is legged whatever the row says.
  *   no recorded         a symbol with no stored row, or a row written before migration 016: the roll
- *   contract            its T-1 bar confirms, as before.
+ *   contract            its T-1 bar confirms.
  *
  * The closing leg's price is the close of the last consumed bar before the first change bar and the
- * opening leg's the change bar's close. With the per-contract source (rolls step 3) both are the
+ * opening leg's the change bar's close. With the per-contract source both are the
  * roll bar's own: the old contract's close on it and the new contract's; a roll known on its bar is
  * confirmed by that bar, a vendor switch by the next one (roll_series.hpp).
  */
@@ -56,14 +55,14 @@ struct ConfirmedRoll {
     double closing_price{0.0};
     double opening_price{0.0};
     int change_bars{0};
-    /// Rolls step 4 (R4A fix round 1): a roll known on its bar (per_contract_rolls: a crossover, a
+    /// A roll known on its bar (per_contract_rolls: a crossover, a
     /// deadline, a confirmed vendor switch dated earlier); false for a switch the next consumed bar
     /// confirmed (every roll of the vendor's series; a vendor switch bar with the source on).
     bool known_on_bar{false};
-    /// Rolls step 4 (ruling 18, migration 040): the held contract's move booked on the roll bar, in
+    /// Migration 040: the held contract's move booked on the roll bar, in
     /// price points (RollTracker::Status::roll_bar_points); nullopt on a roll of the vendor's series.
     std::optional<double> roll_bar_points;
-    /// R6 (HD 2026-10-26): a micro's change of price source (RollTracker::Status::price_source_change):
+    /// A micro's change of price source (RollTracker::Status::price_source_change):
     /// the runner books no legs and no cost for it, only a PRICE_SOURCE_CHANGE line with its gap.
     bool price_source_change{false};
 };
@@ -74,12 +73,12 @@ struct ConfirmedRoll {
  *        The T-1 row books them all: `settle_to` - `settle_from` in price points per contract.
  *
  *        live_rolls_by_state gives the WHOLE sum: every consumed bar after the stored state, each
- *        against its previous consumed close, 0 on a change bar (section 6.6); `booked_after` is the
+ *        against its previous consumed close, 0 on a change bar; `booked_after` is the
  *        date of the bar the stored book stands at. What earlier runs already booked of it is not in
- *        the bars: a bar with no instrument id is not judged (section 2.2), so a run can consume it,
+ *        the bars: a bar with no instrument id is not judged, so a run can consume it,
  *        book its move and leave the roll pending, and the same bar back-filled later was consumed
- *        by no run. It is in the STORED rows (T-ROLLX-FIX commit 6, the lead's ruling on finding
- *        4): a run that consumed a bar booked its move on the positions row dated that bar, a run
+ *        by no run. It is in the STORED rows: a run that consumed a bar booked its move on the
+ *        positions row dated that bar, a run
  *        that saw a hole booked 0. The caller reads the rows dated after `booked_after` and before
  *        T-1 and adds late_booked_points to `settle_from`, so the T-1 row books the whole sum less
  *        what is already stored, to the cent, whatever each earlier run saw.
@@ -255,8 +254,8 @@ inline LiveRollState live_rolls_by_state(
         // before this one, which had not consumed the T-1 bar: its contract is the one held after a
         // bar dated BEFORE the row's date. The book stands at the last such bar held in the recorded
         // contract, so a contract that recurs (A, B, A, the second A confirmed by the T-1 bar) is
-        // placed in the segment the row was written in and both rolls are owed (commit 5, finding
-        // 5; the last bar held in the contract, the T-1 bar included, read that as nothing owed
+        // placed in the segment the row was written in and both rolls are owed (the last bar held
+        // in the contract, the T-1 bar included, would read that as nothing owed
         // before T-1). Only when no earlier bar is held in it does the T-1 bar place it: a row
         // already re-written after the T-1 bar.
         int stands = -1;
@@ -293,7 +292,7 @@ inline LiveRollState live_rolls_by_state(
             double moves = 0.0;
             for (int i = stands + 1; i < static_cast<int>(steps.size()); ++i) {
                 // 0 on a change bar; a per-contract roll bar moves to the old contract's close
-                // (rolls step 3, RollTracker::Status::move)
+                // (RollTracker::Status::move)
                 moves += steps[i].status.move(steps[i].close, steps[i - 1].close);
             }
             out.late[symbol] = {steps.back().close, steps.back().close - moves, steps[stands].date};
@@ -303,7 +302,7 @@ inline LiveRollState live_rolls_by_state(
 }
 
 /**
- * @brief LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing
+ * @brief A bar's session-classifier verdict reads the classifier's trailing
  *        history, the same in every engine. The live runner loads this many calendar days of bars
  *        before its window into the SessionClassifier ONLY (the strategies' window is unchanged, and
  *        the consumed set is still taken over the window), so a print near the window's start is

@@ -25,7 +25,7 @@ struct EmailReportContext {
     /// holiday banner (its day before is its previous session by construction).
     bool equities{false};
 
-    /// A futures runner's symbols whose settled bar booked no move, by kind (T-EMAIL): the settled
+    /// A futures runner's symbols whose settled bar booked no move, by kind: the settled
     /// table marks their $0.00 rows.
     SettledZeroKinds settled_zero_kinds;
 
@@ -43,7 +43,7 @@ struct EmailReportContext {
     /// prints no start date.
     std::string live_start_date;
 
-    /// Rolls step 4 (R4b): with per_contract_rolls on, the roll outlook of the held roots and the
+    /// With per_contract_rolls on, the roll outlook of the held roots and the
     /// words of each roll's line (report_rolls.hpp): the roll line, the Rollover Warning box, the
     /// Symbols Reference's Front Month and Contract Months columns, the footer's roll sentence. Empty
     /// with the switch off: none of them is printed.
@@ -77,7 +77,7 @@ inline std::string report_long_date(const std::string& iso_date) {
 }
 
 /// The equity runner's metric key for the cumulative dividend income its day's row stores
-/// (total_dividend_income): the report prints it as one informational line (T-8D-2 R44 (c)).
+/// (total_dividend_income): the report prints it as one informational line.
 inline constexpr const char* kReportDividendIncome = "Dividend Income";
 
 namespace report_capital_detail {

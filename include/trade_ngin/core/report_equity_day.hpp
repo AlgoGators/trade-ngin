@@ -1,7 +1,7 @@
 // include/trade_ngin/core/report_equity_day.hpp
 //
-// The banners of an equity report about today and the day before (HD 2026-10-14,
-// EMAIL_FEEDBACK_HD_2026-10-13.md section 17). Email only. The calendar says whether a day is closed
+// The banners of an equity report about today and the day before. Email only. The calendar says
+// whether a day is closed
 // (weekend or market holiday); "the last close" and "the last trading session" are the runner's settled
 // date, never a weekday.
 //   closed today, open yesterday : "Today is ..." banner, red box, the settled table shown

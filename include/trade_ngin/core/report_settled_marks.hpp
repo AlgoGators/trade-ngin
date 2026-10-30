@@ -1,7 +1,7 @@
 // include/trade_ngin/core/report_settled_marks.hpp
 //
 // The two price columns of the settled day's table (the daily report's "Yesterday's Finalized
-// Position Results" and the live file <T-1>_positions_asof_<T>.csv), HD 2026-10-12.
+// Position Results" and the live file <T-1>_positions_asof_<T>.csv).
 //
 // The columns exist so a reader can work a row's P&L out in their head, the way the settle books
 // it: quantity x (latest price - previous price) x contract size. So the two prices are the two
@@ -37,21 +37,21 @@ inline constexpr const char* kSettledPreviousPriceLabel = "Previous price";
 inline constexpr const char* kSettledLatestPriceLabel = "Latest price";
 /// What the latest-price cell of the report prints for a symbol that printed no bar that day.
 inline constexpr const char* kSettledNoBar = "\xE2\x80\x93";  // an en dash; the row carries footnote 1
-/// The symbols whose settled bar booked no move, by the kind the settle knew (T-EMAIL, HD 10-13):
+/// The symbols whose settled bar booked no move, by the kind the settle knew:
 /// a ROLL (the series switched contract on that bar: its two prices are of two contracts) and a
 /// price NOT ACCEPTED (a withheld bar: the move is booked with the next price).
 struct SettledZeroKinds {
     std::unordered_set<std::string> roll;
     std::unordered_set<std::string> withheld;
-    /// Rolls step 4 (R4b): with per_contract_rolls on, the symbols whose settled bar was a
+    /// With per_contract_rolls on, the symbols whose settled bar was a
     /// per-contract roll bar: the row books the old contract's move to its close on that bar (not
     /// $0.00) and carries the roll footnote (kSettledNoteRollBar). Empty with the switch off.
     std::unordered_set<std::string> per_contract_roll;
 };
-/// Footnote numbers of a settled row booked at zero (the report's footnote lines, HD 10-13).
+/// Footnote numbers of a settled row booked at zero (the report's footnote lines).
 inline constexpr int kSettledNoteRoll = 2;
 inline constexpr int kSettledNoteNotAccepted = 3;
-/// Rolls step 4 (R4b): the footnote of a settled row whose bar was a per-contract roll bar.
+/// The footnote of a settled row whose bar was a per-contract roll bar.
 inline constexpr int kSettledNoteRollBar = 6;
 
 /// kSettledNoteRollBar for a futures row with a quantity whose symbol's settled bar was a

@@ -1,7 +1,7 @@
 #pragma once
 
-// What a run records about its own configuration (T-8D R24 and R25, T-8D-2 R53 and R73, LOOP_SPEC
-// sections 7.5 and 7.5.1): each sleeve's resolved values, the keys of trading.live_results.config
+// What a run records about its own configuration: each sleeve's resolved values, the keys of
+// trading.live_results.config
 // that are taken on the day's sizing capital, and the keys the run-metadata JSON objects gain.
 // The runners are `main()`s; the JSON they store is built here so it can be tested.
 

@@ -80,15 +80,14 @@ bool find_key(const nlohmann::json& node, const std::string& key, const std::str
 }
 
 /**
- * @brief S7 -- the keys schema 2 removed are load ERRORS, not ignored leftovers.
+ * @brief The keys schema 2 removed are load ERRORS, not ignored leftovers.
  *
  * Ignoring them is what makes a migration silently half-applied: a `use_risk_management:
  * false` left behind in a file nobody re-read would read as "risk is off" to a human and
  * as nothing at all to the loader, and the book would gate while its config says it does
  * not. Each message names the key's path and what replaced it.
  *
- * removed-key guard: delete after the first production run on schema 2 (the lead names
- * the release; LEAD_RULINGS_C7 item 15 records it as an open question for HD).
+ * removed-key guard: it can go once every production config is on schema 2.
  */
 Result<void> check_removed_keys(const nlohmann::json& merged, const std::string& portfolio_id) {
     const std::string config_prefix = "config for " + portfolio_id + ": ";
@@ -149,8 +148,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         if (merged.contains("initial_capital")) {
             config.initial_capital = merged.at("initial_capital").get<double>();
         }
-        // "reserve_capital_pct" (OPT-N4) is no longer read: nothing sized on it (J3, deleted
-        // T-7a). A deployed portfolio.json that still carries the key (or "reserve_capital",
+        // "reserve_capital_pct" is not read: nothing sizes on it. A deployed portfolio.json that
+        // still carries the key (or "reserve_capital",
         // the name the stored run metadata used) loads unchanged, the key is ignored, and the
         // run says so once.
         for (const char* key : {"reserve_capital_pct", "reserve_capital"}) {
@@ -176,7 +175,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         if (merged.contains("optimization")) {
             const auto& optimization = merged.at("optimization");
             config.opt_config.from_json(optimization);
-            // LOOP_SPEC section 7.7: the one pass's keys, strictly when present (a futures book
+            // The one pass's keys, strictly when present (a futures book
             // requires them: require_loop_keys), and the optimiser's retired keys, noted.
             config.has_cost_penalty_scalar = optimization.contains("cost_penalty_scalar");
             for (const char* key : {"sign_close_band", "b_sigma_floor"}) {
@@ -256,7 +255,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         }
         config.use_optimization = merged.at("use_optimization").get<bool>();
 
-        // T-6c commit B: the PortfolioManager's covariance history length, in prices per
+        // The PortfolioManager's covariance history length, in prices per
         // symbol. Optional; absent means 756 (the trend sleeve's own history cap). A value
         // that is not a whole number of at least 2 is refused: one price gives no return.
         if (merged.contains("covariance_history_prices")) {
@@ -273,7 +272,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_history_prices = v.get<size_t>();
         }
 
-        // T-7b-1 7d: how many union dates a covariance participant's last close may trail the
+        // How many union dates a covariance participant's last close may trail the
         // newest before the optimiser leaves it out of the date intersection. Optional; absent
         // means 5. 0 is allowed (every participant must print on the newest date).
         if (merged.contains("covariance_stale_dates")) {
@@ -321,7 +320,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.per_contract_switch_bar = v.get<std::string>();
         }
 
-        // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
+        // The equity slow rule. Parsed strictly when present;
         // the futures runners require it (require_loop_keys).
         if (merged.contains("equity_slow_rule")) {
             const auto& v = merged.at("equity_slow_rule");
@@ -614,7 +613,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.carry = carry;
         }
 
-        // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
+        // The sizing mode and the starting capital. Parsed
         // strictly when present; the futures runners require both (require_loop_keys).
         if (merged.contains("sizing_mode")) {
             const auto& v = merged.at("sizing_mode");
@@ -845,7 +844,7 @@ Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
                 "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
             "ConfigLoader");
     }
-    // LOOP_SPEC sections 4, 7.7 and 12: the overlay's limits. The book's carver module carries
+    // The overlay's limits. The book's carver module carries
     // R_max, R_jump_max and R_shock_max (ratios to tau); its max_gross_leverage and
     // max_net_leverage are L_max and L_net_max.
     {

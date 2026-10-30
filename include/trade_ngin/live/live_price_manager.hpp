@@ -42,13 +42,13 @@ public:
      * Used during live trading to update latest prices
      * @param bars Vector of bars to process
      * @param reference_date The date to use as "today" for T-1 calculation (defaults to system time if not provided)
-     * @param t1_date OPTIONAL explicit Day T-1 trading date. See below -- E2-F14.
+     * @param t1_date OPTIONAL explicit Day T-1 trading date. See below.
      *
      * @par Why t1_date exists
      * Omitted (the default), T-1 is `reference_date - 24h` and only the LAST bar is
      * considered. That is correct for FUTURES, whose runners resolve the position book
      * they are finalizing with the SAME arithmetic --
-     * `live_portfolio.cpp:1047` and `live_portfolio_conservative.cpp:1061` both do
+     * the two futures runners (live_portfolio.cpp, live_portfolio_conservative.cpp) both do
      * `previous_date = now - std::chrono::hours(24)`. Book and prices therefore always
      * name the same calendar day by construction, each day is finalized exactly once, and
      * when that day has no bar (a Saturday, or an ag symbol with no Sunday session) zero
@@ -56,21 +56,21 @@ public:
      * getting byte-identical behaviour.
      *
      * EQUITIES do not have that property. The equity runner resolves its book with
-     * `holiday_checker.find_previous_trading_day()` (live_equity_mean_reversion.cpp:643),
+     * `holiday_checker.find_previous_trading_day()` (live_equity_mean_reversion.cpp),
      * which is calendar-aware and skips weekends and holidays. On a Sunday or Monday run
      * that returns FRIDAY, while `reference_date - 24h` asks for Saturday or Sunday and
-     * `equities_data.ohlcv_1d` has no weekend rows at all. The result is that an
-     * already-finalized Friday is re-finalized against an EMPTY price map: every position
+     * `equities_data.ohlcv_1d` has no weekend rows at all. Without t1_date an
+     * already-finalized Friday would be re-finalized against an EMPTY price map: every position
      * takes the `t1_close_prices.end()` branch in LivePnLManager::finalize_previous_day
      * and is written back with 0/0. `live_results` survives because the
      * `yesterday_total_pnl != 0.0` gate blocks its UPDATE, but `store_positions` runs
-     * ~480 lines earlier, outside that gate, and its DELETE-then-INSERT is keyed on the
-     * T-1 date -- so Friday's finalized rows are replaced with zeros.
+     * earlier, outside that gate, and its DELETE-then-INSERT is keyed on the
+     * T-1 date -- so Friday's finalized rows would be replaced with zeros.
      *
-     * Measured 2026-09-01 on a weekend-inclusive replay: Sat 08-01 finalized Friday at
+     * On a weekend-inclusive replay without it, Sat 08-01 finalized Friday at
      * $864.759444, then Sun 08-02 and Mon 08-03 each re-finalized the same Friday and
-     * zeroed its three position rows. L5 (rows sum to aggregate) residual was exactly
-     * -864.7594 on 07-31 and -14.6574 on 07-24, and 0.0000 on every other finalized day.
+     * zeroed its three position rows (rows-sum-to-aggregate residual exactly
+     * -864.7594 on 07-31 and -14.6574 on 07-24, and 0.0000 on every other finalized day).
      * A Monday holiday makes it fire on four consecutive runs.
      *
      * @par Two fixes that look right and are NOT

@@ -22,7 +22,7 @@
 namespace trade_ngin {
 
 namespace {
-// HD 10-13, one number rule for the email and the files: a price has four decimals, or the decimals of
+// One number rule for the email and the files: a price has four decimals, or the decimals of
 // the contract's tick when four cannot show it (report_price_places); a futures quantity has two
 // decimals, a share quantity keeps six (rounding fractional shares loses the holding); money has two.
 std::shared_ptr<Instrument> csv_instrument_of(const std::string& symbol) {
@@ -43,7 +43,7 @@ std::string csv_fixed(double value, int places) {
     return buf;
 }
 std::string csv_price(const std::string& symbol, double price) {
-    (void)symbol;  // HD 2026-10-14 (section 16.9): four decimals on every price, in the email and the files
+    (void)symbol;  // four decimals on every price, in the email and the files
     return csv_fixed(price, 4);
 }
 std::string csv_quantity(const std::string& symbol, double quantity) {
