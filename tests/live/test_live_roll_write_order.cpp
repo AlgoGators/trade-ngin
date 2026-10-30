@@ -409,24 +409,26 @@ TEST(LiveRollWriteOrder, EachRunnerLogsTheRulesFallbacksFromItsT1) {
     }
 }
 
-// With the source on, each runner hands the report the roll footnote's symbols and the roll view,
-// asked through report_roll_query (executed by test_report_roll_query.cpp) with the run's roll status.
+// With the source on, each runner hands the book e-mail the roll footnote's symbols and the roll
+// view, asked through report_roll_query (executed by test_report_roll_query.cpp) with the run's roll
+// status, as the report module's --rolls (report_rolls_json.hpp, executed by test_python_mail.cpp).
 // A source guard: it reads the runners' text.
 TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
-        const std::string block = between(src, "report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;",
-                                          "if (has_today_row_metrics) {");
+        const std::string block =
+            between(src, "mail.test_to = qt_mail_test_to;", "INFO(\"Sending the book e-mail for \"");
         ASSERT_FALSE(block.empty()) << runner;
         EXPECT_NE(block.find("if (contract_rolls::PerContractSource::instance().enabled()) {"), npos) << runner;
-        EXPECT_NE(block.find("report_context.settled_zero_kinds.per_contract_roll =\n"
-                             "                            t1_settlement.per_contract_roll_symbols;"), npos) << runner;
-        EXPECT_NE(block.find("report_context.rolls = db->report_roll_view("), npos) << runner;
-        EXPECT_NE(block.find("report_roll_query(yesterday_date_for_email, positions, strategy_positions_map,"), npos)
+        EXPECT_NE(block.find("db->report_roll_view("), npos) << runner;
+        EXPECT_NE(block.find("report_roll_query(core::format_utc_date(now - std::chrono::hours(24)),"), npos)
             << runner;
         EXPECT_NE(block.find("all_strategy_executions, roll_status),"), npos) << runner;
         EXPECT_NE(block.find("report_tick_size);"), npos) << runner;
+        EXPECT_NE(block.find("t1_settlement.per_contract_roll_symbols"), npos) << runner;
+        EXPECT_NE(block.find("mail.rolls_json = live::report_rolls_json(rolls, all_strategy_executions,"), npos)
+            << runner;
     }
 }
 

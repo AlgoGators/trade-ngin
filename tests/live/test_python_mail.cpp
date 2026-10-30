@@ -89,7 +89,7 @@ TEST(PythonMailPure, TheRunsFlagsFilesAndTestAddressAreHandedOver) {
     EXPECT_NE(cmd.find("--rolls"), std::string::npos) << cmd;
 #ifndef _WIN32
     // the roll text's apostrophe is escaped for the shell
-    EXPECT_NE(cmd.find("it'\''s"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("it'\\''s"), std::string::npos) << cmd;
 #endif
     EXPECT_NE(cmd.find("LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find(" --no-session"), std::string::npos) << cmd;

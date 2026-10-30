@@ -174,7 +174,10 @@ const std::vector<Site> kFuturesSites = {
      "the processing-time print: a console line"},
     {"std::chrono::system_clock::now() - now)",
      "the processing-time print"},
-    {"if (send_email) {",
+    {"if (send_email && !day_store_failures.empty()) {",
+     "DECISION: a day whose stores failed is not mailed (the e-mail reads the stored day); "
+     "exit 4"},
+    {"} else if (send_email) {",
      "DECISION: mail, on --send-email only: the book e-mail through the report module "
      "(live/python_mail.hpp); the send arm itself is never run by a test, by rule (it mails)"},
 };
@@ -225,7 +228,10 @@ const std::vector<Site> kEquitySites = {
      "the processing-time print: a console line"},
     {"std::chrono::system_clock::now() - now).count() << \"ms\" << std::endl;",
      "the processing-time print"},
-    {"if (send_email) {",
+    {"if (send_email && persist_failed) {",
+     "DECISION: a day whose results were not stored is not mailed (the e-mail reads the stored "
+     "day); exit 4"},
+    {"} else if (send_email) {",
      "DECISION: mail, on --send-email only: the book e-mail through the report module "
      "(live/python_mail.hpp); the send arm itself is never run by a test, by rule (it mails)"},
 };
