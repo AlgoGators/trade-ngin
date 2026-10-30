@@ -7,6 +7,7 @@
 
 #include "contract_rolls_test_util.hpp"
 #include "trade_ngin/data/contract_roll_rule.hpp"
+#include "trade_ngin/data/contract_rolls.hpp"
 #include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/data/roll_series.hpp"
 
@@ -99,6 +100,230 @@ TEST(ContractRollMicros, ReadsTheFullSizeContractsBeforeTheChangeAndRollsOnceAcr
     }
 }
 
+// MM (HD 2026-10-27): the gold and silver micros read their full-size root's contracts before their
+// listing dates, MGC GC's before 2010-10-04 and SIL SI's before 2013-06-17, on the full-size root's
+// grid (their own .v.0 starts at the listing). The equity micros keep their own grid.
+TEST(ContractRollMicros, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirListing) {
+    ASSERT_TRUE(micro_alias("MGC").has_value());
+    EXPECT_EQ(micro_alias("MGC")->full_root, "GC");
+    EXPECT_EQ(ymd(micro_alias("MGC")->change), "2010-10-04");
+    EXPECT_TRUE(micro_alias("MGC")->full_size_grid);
+    ASSERT_TRUE(micro_alias("SIL").has_value());
+    EXPECT_EQ(micro_alias("SIL")->full_root, "SI");
+    EXPECT_EQ(ymd(micro_alias("SIL")->change), "2013-06-17");
+    EXPECT_TRUE(micro_alias("SIL")->full_size_grid);
+    for (const char* r : {"MES", "MNQ", "MYM", "M2K"}) EXPECT_FALSE(micro_alias(r)->full_size_grid) << r;
+    EXPECT_FALSE(micro_alias("SI").has_value());
+
+    // The grid's rows: one symbol for any other root, the two sides of the change for MGC and SIL.
+    const GridRows own = grid_rows("MES", 3);
+    EXPECT_EQ(own.predicate, "o.symbol = $3");
+    EXPECT_EQ(own.params.size(), 1);
+    const GridRows gold = grid_rows("MGC", 4);
+    EXPECT_EQ(gold.predicate,
+              "((o.symbol = $4 AND (o.time AT TIME ZONE 'UTC')::date >= $5::date) OR (o.symbol = $6 AND "
+              "(o.time AT TIME ZONE 'UTC')::date < $5::date))");
+    EXPECT_EQ(gold.params.size(), 3);
+}
+
+// The three reads of a root's grid, without a database: any root but MGC and SIL reads its own .v.0
+// over the range with the same SQL as before; MGC and SIL read the full-size .v.0 to the day before
+// their change and their own from it, each side left out when the range does not reach it.
+TEST(ContractRollMicros, TheGridReadsSplitAtTheChangeForTheGoldAndSilverMicrosOnly) {
+    const auto mes = root_grid_reads("MES", d("2010-06-07"), d("2026-10-23"));
+    ASSERT_EQ(mes.size(), 1u);
+    EXPECT_EQ(mes[0].symbol, "MES.v.0");
+    EXPECT_EQ(ymd(mes[0].from), "2010-06-07");
+    EXPECT_EQ(ymd(mes[0].to), "2026-10-23");
+    const auto gold = root_grid_reads("MGC", d("2010-06-07"), d("2026-10-23"));
+    ASSERT_EQ(gold.size(), 2u);
+    EXPECT_EQ(gold[0].symbol, "GC.v.0");
+    EXPECT_EQ(ymd(gold[0].from), "2010-06-07");
+    EXPECT_EQ(ymd(gold[0].to), "2010-10-03");
+    EXPECT_EQ(gold[1].symbol, "MGC.v.0");
+    EXPECT_EQ(ymd(gold[1].from), "2010-10-04");
+    EXPECT_EQ(ymd(gold[1].to), "2026-10-23");
+    const auto before = root_grid_reads("SIL", d("2012-01-02"), d("2013-06-14"));
+    ASSERT_EQ(before.size(), 1u);
+    EXPECT_EQ(before[0].symbol, "SI.v.0");
+    EXPECT_EQ(ymd(before[0].to), "2013-06-14");
+    const auto after = root_grid_reads("SIL", d("2013-06-17"), d("2014-01-02"));
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after[0].symbol, "SIL.v.0");
+
+    // series_start's query: the predicate after the three CASE parameters
+    const auto [own_sql, own_params] = series_start_query("GC");
+    EXPECT_NE(own_sql.find(" WHERE o.symbol = $4 AND EXISTS"), std::string::npos) << own_sql;
+    EXPECT_EQ(own_params.size(), 4);
+    const auto [gold_sql, gold_params] = series_start_query("MGC");
+    EXPECT_NE(gold_sql.find(" WHERE ((o.symbol = $4 AND (o.time AT TIME ZONE 'UTC')::date >= $5::date) OR "
+                            "(o.symbol = $6 AND (o.time AT TIME ZONE 'UTC')::date < $5::date)) AND EXISTS"),
+              std::string::npos)
+        << gold_sql;
+    EXPECT_EQ(gold_params.size(), 6);
+
+    // the source's window query: unchanged text for any other root
+    const auto [zn_sql, zn_params] = grid_window_query("ZN", "2026-01-01 00:00:00", "2026-02-01 00:00:00");
+    EXPECT_EQ(zn_sql,
+              "SELECT t.time::text, ((t.time AT TIME ZONE 'UTC')::date)::text FROM (SELECT DISTINCT o.time "
+              "FROM futures_data.ohlcv_1d o WHERE o.symbol = $3 AND o.time BETWEEN $1 AND $2) AS t ORDER BY t.time");
+    EXPECT_EQ(zn_params.size(), 3);
+    const auto [sil_sql, sil_params] = grid_window_query("SIL", "2013-01-01 00:00:00", "2014-01-01 00:00:00");
+    EXPECT_NE(sil_sql.find("WHERE ((o.symbol = $3 AND"), std::string::npos) << sil_sql;
+    EXPECT_NE(sil_sql.find("(o.symbol = $5 AND"), std::string::npos) << sil_sql;
+    EXPECT_EQ(sil_params.size(), 5);
+}
+
+// MGC across its listing: GCZ0 is held on GC's grid to Friday 2010-10-01, and on Monday 10-04 the
+// change rolls once into MGCZ0 (same expiry 2010-12-29), trigger alias, read like R6's change.
+TEST(ContractRollMicros, MgcReadsGcZ0UntilItsListingAndChangesOnceIntoMgcZ0) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (Day x = d("2010-09-13"); x <= d("2010-10-22"); x += std::chrono::days{1}) {
+        const std::string dt = ymd(x);
+        const bool sunday = std::chrono::weekday{x} == std::chrono::Sunday;
+        if (std::chrono::weekday{x} == std::chrono::Saturday) continue;
+        if (!sunday) rows.push_back(bar("GC", "GCZ0", "g1", dt, "2010-12-29", 1300, 150000));
+        if (dt >= "2010-10-03") rows.push_back(bar("MGC", "MGCZ0", "m1", dt, "2010-12-29", 1300.5, 60));
+        VendorBar v;
+        v.date = x;
+        v.symbol = dt < "2010-10-04" ? "GC.v.0" : "MGC.v.0";
+        v.instrument_id = dt < "2010-10-04" ? "g1" : "m1";
+        v.close = 1;
+        grid.push_back(v);
+    }
+    auto book = ContractBook::build(rows);
+    ASSERT_TRUE(book.is_ok()) << book.error()->what();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("MGC");
+    RuleInputs in;
+    in.root = "MGC";
+    in.grid = grid;
+    in.book = &book.value();
+    in.cal = &cal;
+    in.cycle = roll_cycle("MGC").value();
+    in.alias = micro_alias("MGC");
+    auto r = apply_roll_rule(in);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    std::vector<const HeldDay*> rolls;
+    for (const auto& day : r.value().days) {
+        if (day.roll) rolls.push_back(&day);
+        if (day.date < d("2010-10-04")) {
+            EXPECT_EQ(day.held.raw_symbol, "GCZ0") << ymd(day.date);
+        } else {
+            EXPECT_EQ(day.held.raw_symbol, "MGCZ0") << ymd(day.date);
+        }
+    }
+    ASSERT_EQ(rolls.size(), 1u);
+    EXPECT_EQ(ymd(rolls[0]->date), "2010-10-04");
+    EXPECT_EQ(rolls[0]->trigger, RollTrigger::ALIAS);
+    EXPECT_FALSE(rolls[0]->deferred);
+    EXPECT_EQ(rolls[0]->old->raw_symbol, "GCZ0");
+    EXPECT_EQ(*rolls[0]->old_close, 1300);
+    EXPECT_EQ(rolls[0]->close, 1300.5);
+}
+
+// SIL across its listing (MM step 0): on Monday 2013-06-17 SI holds SIN3 (July), and SIL lists no July:
+// its first contracts are September onwards. The change goes into SIL's cycle target, SILU3 (the
+// contract SIL.v.0 names from its first bar), once, trigger alias; SI's own July-to-September roll
+// never happens in SIL's series.
+TEST(ContractRollMicros, SilWithNoContractOfTheHeldExpiryChangesIntoItsCycleTarget) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (Day x = d("2013-06-03"); x <= d("2013-07-12"); x += std::chrono::days{1}) {
+        const std::string dt = ymd(x);
+        const bool sunday = std::chrono::weekday{x} == std::chrono::Sunday;
+        if (std::chrono::weekday{x} == std::chrono::Saturday) continue;
+        if (!sunday) {
+            rows.push_back(bar("SI", "SIN3", "s7", dt, "2013-07-29", 21.83, 30000));
+            rows.push_back(bar("SI", "SIU3", "s9", dt, "2013-09-26", 21.85, 800));
+        }
+        if (dt >= "2013-06-17") rows.push_back(bar("SIL", "SILU3", "l9", dt, "2013-09-26", 21.80, 20));
+        VendorBar v;
+        v.date = x;
+        v.symbol = dt < "2013-06-17" ? "SI.v.0" : "SIL.v.0";
+        v.instrument_id = dt < "2013-06-17" ? "s7" : "l9";
+        v.close = 1;
+        grid.push_back(v);
+    }
+    auto book = ContractBook::build(rows);
+    ASSERT_TRUE(book.is_ok()) << book.error()->what();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("SIL");
+    RuleInputs in;
+    in.root = "SIL";
+    in.grid = grid;
+    in.book = &book.value();
+    in.cal = &cal;
+    in.cycle = roll_cycle("SIL").value();
+    in.alias = micro_alias("SIL");
+    auto r = apply_roll_rule(in);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    std::vector<const HeldDay*> rolls;
+    for (const auto& day : r.value().days) {
+        if (day.roll) rolls.push_back(&day);
+        EXPECT_EQ(day.held.raw_symbol, day.date < d("2013-06-17") ? "SIN3" : "SILU3") << ymd(day.date);
+    }
+    ASSERT_EQ(rolls.size(), 1u);
+    EXPECT_EQ(ymd(rolls[0]->date), "2013-06-17");
+    EXPECT_EQ(rolls[0]->trigger, RollTrigger::ALIAS);
+    EXPECT_EQ(rolls[0]->old->raw_symbol, "SIN3");
+    EXPECT_EQ(*rolls[0]->old_close, 21.83);
+    EXPECT_EQ(rolls[0]->close, 21.80);
+    // MM fix round 1: the full-size grid kind's series before the change is the full-size contract's
+    // own, and its micro is not listed then: nothing rides along
+    for (const auto& day : r.value().days) EXPECT_FALSE(day.micro_volume.has_value()) << ymd(day.date);
+}
+
+// MM fix round 1 (audit A, mutant M04): the fallback's target is SIL's CYCLE target. An off-cycle
+// August contract (SILQ3, expiring 2013-08-28, nearer than SILU3) that prints from the change is
+// passed over: SIL's cycle is H K N U Z, so the change still goes into SILU3. A fallback read on every
+// month would take SILQ3.
+TEST(ContractRollMicros, SilsFallbackPassesOverAnOffCycleContract) {
+    std::vector<ContractBar> rows;
+    std::vector<VendorBar> grid;
+    for (Day x = d("2013-06-03"); x <= d("2013-07-12"); x += std::chrono::days{1}) {
+        const std::string dt = ymd(x);
+        const bool sunday = std::chrono::weekday{x} == std::chrono::Sunday;
+        if (std::chrono::weekday{x} == std::chrono::Saturday) continue;
+        if (!sunday) {
+            rows.push_back(bar("SI", "SIN3", "s7", dt, "2013-07-29", 21.83, 30000));
+            rows.push_back(bar("SI", "SIU3", "s9", dt, "2013-09-26", 21.85, 800));
+        }
+        if (dt >= "2013-06-17") {
+            rows.push_back(bar("SIL", "SILQ3", "l8", dt, "2013-08-28", 21.79, 40));
+            rows.push_back(bar("SIL", "SILU3", "l9", dt, "2013-09-26", 21.80, 20));
+        }
+        VendorBar v;
+        v.date = x;
+        v.symbol = dt < "2013-06-17" ? "SI.v.0" : "SIL.v.0";
+        v.instrument_id = dt < "2013-06-17" ? "s7" : "l9";
+        v.close = 1;
+        grid.push_back(v);
+    }
+    auto book = ContractBook::build(rows);
+    ASSERT_TRUE(book.is_ok()) << book.error()->what();
+    const TradingCalendar cal = contract_rolls_test::shipped_calendar("SIL");
+    RuleInputs in;
+    in.root = "SIL";
+    in.grid = grid;
+    in.book = &book.value();
+    in.cal = &cal;
+    in.cycle = roll_cycle("SIL").value();
+    in.alias = micro_alias("SIL");
+    auto r = apply_roll_rule(in);
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    size_t rolls = 0;
+    for (const auto& day : r.value().days) {
+        if (!day.roll) continue;
+        ++rolls;
+        EXPECT_EQ(ymd(day.date), "2013-06-17");
+        EXPECT_EQ(day.held.raw_symbol, "SILU3") << "the cycle target, not the nearer off-cycle SILQ3";
+    }
+    EXPECT_EQ(rolls, 1u);
+    for (const auto& day : r.value().days) {
+        if (day.date >= d("2013-06-17")) EXPECT_EQ(day.held.raw_symbol, "SILU3") << ymd(day.date);
+    }
+}
+
 // R6 (HD 2026-10-26): the bar source hands the change bar out as a change of price source
 // (SOURCE_CHANGE, ESH6's close and id) and every bar after it, while ESH6 prints, as AFTER_SOURCE_CHANGE;
 // the earlier roll among the full-size contracts (ESZ5 to ESH6) stays KNOWN and AFTER_ROLL.
@@ -141,6 +366,21 @@ TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
     EXPECT_EQ(on.at("2026-02-24")->roll_from->date, "2026-02-23");
     EXPECT_EQ(on.at("2025-12-15")->roll_from->kind, trade_ngin::RollFromKind::KNOWN) << "a real roll";
     EXPECT_EQ(on.at("2025-12-16")->roll_from->kind, trade_ngin::RollFromKind::AFTER_ROLL);
+    // MM fix round 1: the change's two kinds carry ESH6's own volume (a listing predecessor's legs
+    // are priced on it); the bar itself is MESH6's, with MESH6's volume; a real roll's kinds carry none.
+    EXPECT_EQ(on.at("2026-02-23")->volume, 1700000.0);
+    EXPECT_EQ(on.at("2026-02-23")->roll_from->volume, std::optional<double>(1600000.0));
+    EXPECT_EQ(on.at("2026-02-24")->roll_from->volume, std::optional<double>(1600000.0));
+    EXPECT_FALSE(on.at("2025-12-15")->roll_from->volume.has_value());
+    EXPECT_FALSE(on.at("2025-12-16")->roll_from->volume.has_value());
+    // MM fix round 1: before the change the series holds the full-size contract; where the micro's own
+    // contract of that expiry prints (MESH6 while ESH6 is held) its volume rides along for the
+    // listing legs; none while ESZ5 is held (no MESZ5 here), none from the change (the bar is MESH6's).
+    EXPECT_EQ(on.at("2026-01-15")->own_contract_volume, std::optional<double>(1700000.0)) << "ESH6 held";
+    EXPECT_EQ(on.at("2026-01-15")->volume, 1600000.0) << "the bar is still ESH6's";
+    EXPECT_FALSE(on.at("2025-12-10")->own_contract_volume.has_value()) << "ESZ5 held, no MESZ5";
+    EXPECT_FALSE(on.at("2026-02-23")->own_contract_volume.has_value()) << "the change: MESH6's own bar";
+    EXPECT_FALSE(on.at("2026-02-24")->own_contract_volume.has_value());
 }
 
 // R6 fix round 1 (audit A S1): the first REAL roll after the change is an ordinary roll. MES runs past the

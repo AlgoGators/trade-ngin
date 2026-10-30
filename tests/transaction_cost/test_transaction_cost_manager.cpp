@@ -771,6 +771,33 @@ TEST(CostContractSpecSource, FutureOnlyInTheMetadataTakesItsSpecs) {
     EXPECT_DOUBLE_EQ(cfg.tick_size, 0.0001);
 }
 
+// MM (HD 2026-10-27): MGC and SIL have entries of their own, their full-size roots' spread in ticks
+// and impact caps (not the futures default's 2 ticks and 100 bps), and their fills pay impact on
+// their own volume: one MGC at 1,300 on a 100-contract ADV (the 2010-2015 micro) pays 80 x
+// sqrt(1/100) = 8 bps, on a 300,000 ADV (2025) 20 x sqrt(1/300,000) bps.
+TEST(CostContractSpecSource, TheGoldAndSilverMicrosHaveTheirOwnEntriesAndPayImpactOnTheirOwnVolume) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source([](const std::string& s) -> std::optional<ContractCostSpec> {
+        const std::string root = s.substr(0, s.find('.'));
+        if (root == "MGC") return ContractCostSpec{10.0, 0.1, 0.96};
+        if (root == "SIL") return ContractCostSpec{1000.0, 0.005, 0.86};
+        return std::nullopt;
+    });
+    const auto gold = tcm.get_asset_config("MGC.v.0");
+    EXPECT_DOUBLE_EQ(gold.baseline_spread_ticks, 1.0);
+    EXPECT_DOUBLE_EQ(gold.max_spread_ticks, 5.0);
+    EXPECT_DOUBLE_EQ(gold.max_impact_bps, 50.0);
+    const auto silver = tcm.get_asset_config("SIL.v.0");
+    EXPECT_DOUBLE_EQ(silver.baseline_spread_ticks, 1.0);
+    EXPECT_DOUBLE_EQ(silver.max_impact_bps, 60.0);
+    const auto thin = tcm.calculate_costs("MGC.v.0", 1.0, 1300.0, 100.0, 1.0);
+    const auto busy = tcm.calculate_costs("MGC.v.0", 1.0, 1300.0, 300000.0, 1.0);
+    EXPECT_DOUBLE_EQ(thin.spread_price_impact, 0.5 * 1.0 * 0.1);
+    EXPECT_NEAR(thin.market_impact_price_impact, 1300.0 * 8.0 / 1e4, 1e-9);
+    EXPECT_NEAR(busy.market_impact_price_impact, 1300.0 * 20.0 * std::sqrt(1.0 / 300000.0) / 1e4, 1e-12);
+    EXPECT_DOUBLE_EQ(thin.commissions_fees, 0.96);
+}
+
 // An equity cost config never reads a futures spec, even when the source answers for its ticker
 // (equity tickers collide with futures roots: CL, ES).
 TEST(CostContractSpecSource, EquityConfigNeverReadsAFuturesSpec) {

@@ -145,6 +145,7 @@ struct SourceBar {
     std::string instrument_id;  ///< the held contract's id (the target's on a roll bar)
     std::optional<RollFrom> roll_from;
     std::optional<CarryQuote> carry;  ///< trade-ngin #185, with carry quotes on only
+    std::optional<double> own_contract_volume;  ///< MM fix round 1: HeldDay::micro_volume
 };
 
 /**
@@ -201,11 +202,14 @@ Timestamp source_bar_time(const std::string& time_text);
 /// The bus event the loader publishes for a bar (BAR, its OHLCV), as for the vendor's bars.
 MarketDataEvent source_bar_event(const SourceBar& bar);
 
-/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's four
-/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date; NULL where it is absent). With
-/// `with_carry` (carry on) five more, Bar::carry's (carry_held_close, carry_other_close,
-/// carry_months, carry_held_symbol, carry_other_symbol; NULL where it is absent); without it the
-/// table is the twelve columns, unchanged.
+/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's five
+/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date, roll_from_volume; NULL where it
+/// is absent; roll_from_volume also NULL where the field carries no volume) and own_contract_volume
+/// (Bar::own_contract_volume, NULL where absent). With `with_carry` (carry on) five more,
+/// Bar::carry's (carry_held_close, carry_other_close, carry_months, carry_held_symbol,
+/// carry_other_symbol; NULL where it is absent); without it the table is the fourteen columns.
+/// (Merged on tune2/final-base: MM's roll_from_volume and own_contract_volume are columns 12 and 13
+/// in every table, carry's columns follow them.)
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars,
                                                            bool with_carry = false);
 
@@ -218,6 +222,12 @@ Result<std::map<Day, std::string>> grid_window(
 /// naming how many; returns that count.
 size_t drop_before_series_start(const std::string& root, std::map<Day, std::string>& window,
                                 Day start);
+
+/// per_contract_bars' read of the grid's instants of `root` over [start_ts, end_ts]: the SELECT and its
+/// parameters ($1, $2 the range; grid_rows from $3).
+std::pair<std::string, pqxx::params> grid_window_query(const std::string& root,
+                                                       const std::string& start_ts,
+                                                       const std::string& end_ts);
 
 /**
  * @brief Reads and builds `root`'s bars over the vendor grid's instants in [start_ts, end_ts]

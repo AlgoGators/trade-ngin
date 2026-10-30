@@ -25,13 +25,17 @@
 #include <filesystem>
 #include <fstream>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <tuple>
 #include <vector>
 
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/data/roll_calendar.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
@@ -41,6 +45,8 @@
 using namespace trade_ngin;
 using trade_ngin::transaction_cost::TransactionCostManager;
 using trade_ngin::transaction_cost::TransactionCostResult;
+using trade_ngin::transaction_cost::ContractCostSpec;
+using trade_ngin::transaction_cost::ContractCostSpecSource;
 
 namespace {
 
@@ -621,4 +627,171 @@ TEST(WeekendMergeFuturesCostFeed, TheStepFormEqualsTheOneShotFeedThroughTheWeeke
     EXPECT_DOUBLE_EQ(adv[4].second, 102336.0) << "Tuesday cycle: MBT's Monday is a holiday";
     EXPECT_DOUBLE_EQ(adv[5].first, 90000.0) << "Wednesday cycle: NG Tuesday's own";
     EXPECT_DOUBLE_EQ(adv[5].second, 34308.0) << "Wednesday cycle: MBT Tuesday + Saturday";
+}
+
+// -----------------------------------------------------------------------------------------------
+// MM fix round 1: a listing predecessor's legs are priced on the full-size contract's own volume
+// -----------------------------------------------------------------------------------------------
+
+namespace {
+
+Bar silver_bar(const std::string& symbol, const std::string& date, double close, double volume,
+               std::optional<RollFrom> roll_from = std::nullopt) {
+    Bar b(std::chrono::sys_days{contract_rolls::parse_ymd(date)}, close, close, close, close, volume,
+          symbol);
+    b.instrument_id = roll_from ? "131488" : "113863";
+    b.roll_from = std::move(roll_from);
+    return b;
+}
+
+/// SIL.v.0 as the per-contract source hands it out around SIL's 2013-06-17 listing under ruling (b):
+/// SIN3's own bars (the full-size grid) to Friday 06-14, the change bar 06-17 withheld, and 06-18
+/// SILU3's bar (30 lots) carrying SIN3's close and own volume (AFTER_SOURCE_CHANGE).
+std::vector<Bar> silver_to_the_switch_bar() {
+    std::vector<Bar> bars;
+    double close = 21.0;
+    int k = 0;
+    for (auto d = contract_rolls::parse_ymd("2013-05-15"); d <= contract_rolls::parse_ymd("2013-06-14");
+         d += std::chrono::days{1}) {
+        const std::chrono::weekday wd{d};
+        if (wd == std::chrono::Saturday || wd == std::chrono::Sunday) continue;
+        close *= (k++ % 2 == 0) ? 1.012 : 0.991;
+        bars.push_back(silver_bar("SIL.v.0", contract_rolls::ymd(d), close, 30000.0 + 100.0 * k));
+    }
+    bars.back().close = Price(21.985);
+    bars.push_back(silver_bar(
+        "SIL.v.0", "2013-06-18", 21.60, 30.0,
+        RollFrom{21.625, "113863", RollFromKind::AFTER_SOURCE_CHANGE, "2013-06-17", 24211.0}));
+    return bars;
+}
+
+ContractCostSpecSource silver_specs() {
+    return [](const std::string& s) -> std::optional<ContractCostSpec> {
+        const std::string root = s.substr(0, s.find('.'));
+        if (root == "SI") return ContractCostSpec{5000.0, 0.005, 2.36};
+        if (root == "SIL") return ContractCostSpec{1000.0, 0.005, 0.86};
+        return std::nullopt;
+    };
+}
+
+}  // namespace
+
+// Audits A and B (MUST-FIX): at SIL's listing switch a held SI is exited (the LC- leg) on SI.v.0's
+// copy of SILU3's bar. The copy carries SIN3's own 24,211 lots (Bar::cost_volume), so the leg pays
+// impact on them, 60 x sqrt(1 / 24,211) bps, not on SILU3's 30 lots at the 100-lot floor (8 bps, $86.40
+// on one SI at 21.60). SIL's own entry (the LO- leg) pays on SILU3's own 30 lots: 80 x sqrt(2 / 100)
+// bps for two (audit A's mutant M14: the impact on the micro's own volume, through the feed). The
+// predecessor's volatility walk is SIN3's own: the copy's return on 06-18 is SIN3's move from 06-14.
+TEST(ListingCostVolume, AHeldPredecessorsExitIsPricedOnTheFullSizeContractsOwnVolume) {
+    ListingDates::instance().clear();
+    ListingDates::instance().set({{"SIL", "SI", "2013-06-17", 5.0}});
+    std::vector<Bar> feed = silver_to_the_switch_bar();
+    ListingDates::instance().add_predecessor_bars({"SIL.v.0", "SI.v.0"}, feed);
+    ListingDates::instance().clear();
+    ASSERT_EQ(feed.back().symbol, "SI.v.0");
+    ASSERT_EQ(feed.back().cost_volume, std::optional<double>(24211.0));
+
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source(silver_specs());
+    const Timestamp fill_day = std::chrono::sys_days{contract_rolls::parse_ymd("2013-06-19")};
+    const auto fed = feed_futures_cost_model(tcm, feed, fill_day);
+    EXPECT_EQ(tcm.get_adv("SI.v.0"), 24211.0) << "SIN3's own lots";
+    EXPECT_EQ(tcm.get_adv("SIL.v.0"), 30.0) << "SILU3's own lots";
+    for (const auto& s : fed.symbols) {
+        if (s.symbol == "SI.v.0") EXPECT_EQ(s.own_day_volume, 24211.0);
+        if (s.symbol == "SIL.v.0") EXPECT_EQ(s.own_day_volume, 30.0);
+    }
+
+    const double px = 21.60;
+    const auto exit = tcm.calculate_costs("SI.v.0", 1.0, px);
+    EXPECT_EQ(k_bps(24211.0), 60.0);
+    EXPECT_NEAR(exit.market_impact_price_impact, 60.0 * std::sqrt(1.0 / 24211.0) / 1e4 * px, 1e-12);
+    EXPECT_NEAR(exit.slippage_market_impact,
+                (exit.spread_price_impact + exit.market_impact_price_impact) * 5000.0, 1e-9);
+    EXPECT_LT(exit.slippage_market_impact, 20.0) << "about $4 of impact, not the $86.40 of SILU3's floor";
+    const auto entry = tcm.calculate_costs("SIL.v.0", -2.0, px);
+    EXPECT_NEAR(entry.market_impact_price_impact, 80.0 * std::sqrt(2.0 / 100.0) / 1e4 * px, 1e-12)
+        << "SILU3's own 30 lots, at the impact model's 100-lot floor";
+
+    // the predecessor's volatility walk equals SIN3's own series fed alone (no change of contract)
+    std::vector<Bar> sin3;
+    for (const auto& b : feed) {
+        if (b.symbol != "SI.v.0") continue;
+        Bar own = b;
+        own.close = own.roll_from ? Price(own.roll_from->close) : own.close;
+        own.roll_from.reset();
+        own.instrument_id = "113863";
+        own.cost_volume.reset();
+        sin3.push_back(own);
+    }
+    TransactionCostManager alone;
+    alone.set_contract_spec_source(silver_specs());
+    feed_futures_cost_model(alone, sin3, fill_day);
+    EXPECT_DOUBLE_EQ(tcm.get_volatility_multiplier("SI.v.0"), alone.get_volatility_multiplier("SI.v.0"));
+    EXPECT_NE(tcm.get_volatility_multiplier("SI.v.0"), 1.0) << "a walk, not the neutral value";
+}
+
+// The absent path (the lead's condition 2): with cost_volume empty the feed reads `volume`, so a feed
+// of bars that carry none (every bar but a predecessor's copy from the micro's change) is the feed it
+// was: the same entries, the same impact window and the same volatility walk, symbol for symbol,
+// through a weekend merge too. Adding pairs for symbols the run does not trade changes nothing.
+TEST(ListingCostVolume, WithNoCostVolumeTheFeedReadsTheBarsOwnVolume) {
+    std::vector<Bar> bars = plus(weekdays_to_friday(kNg), {cal_bar(kNg, 2, 3.02, 3000.0), cal_bar(kNg, 3, 3.05, 80000.0)});
+    const auto silver = silver_to_the_switch_bar();
+    bars.insert(bars.end(), silver.begin(), silver.end() - 1);  // SIN3's own bars, no marker
+    std::vector<Bar> through = bars;
+    ListingDates::instance().clear();
+    ListingDates::instance().set({{"MES", "ES", "2019-05-06", 10.0}});
+    ListingDates::instance().add_predecessor_bars({"NG.v.0", "SIL.v.0"}, through);
+    ListingDates::instance().clear();
+    ASSERT_EQ(through.size(), bars.size()) << "no pair of these symbols: no copy";
+    for (const auto& b : through) {
+        EXPECT_FALSE(b.cost_volume.has_value());
+        EXPECT_EQ(fed_volume(b), b.volume);
+    }
+    for (const int run_day : {3, 4}) {
+        TransactionCostManager a, b;
+        a.set_contract_spec_source(silver_specs());
+        b.set_contract_spec_source(silver_specs());
+        const auto fa = feed_futures_cost_model(a, bars, cal_day(run_day));
+        const auto fb = feed_futures_cost_model(b, through, cal_day(run_day));
+        ASSERT_EQ(fa.symbols.size(), fb.symbols.size());
+        for (size_t i = 0; i < fa.symbols.size(); ++i) {
+            const auto& x = fa.symbols[i];
+            const auto& y = fb.symbols[i];
+            EXPECT_EQ(x.symbol, y.symbol);
+            EXPECT_EQ(x.own_day_volume, y.own_day_volume);
+            EXPECT_EQ(x.participation_volume, y.participation_volume);
+            EXPECT_EQ(x.merged_weekend_volume, y.merged_weekend_volume);
+            EXPECT_EQ(x.returns, y.returns);
+            EXPECT_EQ(a.get_adv(x.symbol), b.get_adv(x.symbol));
+            EXPECT_EQ(a.get_volatility_multiplier(x.symbol), b.get_volatility_multiplier(x.symbol));
+        }
+    }
+}
+
+// MM fix round 1 (the equity micros): on its 2019-05-06 listing MES.v.0's Monday bar and the Sunday
+// stub before it carry MESM9's own volume as cost_volume (ListingDates), so the LO- leg's participation
+// is MESM9's 162,154 + 787 lots, not ESM9's 1,865,666 + 137,577: the 40 bps tier, not the 10.
+TEST(ListingCostVolume, TheListedEquityMicrosEntryIsPricedOnItsOwnSession) {
+    ListingDates::instance().clear();
+    ListingDates::instance().set({{"MES", "ES", "2019-05-06", 10.0}});
+    std::vector<Bar> feed;
+    for (const auto& [date, close, v, own] : std::vector<std::tuple<std::string, double, double, std::optional<double>>>{
+             {"2019-05-02", 2919.25, 1779489.0, std::nullopt}, {"2019-05-03", 2949.25, 1229868.0, std::nullopt},
+             {"2019-05-05", 2895.25, 137577.0, 787.0}, {"2019-05-06", 2918.0, 1865666.0, 162154.0}}) {
+        Bar b(std::chrono::sys_days{contract_rolls::parse_ymd(date)}, close, close, close, close, v, "MES.v.0");
+        b.instrument_id = "736";
+        b.own_contract_volume = own;
+        feed.push_back(b);
+    }
+    ListingDates::instance().add_predecessor_bars({"MES.v.0", "ES.v.0"}, feed);
+    ListingDates::instance().clear();
+    TransactionCostManager tcm;
+    const Timestamp fill_day = std::chrono::sys_days{contract_rolls::parse_ymd("2019-05-07")};
+    const auto fed = feed_futures_cost_model(tcm, feed, fill_day);
+    EXPECT_EQ(tcm.get_adv("MES.v.0"), 162154.0 + 787.0) << "MESM9's own session";
+    EXPECT_EQ(tcm.get_adv("ES.v.0"), 1865666.0 + 137577.0) << "the predecessor on ESM9's own session";
+    EXPECT_EQ(k_bps(162154.0 + 787.0), 40.0);
+    EXPECT_EQ(k_bps(1865666.0 + 137577.0), 10.0);
 }

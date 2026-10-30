@@ -191,6 +191,14 @@ int main() {
             // Listing dates (nothing happens without portfolio.json's listing_dates):
             // a window that starts before a contract's listing date also runs the contract traded
             // before it, on the rows stored under the listed contract's symbol.
+            // MM's gate 5 finding: a micro stored beside its full-size root with no pair declared
+            // refuses the run (ListingDates::unpaired_micro_refusals), with or without listing_dates.
+            const auto unpaired =
+                ListingDates::unpaired_micro_refusals(symbols, app_config.listing_dates);
+            if (!unpaired.empty()) {
+                for (const auto& line : unpaired) ERROR(line);
+                throw std::runtime_error(unpaired.front());
+            }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
                 ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);
@@ -205,6 +213,19 @@ int main() {
                         c, before ? before->get_multiplier() : 0.0, listed ? listed->get_multiplier() : 0.0);
                     if (!wrong.empty()) throw std::runtime_error(wrong);
                 }
+                // MM fix round 1: pairs the stored data or the bar source cannot carry refuse
+                // the run (ListingDates::refusals).
+                const auto listing_refused =
+                    ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);
+                if (!listing_refused.empty()) {
+                    for (const auto& line : listing_refused) ERROR(line);
+                    throw std::runtime_error(listing_refused.front());
+                }
+                // MM: a predecessor with stored rows of its own (GC.v.0, SI.v.0) is not an
+                // instrument of the run while its listed contract is stored; it comes back below
+                // only for a window that starts before the listing.
+                std::vector<std::string> carried;
+                symbols = ListingDates::instance().run_universe(symbols, &carried);
                 const auto predecessors = ListingDates::instance().predecessor_symbols(
                     symbols, config.strategy_config.start_date);
                 std::string line = std::string("LISTING_DATES in force, switch rule ") +
@@ -222,6 +243,10 @@ int main() {
                     symbols.push_back(p);
                 }
                 if (predecessors.empty()) line += " none";
+                if (!carried.empty()) {
+                    line += "; stored rows not an instrument of this run (the listed contract carries them):";
+                    for (const auto& s : carried) line += " " + s;
+                }
                 WARN(line);
             }
             config.strategy_config.symbols = symbols;

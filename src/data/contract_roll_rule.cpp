@@ -210,6 +210,7 @@ HeldSeries Rule::run() {
             if (const ContractBar* lb = just_left->bar_on(d)) {
                 day.left_close = lb->close;
                 day.left_id = lb->instrument_id;
+                day.left_volume = lb->volume;
                 day.left_roll_date = just_left_on;
                 day.left_by_alias = just_left_alias;
             }
@@ -246,6 +247,13 @@ HeldSeries Rule::run() {
                             key_of(*c).delivery_month == hk.delivery_month) {
                             micro = c;
                         }
+                    }
+                    // MM: a micro that lists no contract of the held one's expiry (SIL on
+                    // 2013-06-17 lists from September, SI holds July) changes into its cycle target.
+                    if (!micro && in_.alias->full_size_grid) {
+                        auto target = cycle_target(book_, in_.root, in_.cycle, hk, d);
+                        if (target.is_error()) throw RuleRefusal(target.error()->what());
+                        micro = target.value();
                     }
                     if (micro && held->bar_on(d)) {
                         day.roll = true;
@@ -396,6 +404,16 @@ HeldSeries Rule::run() {
         if (vendor) last_known_vendor = vendor;
         day.held = key_of(*held);
         fill_bar(day, *held, vendor, vb);
+        // MM fix round 1: an equity micro before its change holds the full-size contract; its own
+        // contract of the same expiry, where it prints, prices its listing legs (Bar::own_contract_volume).
+        if (in_.alias && !in_.alias->full_size_grid && held->root == in_.alias->full_root) {
+            for (const Contract* c : book_.printing_on(in_.root, d)) {
+                if (key_of(*c).expiration == day.held.expiration &&
+                    key_of(*c).delivery_month == day.held.delivery_month) {
+                    day.micro_volume = c->bar_on(d)->volume;
+                }
+            }
+        }
         out_.days.push_back(std::move(day));
     }
     return out_;
@@ -404,11 +422,17 @@ HeldSeries Rule::run() {
 }  // namespace
 
 std::optional<MicroAlias> micro_alias(const std::string& root) {
-    static const std::map<std::string, std::string> full = {
-        {"MES", "ES"}, {"MNQ", "NQ"}, {"MYM", "YM"}, {"M2K", "RTY"}};
-    auto it = full.find(root);
-    if (it == full.end()) return std::nullopt;
-    return MicroAlias{it->second, parse_ymd("2026-02-22")};
+    static const std::map<std::string, MicroAlias> table = {
+        {"MES", {"ES", parse_ymd("2026-02-22"), false}},
+        {"MNQ", {"NQ", parse_ymd("2026-02-22"), false}},
+        {"MYM", {"YM", parse_ymd("2026-02-22"), false}},
+        {"M2K", {"RTY", parse_ymd("2026-02-22"), false}},
+        // MM: the listing dates (CME SER-5391, SER-6658).
+        {"MGC", {"GC", parse_ymd("2010-10-04"), true}},
+        {"SIL", {"SI", parse_ymd("2013-06-17"), true}}};
+    auto it = table.find(root);
+    if (it == table.end()) return std::nullopt;
+    return it->second;
 }
 
 const char* to_string(RollTrigger trigger) {

@@ -37,6 +37,9 @@ inline const std::map<std::string, std::string>& roll_cycle_table() {
         {"RB", "FGHJKMNQUVXZ"},
         // Metals: GC Feb Apr Jun Aug Dec (never Oct); SI, HG Mar May Jul Sep Dec; PL Jan Apr Jul Oct.
         {"GC", "GJMQZ"}, {"SI", "HKNUZ"}, {"HG", "HKNUZ"}, {"PL", "FJNV"},
+        // MM: the gold and silver micros on their own vendor series from the listing (GC's and SI's
+        // contracts before it, the alias); the cycle of their full-size roots.
+        {"MGC", "GJMQZ"}, {"SIL", "HKNUZ"},
         // Grains: ZC Mar May Jul Dec (Sep held 4 of 17 years); ZS Jan Mar May Jul Nov.
         {"ZC", "HKNZ"}, {"ZS", "FHKNX"}, {"ZW", "HKNUZ"}, {"KE", "HKNUZ"}, {"ZL", "FHKNZ"},
         {"ZM", "FHKNZ"}, {"ZR", "FHKNUX"},

@@ -157,6 +157,41 @@ TEST(FuturesCalendar, MapsEveryTradedRootToItsExchangeAndGroup) {
     }
 }
 
+// MM (HD 2026-10-27): MGC and SIL are COMEX metals like GC and SI, on the metals group's calendar,
+// with their full-size roots' last trading day (the third-last business day of the month) and first
+// notice day (the last trading day of the prior month); their vendor expirations equal GC's of the
+// same month (MM step 0).
+TEST(FuturesCalendar, TheGoldAndSilverMicrosAreMetalsWithTheirFullSizeRootsRules) {
+    const auto& c = contract_rolls_test::shipped_calendars();
+    for (const char* r : {"MGC", "SIL"}) {
+        EXPECT_EQ(c.exchange_of(r), "CME") << r;
+        EXPECT_EQ(c.group_of(r), "metals") << r;
+        ASSERT_TRUE(c.for_root(r).is_ok()) << r;
+        EXPECT_TRUE(ExchangeRules::knows(r)) << r;
+    }
+    // Sandy (2012-10-29) traded for metals, unlike equity index.
+    EXPECT_TRUE(trades("MGC", "2012-10-29"));
+    const TradingCalendar metals = cal("GC");
+    const std::pair<const char*, const char*> pairs[] = {{"MGC", "GC"}, {"SIL", "SI"}};
+    for (const auto& [micro, full] : pairs) {
+        for (int y = 2011; y <= 2027; ++y) {  // a first notice day reads the prior month: 2010-01 needs 2009
+            for (unsigned m = 1; m <= 12; ++m) {
+                EXPECT_EQ(ymd(ExchangeRules::last_trading_day(micro, y, m, metals)),
+                          ymd(ExchangeRules::last_trading_day(full, y, m, metals)))
+                    << micro << " " << y << "-" << m;
+                ASSERT_TRUE(ExchangeRules::first_notice_day(micro, y, m, metals).has_value()) << micro;
+                EXPECT_EQ(ymd(*ExchangeRules::first_notice_day(micro, y, m, metals)),
+                          ymd(*ExchangeRules::first_notice_day(full, y, m, metals)))
+                    << micro << " " << y << "-" << m;
+            }
+        }
+    }
+    // Published: MGCZ0 2010-12-29, MGCQ6 2026-08-27, SILN3 2013-07-29.
+    EXPECT_EQ(ymd(ExchangeRules::last_trading_day("MGC", 2010, 12, metals)), "2010-12-29");
+    EXPECT_EQ(ymd(ExchangeRules::last_trading_day("MGC", 2026, 8, metals)), "2026-08-27");
+    EXPECT_EQ(ymd(ExchangeRules::last_trading_day("SIL", 2013, 7, metals)), "2013-07-29");
+}
+
 TEST(FuturesCalendar, HurricaneSandyDaysTradedExceptEquityIndex) {
     for (const char* day : {"2012-10-29", "2012-10-30"}) {
         for (const char* r : {"ZN", "GC", "CL", "ZC", "6E", "LE"}) EXPECT_TRUE(trades(r, day)) << r << " " << day;

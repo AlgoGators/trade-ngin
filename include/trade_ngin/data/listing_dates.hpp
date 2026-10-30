@@ -167,8 +167,47 @@ public:
     /// `symbols` without the predecessors (they have no stored rows of their own), order kept.
     std::vector<std::string> stored_symbols(const std::vector<std::string>& symbols) const;
 
+    /// MM (HD 2026-10-27): the run's universe from the database's symbol list: `symbols` without
+    /// each predecessor whose listed contract is in `symbols` too, order kept. GC.v.0 and SI.v.0
+    /// keep stored rows of their own (the gold and silver micros' grid before their listing), but
+    /// while MGC.v.0 and SIL.v.0 are stored the pair is one instrument, the listed contract; a
+    /// window that starts before the listing adds the predecessor back (predecessor_symbols). A
+    /// predecessor whose listed contract is not stored stays. `dropped` (optional) receives the
+    /// symbols left out. With no contract set: `symbols` itself.
+    std::vector<std::string> run_universe(const std::vector<std::string>& symbols,
+                                          std::vector<std::string>* dropped = nullptr) const;
+
+    /// MM fix round 1 (audits A S-1, C S-2): the declared pairs a run must refuse, one line each, on
+    /// the database's stored symbol list (before run_universe): (1) a pair whose predecessor's .v.0
+    /// is stored and its listed contract's is not (MGC and SIL without part B: the predecessor would
+    /// read the listed contract's rows, which are not there, and get no bars); (2) a pair of the
+    /// full-size grid kind (contract_roll_rule.hpp MicroAlias: MGC, SIL) with per_contract_rolls
+    /// off (the history before the listing is the alias's, which only the per-contract source
+    /// reads; without it the stored listed rows start at the listing). Empty: nothing refused.
+    std::vector<std::string> refusals(const std::vector<std::string>& stored_symbols,
+                                      bool per_contract_rolls) const;
+
+    /// MM's gate 5 finding (HD 2026-10-29): the reverse of refusals(). For every micro of the code's
+    /// own alias table (contract_roll_rule.hpp micro_alias: MGC/GC, SIL/SI, MES/ES, MNQ/NQ, MYM/YM,
+    /// M2K/RTY) whose .v.0 is stored beside its full-size root's .v.0 while `declared` (portfolio.json's
+    /// listing_dates) has no pair for the two, one line naming both and what to add: the run would
+    /// trade the full-size contract and the micro side by side. Read on the database's stored symbol
+    /// list, with or without listing_dates. Empty: nothing refused.
+    static std::vector<std::string> unpaired_micro_refusals(
+        const std::vector<std::string>& stored_symbols, const std::vector<ListedContract>& declared);
+
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
+    /// MM fix round 1: each copy's cost_volume (the volume the cost feed prices the predecessor's
+    /// legs on) is the full-size contract's own volume. Before the listed root's micro change
+    /// (contract_roll_rule.hpp MicroAlias) the copied bar is the full-size contract's, so none is
+    /// set; from the change on it is the change marker's (RollFrom::volume), and on a copy with no
+    /// marker volume (the contract left printed nothing that day) the last full-size volume of
+    /// this load, stale by a bar or more (logged once per predecessor). A listed root with no
+    /// micro alias: none set. And the listed contract's own rows of its listing date's session (the
+    /// listing date's bar, and a weekend stub right before a weekday listing) take their
+    /// own_contract_volume as cost_volume, where set (the equity micros: their series carries the
+    /// full-size contract's bar, the volume their own contract's), so its LO- leg pays on its own.
     void add_predecessor_bars(const std::vector<std::string>& symbols, std::vector<Bar>& bars) const;
     void add_predecessor_ids(const std::vector<std::string>& symbols,
                              std::vector<market_data_utils::FuturesInstrumentId>& ids) const;

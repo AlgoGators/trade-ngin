@@ -1,6 +1,8 @@
 // src/data/session_classifier.cpp
 #include "trade_ngin/data/session_classifier.hpp"
 
+#include "trade_ngin/core/logger.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -82,12 +84,51 @@ void SessionClassifier::add_bar(const Bar& bar) {
         it->second = b;
         changed = true;
     }
+    // MM (HD 2026-10-28): a change of price source restarts the symbol's norm from the change.
+    if (bar.roll_from && (bar.roll_from->kind == RollFromKind::SOURCE_CHANGE ||
+                          bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE)) {
+        Day change = day;
+        bool known = true;
+        if (bar.roll_from->kind == RollFromKind::AFTER_SOURCE_CHANGE) {
+            // The change this bar names. MM fix round 1 (MMB's NOTE 1): a date that does not parse
+            // registers no change (the bar's own date is not the change's) and is warned once.
+            int y = 0;
+            unsigned m = 0, d = 0;
+            known = false;
+            if (std::sscanf(bar.roll_from->date.c_str(), "%4d-%2u-%2u", &y, &m, &d) == 3) {
+                const std::chrono::year_month_day named{std::chrono::year{y}, std::chrono::month{m},
+                                                        std::chrono::day{d}};
+                if (named.ok()) {
+                    change = Day{named};
+                    known = true;
+                }
+            }
+            if (!known &&
+                malformed_source_change_dates_.insert(bar.symbol + " " + bar.roll_from->date).second) {
+                WARN("SESSION_CLASSIFIER " + bar.symbol + " " + ymd(day) +
+                     ": the AFTER_SOURCE_CHANGE bar's roll_from.date '" + bar.roll_from->date +
+                     "' is not a date; no change of price source is registered for it");
+            }
+        }
+        if (known && source_changes_[bar.symbol].insert(change).second) {
+            invalidate_flags_from_previous(bar.symbol, change);
+        }
+    }
     if (changed) {
         // A bar's verdict depends on the SESSION bars before it: every cached verdict from this
         // date on is stale, and (T-7b-2 C10a) so is the previous bar's, whose id-flip test reads
         // its next bar.
         invalidate_flags_from_previous(bar.symbol, day);
     }
+}
+
+std::optional<SessionClassifier::Day> SessionClassifier::source_change_before(
+    const std::string& symbol, Day date) const {
+    auto it = source_changes_.find(symbol);
+    if (it == source_changes_.end()) return std::nullopt;
+    auto lb = it->second.lower_bound(date);  // the first change on or after `date`
+    if (lb == it->second.begin()) return std::nullopt;
+    return *std::prev(lb);
 }
 
 void SessionClassifier::add_bars(const std::vector<Bar>& bars) {
@@ -192,14 +233,16 @@ bool SessionClassifier::holds_id_change(const DayBar& bar, const std::optional<d
 
 std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar>& series,
                                                       const std::map<Day, bool>& flags, Day date,
-                                                      int* bars_used) const {
+                                                      int* bars_used,
+                                                      std::optional<Day> since) const {
     if (bars_used) *bars_used = 0;
     std::vector<double> window;
     window.reserve(static_cast<std::size_t>(std::max(0, config_.norm_window_bars)));
     // Strictly before `date`: lower_bound is the first bar at or after it. Only a weekday bar
     // whose own verdict was SESSION counts (T-7b-1 C7b R7).
     for (auto it = std::make_reverse_iterator(series.lower_bound(date));
-         it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars;
+         it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars &&
+         !(since && it->first < *since);
          ++it) {
         if (!is_weekday(it->first)) continue;
         auto f = flags.find(it->first);
@@ -211,7 +254,8 @@ std::optional<double> SessionClassifier::session_norm(const std::map<Day, DayBar
         // weekday bars, so a thin contract (6L.v.0 in 2011, a median of 6.5 lots) can start: under
         // the floor alone its first bars would be JUNK and none of them would ever count.
         for (auto it = std::make_reverse_iterator(series.lower_bound(date));
-             it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars;
+             it != series.rend() && static_cast<int>(window.size()) < config_.norm_window_bars &&
+             !(since && it->first < *since);
              ++it) {
             if (is_weekday(it->first)) window.push_back(it->second.volume);
         }
@@ -237,7 +281,8 @@ const std::map<SessionClassifier::Day, bool>& SessionClassifier::session_flags(
     // last cached date.
     auto it = flags.empty() ? series.begin() : series.upper_bound(flags.rbegin()->first);
     for (; it != series.end() && it->first < date; ++it) {
-        const auto n = session_norm(series, flags, it->first, nullptr);
+        const auto n = session_norm(series, flags, it->first, nullptr,
+                                    source_change_before(symbol, it->first));
         bool session = judge_bar(it->second, n, nullptr) == SessionVerdict::SESSION;
         // T-7b-2 C10a, with hindsight: a bar whose next bar exists is judged by the confirmed
         // rule (a one-day flip is not a session; a roll counts on its volume); the last bar
@@ -259,7 +304,8 @@ std::optional<double> SessionClassifier::norm(const std::string& symbol, Day dat
     if (bars_used) *bars_used = 0;
     auto sit = bars_.find(symbol);
     if (sit == bars_.end()) return std::nullopt;
-    return session_norm(sit->second, session_flags(symbol, date), date, bars_used);
+    return session_norm(sit->second, session_flags(symbol, date), date, bars_used,
+                        source_change_before(symbol, date));
 }
 
 SessionVerdict SessionClassifier::judge_bar(const DayBar& b, const std::optional<double>& nm,

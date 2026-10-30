@@ -22,12 +22,13 @@ using std::chrono::year_month_day_last;
 
 const std::set<std::string> kCurrenciesTwoBefore{"6A", "6B", "6E", "6J", "6N", "6S", "6M"};
 const std::set<std::string> kGrains{"ZC", "ZS", "ZW", "KE", "ZM", "ZL", "ZR"};
-const std::set<std::string> kMetals{"GC", "SI", "HG", "PL"};
+const std::set<std::string> kMetals{"GC", "SI", "HG", "PL", "MGC", "SIL"};
 const std::set<std::string> kEquityIndex{"ES", "NQ", "YM", "RTY", "MES", "MNQ", "MYM", "M2K"};
 // Physically delivered contracts whose notice period opens before the last trading day: a long can
 // be handed delivery from the first notice day (r0lib.py NOTICE_BEFORE_LTD).
-const std::set<std::string> kNoticeBeforeLastTrade{"GC", "SI", "HG", "PL", "ZC", "ZS", "ZW", "KE",
-                                                   "ZM", "ZL", "ZR", "ZN", "ZF", "ZT", "UB", "LE"};
+const std::set<std::string> kNoticeBeforeLastTrade{"GC", "SI", "HG", "PL", "MGC", "SIL",
+                                                   "ZC", "ZS", "ZW", "KE", "ZM", "ZL", "ZR", "ZN",
+                                                   "ZF", "ZT", "UB", "LE"};
 
 Day first_of(int y, unsigned m) {
     return Day{year{y} / month{m} / 1};

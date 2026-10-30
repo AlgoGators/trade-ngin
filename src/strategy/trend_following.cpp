@@ -1145,7 +1145,8 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     std::unordered_set<std::string> traded_base_symbols;
     auto hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
     if (hlcv_symbols_result.is_ok()) {
-        for (const auto& sym : hlcv_symbols_result.value()) {
+        // MM: a predecessor carried by its stored listed contract (GC with MGC) is not weighted.
+        for (const auto& sym : ListingDates::instance().run_universe(hlcv_symbols_result.value())) {
             // Strip .v.0 / .c.0 suffix to get base symbol
             auto dot_pos = sym.find('.');
             std::string base = (dot_pos != std::string::npos) ? sym.substr(0, dot_pos) : sym;
