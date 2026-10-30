@@ -1,7 +1,6 @@
 // include/trade_ngin/core/report_day_before.hpp
 //
-// The banners about the day before (HD 2026-10-14, EMAIL_FEEDBACK_HD_2026-10-13.md section 15). The texts
-// are the original ones of `main`, word for word. The settled day's weekday and the calendar choose the
+// The banners about the day before. The settled day's weekday and the calendar choose the
 // TITLE; whether prices arrived chooses the FORM:
 //   closed   no prices at all (the book was carried): the banner, the red "No Executions" box and the yellow
 //            note; the settled table is hidden;

@@ -1,4 +1,4 @@
-// The daily report's last step, for the three live runners (T-EMAIL P2-4, HD ruling Q2b).
+// The daily report's last step, for the three live runners.
 //
 // The runner builds the body; this puts the day's flags on it (a day the risk module could not
 // answer, a carried day), then either writes the body file or sends the mail, as the report plan
@@ -43,8 +43,8 @@ inline void apply_day_flags(std::string& subject, std::string& body,
         subject = risk_module_failure_email_subject(subject);
         body = flag_email_body_for_risk_module_failure(body, *risk_module_failure);
     }
-    // HD 10-14: a carried day's email says it in the report's own plain note ("No Executions: No
-    // session was found for yesterday ..."); the long banner is no longer added.
+    // A carried day's email says it in the report's own plain note ("No Executions: No
+    // session was found for yesterday ..."); no banner is added for it.
     (void)carried_day;
     (void)carried_day_note;
 }

@@ -1,8 +1,8 @@
 // tests/live/corp_actions/test_spinoff_bar_warnings.cpp
 //
-// Two things the spinoff pre-pass says about a bar, and the one it used to say wrongly.
+// Two things the spinoff pre-pass says about a bar, and one it must not say.
 //
-// E2-F51 -- the SILENT half of the E2-F48 rule. A `split_factor < 1` on a spinoff ex-date is
+// The SILENT half of the spinoff split rule. A `split_factor < 1` on a spinoff ex-date is
 // separated out and applied as a real reverse split; a `split_factor > 1` is not — it is folded
 // into the distribution's own factor and the parent's share count does not move. That is right
 // on all five such bars in this database, verified against `adjusted_close` on both sides of
@@ -14,10 +14,10 @@
 // event in the window AND are in the book (`event_symbols` filters on `previous_positions`).
 // For a configured-but-not-held name every close is therefore 0.0, `dividend_factor()` falls
 // back to exactly 1, and a dividend-encoded spinoff on that name looks like a bar with no
-// distribution factor left. The pre-pass announced "SPINOFF REFUSED ... nothing to allocate"
-// about a position the book does not hold, with numbers derived from a close that was never
-// fetched. The row loop already skips a non-held ticker outright, so nothing could ever have
-// been routed for one; the fix is to gate the announcements on the book actually holding it.
+// distribution factor left. Ungated, the pre-pass would announce "SPINOFF REFUSED ... nothing
+// to allocate" about a position the book does not hold, with numbers derived from a close that
+// was never fetched. The row loop already skips a non-held ticker outright, so nothing can be
+// routed for one; the announcements are gated on the book actually holding it.
 
 #include <gtest/gtest.h>
 
@@ -149,20 +149,20 @@ TEST(SpinoffBarWarnings, TheRunnerAnnouncesOnlyBarsWhoseParentIsHeld) {
            "lines is computed from a close of 0.0 for a non-held name, and the REFUSED line in "
            "particular reports a refusal that never had anything to refuse";
 
-    // BA-27: and "holds" means a NON-ZERO quantity. `previous_positions` can carry a symbol
-    // at quantity 0; a closed position has nothing to distribute, and apply_spinoffs refuses
-    // it outright, so the announcement was the only thing that spoke about it.
+    // And "holds" means a NON-ZERO quantity. `previous_positions` can carry a symbol at
+    // quantity 0; a closed position has nothing to distribute, and apply_spinoffs refuses it
+    // outright, so the announcement would be the only thing that spoke about it.
     EXPECT_NE(src.find("auto book_holds = [&previous_positions](const std::string& symbol)"),
               std::string::npos);
     const auto holds_at = src.find("auto book_holds =");
     ASSERT_NE(holds_at, std::string::npos);
     const std::string holds_body = src.substr(holds_at, 400);
     EXPECT_NE(holds_body.find("quantity.as_double()) > 1e-9"), std::string::npos)
-        << "book_holds must require a non-zero quantity, not mere presence in the map (BA-27)";
+        << "book_holds must require a non-zero quantity, not mere presence in the map";
 
     // And the forward-split announcement exists and is driven by the predicate, not by an
     // inline comparison that can drift from it.
     EXPECT_NE(src.find("col.folds_a_forward_split()"), std::string::npos);
     EXPECT_NE(src.find("split_factor ABOVE 1"), std::string::npos);
-    EXPECT_NE(src.find("(E2-F51)"), std::string::npos);
+    EXPECT_NE(src.find("warning of it.\");"), std::string::npos);
 }

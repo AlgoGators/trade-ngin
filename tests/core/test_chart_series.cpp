@@ -121,7 +121,7 @@ TEST(ChartQueries, TheDatedQueriesAreBoundedByTheRunDate) {
                     "DATE(last_update) <= DATE('2026-04-25')"));
 }
 
-// T-8D-2 R55: a chart reads the system book's rows only. trading.positions and
+// A chart reads the system book's rows only. trading.positions and
 // trading.equity_curve carry a portfolio_type (migration 001); the sub-query that finds the
 // previous stored day reads the same book as the rows it dates.
 TEST(ChartQueries, AQueryOfATableThatCarriesAPortfolioTypeReadsTheSystemBookOnly) {
@@ -157,7 +157,7 @@ TEST(ChartQueries, AQueryOfLiveResultsOrExecutionsReadsTheChartsBook) {
 
 // --- the equity curve ----------------------------------------------------------------------------
 
-// T-8D-2 R63: the chart holds the stored days BEFORE the run date (the run date's own row is not
+// The chart holds the stored days BEFORE the run date (the run date's own row is not
 // settled, and a re-run of a past date must not chart the days after it).
 TEST(ChartQueries, TheEquityCurveReadsTheStoredDaysBeforeTheRunDate) {
     const std::string query = ChartQueries::equity_curve(kStrategy, kPortfolio, "2026-04-25", 30);
@@ -187,9 +187,9 @@ TEST(ChartSeries, TheEquityCurveIsInDateOrderWhateverOrderItsRowsCome) {
     EXPECT_EQ(data.y_label, "Portfolio Value ($)");
 }
 
-// T-8D-2 R63: the curve used to start with a made-up point of 500,000 one day before its first
-// row (on every book, the 100,000 equity book included) and to drop its last row. The points are
-// now the rows it was given, each with its own value, and no other.
+// The curve's points are the rows it is given, each with its own value, and no other: no made-up
+// point of 500,000 one day before its first row (on any book, the 100,000 equity book included),
+// and its last row is kept.
 TEST(ChartSeries, TheEquityCurvePlotsItsStoredRowsAndNoOtherPoint) {
     const ChartData data = ChartSeries::equity_curve(
         {{"2026-04-22", 496100.00}, {"2026-04-23", 495994.40}, {"2026-04-24", 497239.40}},
@@ -313,7 +313,7 @@ TEST(ChartSeries, ALineChartsAxisRunsFromItsFirstDayToItsLast) {
 
 // --- yesterday's PnL by symbol -------------------------------------------------------------------
 
-// T-8D-2 R64: a symbol held by both sleeves of a book has two stored rows on a day; the query
+// A symbol held by both sleeves of a book has two stored rows on a day; the query
 // returns the book's one figure for it.
 TEST(ChartQueries, YesterdaysPnlIsSummedBySymbol) {
     const std::string query = ChartQueries::pnl_by_symbol(kStrategy, kPortfolio, "2026-04-25");
@@ -334,8 +334,8 @@ TEST(ChartSeries, PnlBySymbolIsSortedLargestFirstAndTitledWithTheDayBeforeTheRun
     EXPECT_DOUBLE_EQ(data.reference_line, 0.0);
 }
 
-// T-8D-2 R64: a symbol two sleeves hold was two bars, each a sleeve's figure. It is one bar of
-// their sum, whatever rows the series is given.
+// A symbol two sleeves hold is one bar of their sum, not a bar of each sleeve's figure, whatever
+// rows the series is given.
 TEST(ChartSeries, ASymbolHeldByTwoSleevesIsOneBarOfTheirSum) {
     const ChartData data = ChartSeries::pnl_by_symbol({{"MES.v.0", 40.0},
                                                        {"ZF.v.0", -31.25},
@@ -352,7 +352,7 @@ TEST(ChartSeries, ASymbolHeldByTwoSleevesIsOneBarOfTheirSum) {
     EXPECT_DOUBLE_EQ(data.values[2], -62.5);
 }
 
-// T-8D-2 R64: on an equity book the bars are the day's realized P&L only, and the title says so.
+// On an equity book the bars are the day's realized P&L only, and the title says so.
 TEST(ChartSeries, OnAnEquityBookYesterdaysPnlIsTitledRealized) {
     const std::vector<ChartPoint> rows = {{"AAPL", 0.02}, {"GOOGL", -1.87}};
     EXPECT_EQ(ChartSeries::pnl_by_symbol(rows, "2026-06-16", true).title,
@@ -379,8 +379,8 @@ TEST(ChartSeries, DailyPnlIsPlottedOldestFirst) {
     EXPECT_TRUE(ChartSeries::daily_pnl({}).labels.empty());
 }
 
-// T-8D-2 R62: the chart holds the last 30 STORED days, which on a book with missing days is not
-// the last 30 days; the heading said "Last 30 Days".
+// The chart holds the last 30 STORED days, which on a book with missing days is not the last 30
+// days, so the heading does not say "Last 30 Days".
 TEST(ChartTitles, TheDailyPnlHeadingCountsStoredDays) {
     EXPECT_EQ(ChartTitles::daily_pnl_heading(30), "Daily PnL (last 30 days)");
 }
@@ -402,8 +402,8 @@ std::optional<double> test_multiplier(const std::string& symbol) {
 }
 }  // namespace
 
-// T-8D-2 R64: the query read the book's HELD gross notional as the denominator and joined a count
-// of the executions of EVERY book (used for a log line only). It reads the book's own fills.
+// The query reads the book's own fills of each day: not the book's HELD gross notional as the
+// denominator, and no count of the executions of every book.
 TEST(ChartQueries, TheCostChartReadsTheBooksOwnFillsOfEachDay) {
     const std::string query = ChartQueries::cost_per_million(kStrategy, kPortfolio, "2026-04-25");
     EXPECT_TRUE(has(query, "lr.daily_transaction_costs")) << query;
@@ -435,8 +435,8 @@ TEST(ChartSeries, CostPerMillionIsTheDaysCostOverTheNotionalTradedThatDay) {
     EXPECT_FALSE(data.has_reference_line);
 }
 
-// A day on which the book held positions and made no fill has no point (it used to have one: a
-// carried cost of 0 over the held notional, or a day's roll cost over it).
+// A day on which the book held positions and made no fill has no point (no carried cost of 0 over
+// the held notional, and no day's roll cost over it).
 TEST(ChartSeries, ADayTheBookDidNotTradeHasNoPointOnTheCostChart) {
     const ChartData data =
         ChartSeries::cost_per_million({{"2026-04-22", 3.80, "MES.v.0", 1.0, 7100.0},
@@ -452,7 +452,7 @@ TEST(ChartSeries, ADayTheBookDidNotTradeHasNoPointOnTheCostChart) {
     EXPECT_TRUE(ChartSeries::cost_per_million({}, test_multiplier).labels.empty());
 }
 
-// The contracts chart (HD 2026-10-14): every calendar day of the 30 ending on the run date, the
+// The contracts chart: every calendar day of the 30 ending on the run date, the
 // run date included, with the contracts of every sleeve's fills, the ROLL legs apart.
 TEST(ChartQueries, TheContractsChartReadsEveryDayOfItsWindowAndEverySleevesFills) {
     const std::string query = ChartQueries::contracts_per_day(kPortfolio, "2025-11-14", 30);
@@ -561,8 +561,8 @@ TEST(ChartSeries, CumulativePnlBySymbolIsSortedLargestFirst) {
     EXPECT_TRUE(ChartSeries::cumulative_pnl_by_symbol({}, "2026-04-24").labels.empty());
 }
 
-// T-8D-2 R62: the bars are sums of realized P&L with no cost taken off; the heading and the
-// image's title say so (they said "(All-Time)" and "Cumulative Realized PnL by Symbol").
+// The bars are sums of realized P&L with no cost taken off; the heading and the image's title
+// say so.
 TEST(ChartTitles, TheCumulativeChartSaysItIsRealizedAndGrossOfCosts) {
     EXPECT_EQ(ChartTitles::cumulative_pnl_heading(),
               "Cumulative PnL by Symbol");

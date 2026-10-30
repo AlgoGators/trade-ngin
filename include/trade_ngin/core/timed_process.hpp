@@ -24,11 +24,11 @@ namespace trade_ngin {
 namespace core {
 
 /**
- * A shell command run with a time limit (HD 2026-10-10, T-DATED R4).
+ * A shell command run with a time limit.
  *
- * The report's charts are drawn by a child process whose output the run used to read with no
- * limit: a child that never finished, and never closed its output, stopped the run for ever
- * after the day's rows were stored and before the report was sent. Here the child is given
+ * The report's charts are drawn by a child process. Read with no limit, a child that never
+ * finished, and never closed its output, would stop the run for ever after the day's rows were
+ * stored and before the report was sent. Here the child is given
  * `timeout`; when it has not finished by then its whole process group is killed, the caller is
  * told (`timed_out`), and the caller goes on. A child that cannot be reaped within a short grace
  * after the kill is left behind: the run never waits on it again.

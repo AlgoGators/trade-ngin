@@ -35,7 +35,7 @@ a default into a file is exactly the failure schema 2 exists to end.
 
 What it does not do: write a futures book's loop keys (LOOP_SPEC section 7.7). The file it
 produces is a schema-2 file of the gate as it was: a futures book then needs, by hand, on its
-carver module R_max, R_jump_max, R_shock_max, per_name_cap and trim_max, with var_limit,
+carver module R_max, R_jump_max, R_shock_max, per_name_cap, trim_max and overlay_covariance, with var_limit,
 jump_risk_limit and max_correlation REMOVED from that module and from risk_reporting and
 max_leverage removed from the top level (the loader refuses each retired key on a futures
 book); in portfolio.json equity_slow_rule, sizing_mode and starting_capital, with weight,

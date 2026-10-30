@@ -1,10 +1,10 @@
 // tests/core/test_report_leverage_console.cpp
 //
-// T-8D R24 as LOOP_SPEC v6.2 restates it, T-8D-2 R68: the console's leverage lines each name what
+// The console's leverage lines each name what
 // they divide by. The futures runners' first line is the day's gross notional over the day's
 // sizing capital E_t, the figure the row's config states as gross_leverage; their day-T line is
 // the same notional over the account value. The equity runner prints one line, over the day's
-// account value (its "(gross/current)" line divided by the configured capital).
+// account value, not the configured capital.
 
 #include <gtest/gtest.h>
 

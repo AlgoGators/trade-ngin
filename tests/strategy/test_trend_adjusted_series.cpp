@@ -1,9 +1,9 @@
 // The trend strategies read the back-adjusted series for every RETURN consumer and the raw close
-// for every LEVEL (LOOP_SPEC v6.1 sections 2.3 and 2.4; T-ROLLX commit 1):
+// for every LEVEL:
 //   * a contract switch (a bar whose instrument_id differs from the previous consumed bar's) is a
 //     price gap, not a return: the vol estimate and the EMA spread of a series with a switch equal
-//     those of the same series without it, bit for bit (on 9fe44f1a the log-return estimator sees
-//     the gap as a +10 percent return and the vol differs);
+//     those of the same series without it, bit for bit (an estimator reading the raw log returns
+//     sees the gap as a +10 percent return and the vol differs);
 //   * the EMAs read the adjusted level, the vol the adjusted returns, and the forecast divides by
 //     the RAW close (the estimate of the last bar against a hand recomputation);
 //   * nothing persists across bars: the forecast and the vol of the last bar are the same whether
@@ -282,4 +282,85 @@ TEST(TrendAdjustedSeries, TheWindowIsRecomputedOnEveryBarAndNothingPersists) {
     EXPECT_NEAR(ema_after.at(8),
                 lambda * static_cast<double>(next.close) + (1 - lambda) * (ema_before.at(8) + 20.0),
                 1e-9);
+}
+
+// Rolls step 3 (plan section 6): given the per-contract source's bars (a roll bar carries the old
+// contract's close, Bar::roll_from), the strategy's vol estimate and EMAs are the library's
+// (roll_series::build_series on the same bars), on a series with no roll and on one with every
+// shape: a vendor switch the next bar does not confirm (bar 40), a roll known on its bar (60), a
+// vendor switch the next bar confirms (90), the AFTER_ROLL field after each roll.
+namespace {
+
+std::vector<Bar> per_contract_walk(bool rolls) {
+    std::vector<Bar> bars = walk(120, -1, 0.0);
+    if (!rolls) return bars;
+    const double gap1 = 6.0, gap2 = 4.5;
+    for (int k = 0; k < 120; ++k) {
+        Bar& b = bars[static_cast<size_t>(k)];
+        const double a = static_cast<double>(b.close);  // the old contract's own close that day
+        const double lift = (k >= 60 ? gap1 : 0.0) + (k >= 90 ? gap2 : 0.0);
+        double close = a + lift;
+        b.instrument_id = k >= 91 ? "C" : k >= 60 ? "B" : "A";
+        // a vendor switch: the held contract's own bar, the field naming the target
+        if (k == 40) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AWAITS_NEXT, ""};
+        if (k == 60) b.roll_from = RollFrom{a, "A", RollFromKind::KNOWN, ""};
+        if (k == 61) b.roll_from = RollFrom{a, "A", RollFromKind::AFTER_ROLL, ""};
+        if (k == 90) {
+            close = a + gap1;  // B's own close; C's is the target's
+            b.roll_from = RollFrom{a + gap1 + gap2, "C", RollFromKind::AWAITS_NEXT, ""};
+        }
+        if (k == 91) b.roll_from = RollFrom{a + gap1, "B", RollFromKind::AFTER_ROLL, ""};
+        b.open = b.close = Decimal(close);
+        b.high = Decimal(close * 1.001);
+        b.low = Decimal(close * 0.999);
+    }
+    return bars;
+}
+
+}  // namespace
+
+TEST(TrendAdjustedSeries, PerContractBarsGiveTheLibrarysVolAndEmas) {
+    for (bool rolls : {false, true}) {
+        SCOPED_TRACE(rolls ? "per-contract rolls" : "no roll");
+        StateManager::reset_instance();
+        static int n = 0;
+        Fixture<TrendFollowingStrategy, TrendFollowingConfig> f("TREND_pc_" + std::to_string(++n));
+        const auto bars = per_contract_walk(rolls);
+        std::vector<double> raw;
+        std::vector<std::string> ids;
+        roll_series::RollFields rf;
+        for (const auto& b : bars) {
+            raw.push_back(static_cast<double>(b.close));
+            ids.push_back(b.instrument_id);
+            rf.push_back(b.roll_from);
+        }
+        const auto series = roll_series::build_series(raw, ids, rf);
+        if (rolls) {
+            ASSERT_TRUE(series.flags.pending[40]);
+            ASSERT_FALSE(series.flags.change[40]);
+            ASSERT_EQ(series.raw[40], raw[40]) << "the switch bar's level is the held contract's";
+            ASSERT_TRUE(series.flags.base_close[90].has_value());
+            ASSERT_TRUE(series.flags.confirm[60]);
+            ASSERT_TRUE(series.flags.confirm[91]);
+            // the roll bars' returns are the old contracts' own moves
+            EXPECT_DOUBLE_EQ(series.returns[59], (rf[60]->close - raw[59]) / raw[59]);
+        }
+        ASSERT_TRUE(f.strategy->on_data(bars).is_ok());
+        ASSERT_EQ(f.data().bar_roll_from.size(), 120u);
+        const double lambda = 2.0 / (f.strategy->trend_config_.vol_lookback_short + 1.0);
+        double mean = series.returns[0];
+        double var = std::max(1e-6, series.returns[0] * series.returns[0] * 0.1);
+        for (size_t t = 1; t < series.returns.size(); ++t) {
+            mean = lambda * series.returns[t] + (1 - lambda) * mean;
+            const double d = series.returns[t] - mean;
+            var = std::max(1e-6, lambda * d * d + (1 - lambda) * var);
+        }
+        const auto& estimate = f.data().estimate;
+        ASSERT_TRUE(estimate.valid);
+        EXPECT_NEAR(estimate.sigma_short, std::clamp(std::sqrt(var) * estimate.factor, 0.005, 5.0),
+                    1e-12);
+        const auto ema = f.strategy->get_ema_values(kSym, {8, 32});
+        EXPECT_NEAR(ema.at(8), f.strategy->calculate_ewma(series.adjusted, 8).back(), 1e-9);
+        EXPECT_NEAR(ema.at(32), f.strategy->calculate_ewma(series.adjusted, 32).back(), 1e-9);
+    }
 }

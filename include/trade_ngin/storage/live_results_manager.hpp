@@ -9,7 +9,7 @@ namespace trade_ngin {
 
 /// An equity value trading.equity_curve may hold: finite and at least 1,000. Zero, a negative
 /// value, NaN, an infinity and a positive value under 1,000 (garbage or an uninitialised figure)
-/// are not; LiveResultsManager::save_equity_curve refuses them (T-8D-2 R47).
+/// are not; LiveResultsManager::save_equity_curve refuses them.
 inline bool storable_equity_curve_value(double equity) {
     return std::isfinite(equity) && equity >= 1000.0;
 }
@@ -74,7 +74,7 @@ public:
         config_ = config;
     }
 
-    /// The row's risk_detail object (migration 020; LOOP_SPEC section 7.3). Never called, or
+    /// The row's risk_detail object (migration 020). Never called, or
     /// called with null, the cell is NULL.
     void set_risk_detail(const nlohmann::json& risk_detail) {
         risk_detail_ = risk_detail;

@@ -109,6 +109,26 @@ def calendar_from_dates(holidays: Iterable[dt.date], years: Iterable[int]) -> Tr
     return TradingCalendar(holidays, years, "inline")
 
 
+def per_contract_rolls(config_dir: str, portfolio_dir: str) -> bool:
+    """portfolio.json's top-level per_contract_rolls as the engine reads it (ConfigLoader: the
+    portfolio's file over defaults.json; absent means false). On, the model run reads the
+    per-contract bars (rolls step 3), so it also waits for their ops.data_ready row. A value that
+    is not true or false is left to the engine, which refuses it."""
+    from .portfolios import portfolios_root
+
+    value = False
+    for path in (Path(config_dir) / "defaults.json",
+                 portfolios_root(config_dir) / portfolio_dir / "portfolio.json"):
+        try:
+            data: Dict = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        raw = data.get("per_contract_rolls") if isinstance(data, dict) else None
+        if isinstance(raw, bool):
+            value = raw
+    return value
+
+
 def staleness_tolerance_days(config_dir: str, portfolio_dir: str, default: int = 4) -> int:
     """live.data_staleness_tolerance_days as the engine reads it: the portfolio's portfolio.json
     `live` block over defaults.json's (ConfigLoader), else the engine's default of 4."""

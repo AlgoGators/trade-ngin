@@ -20,7 +20,7 @@ struct SleeveContribution {
     std::string strategy_id;
     double contribution;
     /// The sleeve's target in contracts, read only when the sleeves' targets have opposite
-    /// signs (T-7b-2 8b). NaN (not given): `contribution` is taken to be in contracts.
+    /// signs. NaN (not given): `contribution` is taken to be in contracts.
     double contracts = std::numeric_limits<double>::quiet_NaN();
 };
 
@@ -39,7 +39,7 @@ struct SleeveDistribution {
 /// (Hamilton) split of the book: the floor of each quota plus one contract for each of the
 /// largest remainders, ties to the smaller strategy_id, so they sum to the book exactly.
 ///
-/// Opposed sleeves (T-7b-2 8b, HD 2026-09-25 item 23): when one sleeve's target is long and
+/// Opposed sleeves: when one sleeve's target is long and
 /// another's short, a share is not a fraction of the answer (it exceeds 1 or is negative), so
 /// answer x share amplifies the sleeves (+1.0 / -0.8 with an answer of 1 stored +5 / -4) and a
 /// cancelling total flattens both. On that branch only the optimizer's DEVIATION from the net

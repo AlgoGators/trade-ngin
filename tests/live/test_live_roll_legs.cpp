@@ -1,6 +1,6 @@
 // tests/live/test_live_roll_legs.cpp
 //
-// LOOP_SPEC v6.2 section 6.5 in the live runners (T-ROLLX-FIX commit 4, B8; code review D3, L-09):
+// The roll legs in the live runners:
 // the legs are booked by STATE. A run legs every roll a consumed bar confirmed since the contract
 // recorded on the symbol's stored T-1 positions row (live_rolls_by_state), never the rolls of a
 // calendar span, so each roll is booked once and a late (back-filled) confirming bar is legged on
@@ -50,7 +50,7 @@ Bar bar(const std::string& symbol, const std::string& ymd, double close, const s
     return b;
 }
 
-// ZM.v.0 on the stage-3 clone (the adversary's B-8 case): no bar 04-17 and 04-21..04-24.
+// ZM.v.0 as stored: no bar 04-17 and 04-21..04-24.
 //   04-16 332.20 (OLD)   04-20 321.10 (NEW, the change bar)   04-27 328.00 (NEW, confirms)
 //   04-28 328.80         04-29 324.10
 const std::string kZm = "ZM.v.0";
@@ -67,7 +67,7 @@ struct LegRun {
     double pnl{0.0};           // the move the T-1 row books
     std::string stored_after;  // the contract the run leaves on the rows
 };
-// What earlier runs booked of a late roll's moves, read from the stored rows (commit 6): the one
+// What earlier runs booked of a late roll's moves, read from the stored rows: the one
 // place the fixtures call the stored-state rule, as the runner does after live_rolls_by_state.
 void apply_stored_rows(LiveRollState& state, const std::string& t1,
                        const std::vector<StoredRealisedRow>* stored, bool* undecided) {
@@ -141,7 +141,7 @@ TEST(LiveRollLegs, ARollIsLeggedOnTheRunWhoseT1ConfirmsIt) {
     EXPECT_NEAR(r29.pnl, 100.0 * (328.80 - 328.00), 1e-9) << "80.00";
 }
 
-// B8, the adversary's LATE case: the 04-27 bar is a feed hole on its own T-1 run (04-28) and is
+// The LATE case: the 04-27 bar is a feed hole on its own T-1 run (04-28) and is
 // back-filled before the 04-29 run. The 04-29 run finds the roll confirmed after the recorded
 // contract: it legs it once, ids dated 04-27, and books the confirming bar's move with its own T-1
 // move, 100 x (328.80 - 321.10) = 770.00 = 690.00 + 80.00. A calendar span (04-27, 04-28] never
@@ -210,7 +210,7 @@ TEST(LiveRollLegs, WithoutARecordedContractTheT1BarAloneAndAnUnknownContractIsUn
     EXPECT_TRUE(unknown.rolls.empty());
 }
 
-// Two rolls owed to one run (L-09): both are legged, in date order, and the unbooked moves exclude
+// Two rolls owed to one run: both are legged, in date order, and the unbooked moves exclude
 // the second change bar (section 6.6).
 TEST(LiveRollLegs, EveryRollConfirmedSinceTheRecordedContractIsLegged) {
     const std::string s = "ZC.v.0";
@@ -231,10 +231,10 @@ TEST(LiveRollLegs, EveryRollConfirmedSinceTheRecordedContractIsLegged) {
     EXPECT_NEAR(state.late.at(s).settle_to, 423.0, 1e-9);
 }
 
-// T-ROLLX-FIX commits 5 and 6, finding 4: a late roll books the moves of the consumed bars after the
+// A late roll books the moves of the consumed bars after the
 // stored state LESS what earlier runs already booked of them, and what they booked is read from the
-// STORED rows, never from the bars (the lead's ruling): a bar with no instrument id is not judged
-// (section 2.2), so a run can consume it, book its move and leave the roll pending, and the same bar
+// STORED rows, never from the bars: a bar with no instrument id is not judged,
+// so a run can consume it, book its move and leave the roll pending, and the same bar
 // back-filled later was consumed by no run. ZM.v.0, long 1, point value 100:
 //   04-10 332.20 (OLD)  04-20 321.10 (NEW, the change bar)  04-27 328.00 (confirms)  04-28 328.80
 //   04-29 324.10
@@ -291,10 +291,10 @@ TEST(LiveRollLegs, TwoLateBarsWithTheirIdsBookTheControlsTotal) {
     EXPECT_EQ(i0.runs[2].rolls[0].confirm_date, "2026-04-27");
 }
 
-// I1 (the verifier's): the same two late bars, the 04-28 bar WITHOUT an id when the 04-30 run reads
+// The same two late bars, the 04-28 bar WITHOUT an id when the 04-30 run reads
 // it. No run consumed it: its row dated 04-28 books 0, so its move and the confirming bar's belong
-// in the late sum, 300.00. Taking every id-less bar before T-1 as consumed (commit 5) subtracted
-// 328.80 - 321.10 and booked -470.00: 770.00 never booked.
+// in the late sum, 300.00. Taking every id-less bar before T-1 as consumed would subtract
+// 328.80 - 321.10 and book -470.00: 770.00 never booked.
 TEST(LiveRollLegs, ABackFilledIdLessBarNoRunConsumedIsBookedByTheLateRun) {
     const std::set<std::string> holes = {"2026-04-27", "2026-04-28"};
     const LateChain i1 = late_chain({holes, holes, {}}, {"NEW", "NEW", ""});
@@ -310,7 +310,7 @@ TEST(LiveRollLegs, ABackFilledIdLessBarNoRunConsumedIsBookedByTheLateRun) {
 // 04-27 confirming bar still absent: that run books 100 x (328.80 - 321.10) = 770.00 on the 04-28
 // row and the roll stays pending. The 04-27 bar is back-filled behind it; the 04-30 run legs the
 // roll and books the whole sum, 3.00 points, less the 7.70 the stored 04-28 row carries: -470.00.
-// Summing every bar after the stored state (1fb06d14) booked +300.00 on top of the 770.00.
+// Summing every bar after the stored state would book +300.00 on top of the 770.00.
 TEST(LiveRollLegs, AnIdLessBarConsumedOnItsOwnRunIsNotBookedAgainByTheLateRun) {
     const std::set<std::string> hole = {"2026-04-27"};
     const LateChain i2 = late_chain({hole, hole, {}}, {"", "", ""});
@@ -333,7 +333,7 @@ TEST(LiveRollLegs, ABarConsumedWithoutItsIdAndGivenItLaterIsNotBookedAgain) {
     EXPECT_EQ(restored.rolls, 1u);
 }
 
-// The id-less bar BEFORE the back-filled confirming bar (the order pinned in commit 5): it is where
+// The id-less bar BEFORE the back-filled confirming bar: it is where
 // the stored book stands, its own run booked it, and the late sum starts after it.
 //   04-20 400 (OLD)  04-21 410 (NEW, change)  04-22 413 (no id)  04-23 412 (NEW, confirms, the hole)
 //   04-24 415
@@ -354,7 +354,7 @@ TEST(LiveRollLegs, AnIdLessBarBeforeTheLateConfirmingBarIsWhereTheBookStands) {
                                                              "what was booked bar by bar, but their sum is";
 }
 
-// The edge the ruling names: a consumed bar whose move was exactly 0 stores a row that books 0 and
+// The edge case: a consumed bar whose move was exactly 0 stores a row that books 0 and
 // reads as unconsumed; the late sum then includes a move of 0, the same number. Here the id-less
 // 04-28 bar closes at the change bar's 321.10 and is consumed on time.
 TEST(LiveRollLegs, AConsumedBarThatDidNotMoveReadsAsUnconsumedAndAddsNothing) {
@@ -410,11 +410,11 @@ TEST(LateBookedPoints, ReadsWhatTheStoredRowsBookAndSaysWhenTheyCannotDecide) {
     EXPECT_FALSE(late_booked_points("ZM.v.0", "2026-04-20", "2026-04-29", rows, 0.0).undecided.empty());
 }
 
-// T-ROLLX-FIX commit 5, finding 5: a contract that recurs. The stored row says H; the bars of 04-21
+// A contract that recurs. The stored row says H; the bars of 04-21
 // to 04-23 are back-filled, and with them the book left H (04-22 confirms K) and came back to it
 // (04-24, the T-1 bar, confirms H again). The stored row was written before the T-1 bar was
 // consumed, so the book stands in the FIRST H segment and both rolls are owed. Reading the last bar
-// held in H, the T-1 bar itself, placed the book after both and legged the second only.
+// held in H, the T-1 bar itself, would place the book after both and leg the second only.
 //   04-20 400 (H)  04-21 410 (K, change)  04-22 412 (K, confirms)  04-23 405 (H, change)
 //   04-24 407 (H, confirms)
 // Unbooked: 04-22's 412 - 410 and 04-24's 407 - 405; the two change bars book 0.
@@ -460,4 +460,116 @@ TEST(LiveRollLegs, ARecurringContractWithBothRollsOwedLegsBoth) {
 
 TEST(LiveRollLegs, TheIdDateIsTheConfirmingBarsCompactDate) {
     EXPECT_EQ(compact_date("2026-05-03"), "20260503");
+}
+
+// ------------------------------------------------------------------------------------------------
+// With per_contract_rolls on, the source's bars carry the old contract's close on a roll
+// bar (Bar::roll_from). One dated run a day, the runner's composition (run_on). A roll known on its
+// bar is legged by the run whose T-1 it is, at that bar's two closes, and that run books the old
+// contract's own move; a vendor switch is legged by the run whose T-1 confirms it, at the switch
+// bar's closes; nothing is booked twice.
+// ------------------------------------------------------------------------------------------------
+namespace {
+
+// OLD 04-14 330.00, 04-15 331.00, 04-16 332.20; the roll bar 04-17 (NEW 321.10, OLD 333.00);
+// 04-20 NEW 322.00 (OLD 334.00 that day); 04-21 NEW 323.00. `kind` is the roll bar's.
+std::vector<Bar> pc_bars(RollFromKind kind, bool confirmed = true) {
+    auto with = [](Bar b, double close, const char* id, RollFromKind k) {
+        b.roll_from = RollFrom{close, id, k, ""};
+        return b;
+    };
+    std::vector<Bar> out{bar(kZm, "2026-04-14", 330.00, "OLD"), bar(kZm, "2026-04-15", 331.00, "OLD"),
+                         bar(kZm, "2026-04-16", 332.20, "OLD")};
+    // a known roll is NEW's bar naming OLD; a vendor switch is OLD's own bar naming the target NEW
+    out.push_back(kind == RollFromKind::AWAITS_NEXT
+                      ? with(bar(kZm, "2026-04-17", 333.00, "OLD"), 321.10, "NEW", kind)
+                      : with(bar(kZm, "2026-04-17", 321.10, "NEW"), 333.00, "OLD", kind));
+    if (confirmed) {
+        out.push_back(with(bar(kZm, "2026-04-20", 322.00, "NEW"), 334.00, "OLD", RollFromKind::AFTER_ROLL));
+        out.push_back(bar(kZm, "2026-04-21", 323.00, "NEW"));
+    } else {
+        out.push_back(bar(kZm, "2026-04-20", 334.00, "OLD"));
+        out.push_back(bar(kZm, "2026-04-21", 335.00, "OLD"));
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(LiveRollLegsPerContract, AKnownRollIsLeggedByTheRunWhoseT1ItIsAtItsTwoCloses) {
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    const LegRun r17 = run_on(all, {}, "2026-04-17", "OLD");
+    EXPECT_NEAR(r17.pnl, 100.0 * (332.20 - 331.00), 1e-9);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", r17.stored_after);
+    ASSERT_EQ(r18.rolls.size(), 1u);
+    EXPECT_EQ(r18.rolls[0].confirm_date, "2026-04-17");
+    EXPECT_EQ(r18.rolls[0].outgoing_id, "OLD");
+    EXPECT_EQ(r18.rolls[0].incoming_id, "NEW");
+    EXPECT_NEAR(r18.rolls[0].closing_price, 333.00, 1e-9) << "the old contract's close on the roll bar";
+    EXPECT_NEAR(r18.rolls[0].opening_price, 321.10, 1e-9);
+    EXPECT_TRUE(r18.rolls[0].known_on_bar) << "the log names the trigger";
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9) << "the old contract's own move (today: 0)";
+    EXPECT_EQ(r18.stored_after, "NEW");
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    EXPECT_TRUE(r21.rolls.empty()) << "booked once";
+    EXPECT_NEAR(r21.pnl, 100.0 * (322.00 - 321.10), 1e-9);
+}
+
+TEST(LiveRollLegsPerContract, AVendorSwitchIsLeggedByTheRunWhoseT1ConfirmsIt) {
+    const auto all = pc_bars(RollFromKind::AWAITS_NEXT);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", "OLD");
+    EXPECT_TRUE(r18.rolls.empty()) << "the run ending on the switch bar cannot know it";
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9) << "the old contract's move, booked once here";
+    EXPECT_EQ(r18.stored_after, "OLD") << "held in the old contract while pending";
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-20");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 333.00, 1e-9) << "priced at the switch bar's two closes";
+    EXPECT_FALSE(r21.rolls[0].known_on_bar) << "the next consumed bar confirmed it";
+    EXPECT_NEAR(r21.rolls[0].opening_price, 321.10, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * (322.00 - 321.10), 1e-9);
+    EXPECT_EQ(r21.stored_after, "NEW");
+}
+
+TEST(LiveRollLegsPerContract, AVendorSwitchTheNextBarRevertsLegsNothingAndBooksTheOldContract) {
+    const auto all = pc_bars(RollFromKind::AWAITS_NEXT, false);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", "OLD");
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9);
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    EXPECT_TRUE(r21.rolls.empty());
+    EXPECT_NEAR(r21.pnl, 100.0 * (334.00 - 333.00), 1e-9) << "from OLD's close on the switch bar";
+    EXPECT_EQ(r21.stored_after, "OLD");
+}
+
+TEST(LiveRollLegsPerContract, ALateRollBarIsLeggedOnceAndItsMovesBookedOnce) {
+    // The 04-17 roll bar is a hole on its own run (04-18) and back-filled before the 04-21 run.
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    std::vector<StoredRealisedRow> stored;
+    const LegRun r17 = run_on(all, {}, "2026-04-17", "OLD", &stored);
+    const LegRun r18 = run_on(all, {"2026-04-17"}, "2026-04-18", r17.stored_after, &stored);
+    EXPECT_TRUE(r18.rolls.empty());
+    EXPECT_EQ(r18.pnl, 0.0);
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after, &stored);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-17");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 333.00, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * ((333.00 - 332.20) + (322.00 - 321.10)), 1e-9)
+        << "the old contract's move over the roll bar and the new one's after it, once";
+    const LegRun r22 = run_on(all, {}, "2026-04-22", "NEW", &stored);
+    EXPECT_TRUE(r22.rolls.empty());
+}
+
+TEST(LiveRollLegsPerContract, AWithheldRollBarIsBookedOnTheNextConsumedBarAtItsCloses) {
+    // The roll bar is never consumed (withheld on every run, K-01): the 04-20 bar books the roll,
+    // the old contract's move up to it and both legs at its closes.
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    const LegRun r18 = run_on(all, {"2026-04-17"}, "2026-04-18", "OLD");
+    EXPECT_TRUE(r18.rolls.empty());
+    const LegRun r21 = run_on(all, {"2026-04-17"}, "2026-04-21", r18.stored_after);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-20");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 334.00, 1e-9);
+    EXPECT_NEAR(r21.rolls[0].opening_price, 322.00, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * (334.00 - 332.20), 1e-9);
+    EXPECT_EQ(r21.stored_after, "NEW");
 }

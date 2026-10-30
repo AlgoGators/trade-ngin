@@ -1,10 +1,10 @@
 // tests/core/test_time_utils_parse.cpp
 //
-// E2-F22: a timestamptz read back from a UTC session must round-trip exactly on ANY host.
-// std::mktime interpreted the broken-down UTC time as host-local, so on a New York host a
-// loaded position timestamp came back +5 h; the T-1 rewrite persisted the shift, and four
-// rewrites (a holiday adjacent to a weekend) walked the row across midnight onto the next
-// date, where the date-keyed DELETE replaced that day's rows with a copy of T-1's.
+// A timestamptz read back from a UTC session must round-trip exactly on ANY host.
+// Read as host-local (std::mktime), a loaded position timestamp on a New York host comes
+// back +5 h; the T-1 rewrite persists the shift, and four rewrites (a holiday adjacent to a
+// weekend) walk the row across midnight onto the next date, where the date-keyed DELETE
+// replaces that day's rows with a copy of T-1's.
 
 #include <gtest/gtest.h>
 
@@ -74,15 +74,15 @@ TEST(TimeUtilsParse, MalformedStringIsRejected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-12 / C-1 C8 -- the data-freshness guard.
+// The data-freshness guard.
 //
-// It used to take the GLOBAL MAX bar timestamp across every loaded bar, so a
-// single symbol printing today reported the whole feed as current no matter how
-// far behind the other 851 were. It also treated an empty load as "nothing to
-// check" and measured staleness by instant subtraction rather than calendar
-// days between UTC date keys.
+// The stalest symbol decides, not the GLOBAL MAX bar timestamp across every loaded
+// bar (a single symbol printing today would report the whole feed as current no
+// matter how far behind the other 851 were). An empty load is maximally stale, not
+// "nothing to check", and staleness is measured in calendar days between UTC date
+// keys, not by instant subtraction.
 //
-// Lives in this file because all three defects are UTC/calendar-date defects and
+// Lives in this file because all three rules are UTC/calendar-date rules and
 // ForceTimezone above is what proves the last of them.
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -167,16 +167,17 @@ TEST(FeedFreshness, TheCountIsTheSameOnAnyHostTimezone) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// E3 "mktime sites" -- the two CALENDAR-DATE parses in the equity runner.
+// The two CALENDAR-DATE parses in the equity runner.
 //
-// apps/strategies/live_equity_mean_reversion.cpp:96 turns the CLI argument
-// (`YYYY-MM-DD`) into the run's target_date, and :1337 turns an ex-date into
-// ex_date-1 for load_positions_by_date. Both went through std::mktime, which
-// reads the broken-down date as LOCAL midnight. Everything downstream then
-// formats it back with gmtime (format_utc_date / safe_gmtime), so on a host at
-// a POSITIVE UTC offset the whole run silently moves to the previous day: the
-// date key written to trading.positions, the T-1 lookup, the dedup ex-date
-// comparison. A New York host hides it (local midnight is 05:00 UTC, same day).
+// apps/strategies/live_equity_mean_reversion.cpp turns the CLI argument
+// (`YYYY-MM-DD`) into the run's target_date, and turns an ex-date into
+// ex_date-1 for load_positions_by_date. Both parse UTC midnight (parse_utc_date).
+// Everything downstream formats the date back with gmtime (format_utc_date /
+// safe_gmtime), so a parse that read the date as LOCAL midnight (std::mktime)
+// would, on a host at a POSITIVE UTC offset, silently move the whole run to the
+// previous day: the date key written to trading.positions, the T-1 lookup, the
+// dedup ex-date comparison. A New York host hides it (local midnight is 05:00 UTC,
+// same day).
 // ──────────────────────────────────────────────────────────────────────────
 
 #include <iomanip>
@@ -268,7 +269,7 @@ TEST(TimeUtilsParse, MalformedCalendarDateIsRejected) {
     EXPECT_FALSE(parse_utc_date("2026-04-06 05:00:00+00", tp));
 }
 
-// T-8a (2): one row per UTC date, the last of consecutive rows that share it.
+// One row per UTC date, the last of consecutive rows that share it.
 TEST(TimeUtilsLastRowPerUtcDate, KeepsTheLastRowOfEachRepeatedDateAndCountsTheRest) {
     using Row = std::pair<std::string, double>;
     const std::vector<Row> rows = {{"2026-04-24", 1.0}, {"2026-04-25", 2.0}, {"2026-04-25", 3.0},

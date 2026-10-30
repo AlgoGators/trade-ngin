@@ -8,7 +8,7 @@ namespace trade_ngin {
 
 /**
  * @brief The contracts the Symbols Reference lists: the book's positions plus every contract any
- *        sleeve holds (T-EMAIL, N4). A contract the sleeves hold in opposite directions nets to
+ *        sleeve holds. A contract the sleeves hold in opposite directions nets to
  *        zero in the book's map, and the book's own entry for it is a zero row: it is replaced by
  *        the sleeve's, so the contract is listed.
  *

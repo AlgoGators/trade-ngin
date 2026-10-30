@@ -5,7 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +16,8 @@
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/data/roll_calendar.hpp"
+#include "trade_ngin/live/live_listing_guard.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/optimization/one_pass.hpp"
 
@@ -235,6 +239,215 @@ TEST(ListingDates, PredecessorsAreAddedOnlyToAWindowThatStartsBeforeTheListing) 
     EXPECT_EQ(rule.stored_symbols(with), symbols);
 }
 
+// GC.v.0 and SI.v.0 keep stored rows of their own (the gold and silver micros'
+// grid before the listing). While MGC.v.0 and SIL.v.0 are stored, the pair is one instrument and the
+// predecessor is not in the run's universe; a window starting before the listing adds it back. A
+// predecessor whose listed contract is not stored stays, and with nothing declared nothing moves.
+TEST(ListingDates, AStoredPredecessorIsCarriedByItsStoredListedContract) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    const std::vector<std::string> stored = {"6A.v.0", "GC.v.0", "MES.v.0", "MGC.v.0", "SI.v.0", "SIL.v.0"};
+    EXPECT_EQ(rule.run_universe(stored), stored);
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"MGC", "GC", "2010-10-04", 10.0}, {"SIL", "SI", "2013-06-17", 5.0}});
+    std::vector<std::string> dropped;
+    const auto universe = rule.run_universe(stored, &dropped);
+    EXPECT_EQ(universe, (std::vector<std::string>{"6A.v.0", "MES.v.0", "MGC.v.0", "SIL.v.0"}));
+    EXPECT_EQ(dropped, (std::vector<std::string>{"GC.v.0", "SI.v.0"}));
+    using std::chrono::sys_days;
+    using namespace std::chrono_literals;
+    EXPECT_EQ(rule.predecessor_symbols(universe, sys_days{2010y / 10 / 23}),
+              (std::vector<std::string>{"ES.v.0", "SI.v.0"}));  // MGC listed before the window
+    EXPECT_TRUE(rule.predecessor_symbols(universe, sys_days{2024y / 8 / 21}).empty());
+    // SIL not stored: SI stays, GC still goes
+    const std::vector<std::string> no_sil = {"GC.v.0", "MGC.v.0", "SI.v.0"};
+    EXPECT_EQ(rule.run_universe(no_sil), (std::vector<std::string>{"MGC.v.0", "SI.v.0"}));
+    // the guard judges the run's universe: no refusal for the carried GC.v.0, one for a lone SI.v.0
+    const std::unordered_map<std::string, Position> none;
+    EXPECT_TRUE(live_listing_refusals(rule.contracts(), universe, none, "2026-10-22").empty());
+    EXPECT_EQ(live_listing_refusals(rule.contracts(), rule.run_universe(no_sil), none, "2026-10-22").size(), 1u);
+}
+
+namespace {
+Bar dated(const std::string& symbol, const std::string& date, double close, double volume,
+          std::optional<RollFrom> roll_from = std::nullopt) {
+    Bar b(std::chrono::sys_days{contract_rolls::parse_ymd(date)}, close, close, close, close, volume,
+          symbol);
+    b.roll_from = std::move(roll_from);
+    return b;
+}
+}  // namespace
+
+// A predecessor still holds the full-size contract, so
+// its copied bars carry the full-size contract's own volume for the cost feed (Bar::cost_volume).
+// SIL (the full-size grid kind, change 2013-06-17): before the change the copy IS SIN3's bar, so
+// none is set; the change bar and the bars after it carry SIN3's volume from the change marker;
+// a copy with no marker (SIN3 printed nothing) keeps the last full-size volume, stale. The listed
+// symbol's own rows and every other symbol's are untouched.
+TEST(ListingDates, APredecessorsCopiesCarryTheFullSizeContractsVolumeFromTheChangeOn) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"SIL", "SI", "2013-06-17", 5.0}});
+    std::vector<Bar> bars = {
+        dated("SIL.v.0", "2013-06-13", 21.90, 31000.0),  // SIN3's own bar (the full-size grid)
+        dated("SIL.v.0", "2013-06-14", 21.985, 33000.0),
+        dated("ZN.v.0", "2013-06-14", 126.0, 900000.0),
+        dated("SIL.v.0", "2013-06-17", 21.80, 20.0,
+              RollFrom{21.83, "113863", RollFromKind::SOURCE_CHANGE, "2013-06-17", 26000.0}),
+        dated("SIL.v.0", "2013-06-18", 21.60, 30.0,
+              RollFrom{21.625, "113863", RollFromKind::AFTER_SOURCE_CHANGE, "2013-06-17", 24211.0}),
+        dated("SIL.v.0", "2013-06-19", 19.61, 6.0),  // no marker: SIN3 printed nothing
+    };
+    const std::vector<Bar> stored = bars;
+    rule.add_predecessor_bars({"SIL.v.0", "SI.v.0", "ZN.v.0"}, bars);
+    ASSERT_EQ(bars.size(), stored.size() + 5);
+    for (size_t i = 0; i < stored.size(); ++i) {
+        EXPECT_FALSE(bars[i].cost_volume.has_value()) << "a stored row is not touched: " << i;
+        EXPECT_EQ(bars[i].volume, stored[i].volume);
+    }
+    std::map<std::string, const Bar*> copy;
+    for (size_t i = stored.size(); i < bars.size(); ++i) {
+        EXPECT_EQ(bars[i].symbol, "SI.v.0");
+        copy[ymd(bars[i].timestamp)] = &bars[i];
+    }
+    EXPECT_FALSE(copy.at("2013-06-13")->cost_volume.has_value()) << "SIN3's own bar: its own volume";
+    EXPECT_FALSE(copy.at("2013-06-14")->cost_volume.has_value());
+    EXPECT_EQ(copy.at("2013-06-17")->cost_volume, std::optional<double>(26000.0)) << "SIN3's, not SILU3's 20";
+    EXPECT_EQ(copy.at("2013-06-18")->cost_volume, std::optional<double>(24211.0)) << "SIN3's, not SILU3's 30";
+    EXPECT_EQ(copy.at("2013-06-19")->cost_volume, std::optional<double>(24211.0))
+        << "no full-size bar: the last full-size volume, one bar stale";
+    EXPECT_EQ(copy.at("2013-06-17")->volume, 20.0) << "the copied bar's own volume is not changed";
+    EXPECT_EQ(copy.at("2013-06-18")->volume, 30.0) << "the classifier and the strategies still read SILU3's own";
+}
+
+// The equity micros (the micro's own .v.0 carries the full-size bars until 2026-02-22): the
+// predecessor's copy at the 2019 listing is ESM9's own bar, so none is set; from the vendor's change
+// the change marker's ESH6 volume. A pair whose listed root has no micro alias: none, ever.
+TEST(ListingDates, TheEquityMicrosPredecessorReadsItsOwnVolumeUntilTheChangeAndNoAliasSetsNone) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"TMIC", "TBIG", "2019-05-06", 10.0}});
+    std::vector<Bar> bars = {
+        dated("MES.v.0", "2019-05-06", 2950.0, 1500000.0),  // ESM9's own bar
+        dated("MES.v.0", "2026-02-23", 6857.25, 900000.0,
+              RollFrom{6857.25, "42140878", RollFromKind::SOURCE_CHANGE, "2026-02-23", 1600000.0}),
+        dated("TMIC.v.0", "2026-02-23", 100.0, 50.0,
+              RollFrom{100.0, "x", RollFromKind::SOURCE_CHANGE, "2026-02-23", 7000.0}),
+    };
+    const size_t stored = bars.size();
+    rule.add_predecessor_bars({"MES.v.0", "ES.v.0", "TMIC.v.0", "TBIG.v.0"}, bars);
+    ASSERT_EQ(bars.size(), stored + 3);
+    EXPECT_EQ(bars[stored].symbol, "ES.v.0");
+    EXPECT_FALSE(bars[stored].cost_volume.has_value()) << "2019: ESM9's own bar";
+    EXPECT_EQ(bars[stored + 1].cost_volume, std::optional<double>(1600000.0)) << "ESH6's, not MESH6's";
+    EXPECT_EQ(bars[stored + 2].symbol, "TBIG.v.0");
+    EXPECT_FALSE(bars[stored + 2].cost_volume.has_value()) << "TMIC has no micro alias";
+}
+
+// The equity micros' reverse case: MES.v.0 carries ESM9's bars at its
+// 2019-05-06 listing, with MESM9's own volume along (Bar::own_contract_volume). The listing date's
+// bar and the Sunday stub before it (the cost feed merges it into Monday) price MES's own legs on
+// MESM9's volume (cost_volume); no other bar, and none of the predecessor ES.v.0's copies, which are
+// ESM9's own bars. Without the predecessor in the run (a window starting after the listing) nothing.
+TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSession) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}});
+    auto with_own = [](Bar b, std::optional<double> own) {
+        b.own_contract_volume = own;
+        return b;
+    };
+    const std::vector<Bar> stored = {
+        with_own(dated("MES.v.0", "2019-05-03", 2949.25, 1229868.0), std::nullopt),  // Friday, no MESM9 yet
+        with_own(dated("MES.v.0", "2019-05-05", 2895.25, 137577.0), 787.0),          // the Sunday stub
+        with_own(dated("MES.v.0", "2019-05-06", 2918.0, 1865666.0), 162154.0),       // the listing date
+        with_own(dated("MES.v.0", "2019-05-07", 2884.75, 2702695.0), 245769.0),
+    };
+    std::vector<Bar> bars = stored;
+    rule.add_predecessor_bars({"MES.v.0"}, bars);  // the window starts after the listing: no ES
+    ASSERT_EQ(bars.size(), stored.size());
+    for (const auto& b : bars) EXPECT_FALSE(b.cost_volume.has_value()) << ymd(b.timestamp);
+    bars = stored;
+    rule.add_predecessor_bars({"MES.v.0", "ES.v.0"}, bars);
+    ASSERT_EQ(bars.size(), 2 * stored.size());
+    EXPECT_FALSE(bars[0].cost_volume.has_value());
+    EXPECT_EQ(bars[1].cost_volume, std::optional<double>(787.0)) << "the stub merged into the listing session";
+    EXPECT_EQ(bars[2].cost_volume, std::optional<double>(162154.0)) << "MESM9's own, not ESM9's 1,865,666";
+    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session the series volume stands";
+    for (size_t i = 0; i < stored.size(); ++i) EXPECT_EQ(bars[i].volume, stored[i].volume);
+    for (size_t i = stored.size(); i < bars.size(); ++i) {
+        EXPECT_EQ(bars[i].symbol, "ES.v.0");
+        EXPECT_FALSE(bars[i].cost_volume.has_value()) << "ES's legs on ESM9's own bar";
+        EXPECT_FALSE(bars[i].own_contract_volume.has_value());
+    }
+}
+
+// The pairs a run refuses on the stored symbol list. MGC and SIL
+// declared with GC.v.0 and SI.v.0 stored but not MGC.v.0 and SIL.v.0 (part B missing): GC and SI would
+// read no bars, refused. The full-size grid pairs with per_contract_rolls off: refused. The equity
+// pairs run either way (ES.v.0 not stored, MES.v.0 stored; not the full-size grid kind), and nothing
+// declared refuses nothing.
+TEST(ListingDates, APairWithoutItsListedRowsOrWithoutThePerContractSourceIsRefused) {
+    Guard guard;
+    auto& rule = ListingDates::instance();
+    const std::vector<std::string> part_a_only = {"GC.v.0", "MES.v.0", "SI.v.0", "ZN.v.0"};
+    const std::vector<std::string> part_b = {"GC.v.0", "MES.v.0", "MGC.v.0", "SI.v.0", "SIL.v.0", "ZN.v.0"};
+    EXPECT_TRUE(rule.refusals(part_a_only, true).empty()) << "nothing declared";
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}});
+    EXPECT_TRUE(rule.refusals(part_a_only, true).empty());
+    EXPECT_TRUE(rule.refusals(part_a_only, false).empty()) << "the equity pairs run with the switch off";
+    rule.set({{"MES", "ES", "2019-05-06", 10.0}, {"MGC", "GC", "2010-10-04", 10.0}, {"SIL", "SI", "2013-06-17", 5.0}});
+    const auto missing = rule.refusals(part_a_only, true);
+    ASSERT_EQ(missing.size(), 2u);
+    EXPECT_NE(missing[0].find("LISTING_REFUSED MGC"), std::string::npos) << missing[0];
+    EXPECT_NE(missing[0].find("GC.v.0 is stored and MGC.v.0 is not"), std::string::npos) << missing[0];
+    EXPECT_NE(missing[1].find("LISTING_REFUSED SIL"), std::string::npos) << missing[1];
+    EXPECT_TRUE(rule.refusals(part_b, true).empty()) << "part B loaded, the switch on: runs";
+    const auto off = rule.refusals(part_b, false);
+    ASSERT_EQ(off.size(), 2u);
+    EXPECT_NE(off[0].find("per_contract_rolls is off"), std::string::npos) << off[0];
+    EXPECT_NE(off[1].find("LISTING_REFUSED SIL"), std::string::npos) << off[1];
+    EXPECT_EQ(rule.refusals(part_a_only, false).size(), 4u) << "both, for both pairs";
+    EXPECT_TRUE(rule.refusals({"ZN.v.0"}, true).empty()) << "neither contract of a pair stored: nothing to read";
+}
+
+// The reverse of the refusals above. A micro of the code's alias
+// table stored beside its full-size root with no pair declared refuses (the run would trade GC and
+// MGC side by side). Nothing valid is refused: a copy of production that stores no ES, NQ, YM
+// or RTY .v.0 (the equity micros run with or without their pairs), the conservative template's
+// symbols on tune_base (no micro metals), and fill_mm's symbols with both metal pairs declared.
+TEST(ListingDates, AMicroStoredBesideItsFullSizeRootWithoutAPairIsRefused) {
+    Guard guard;
+    const std::vector<ListedContract> equity = {{"MES", "ES", "2019-05-06", 10.0}, {"MNQ", "NQ", "2019-05-06", 10.0},
+                                                {"MYM", "YM", "2019-05-06", 10.0}, {"M2K", "RTY", "2019-05-06", 10.0}};
+    std::vector<ListedContract> metals = equity;
+    metals.push_back({"MGC", "GC", "2010-10-04", 10.0});
+    metals.push_back({"SIL", "SI", "2013-06-17", 5.0});
+    const std::vector<std::string> tune_base = {"6A.v.0", "GC.v.0", "M2K.v.0", "MES.v.0", "MNQ.v.0", "MYM.v.0", "SI.v.0", "ZN.v.0"};
+    std::vector<std::string> fill_mm = tune_base;
+    fill_mm.push_back("MGC.v.0");
+    fill_mm.push_back("SIL.v.0");
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(tune_base, {}).empty()) << "no ES/NQ/YM/RTY .v.0, no micro metals";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(tune_base, equity).empty()) << "the conservative template";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals(fill_mm, metals).empty()) << "fill_mm with both pairs set";
+    const auto none = ListingDates::unpaired_micro_refusals(fill_mm, {});
+    ASSERT_EQ(none.size(), 2u) << "MGC and SIL stored beside GC and SI, no pairs (gate 5's base book)";
+    EXPECT_NE(none[0].find("LISTING_REFUSED MGC: MGC.v.0 and GC.v.0 are both stored"), std::string::npos) << none[0];
+    EXPECT_NE(none[0].find("{\"symbol\": \"MGC\", \"before\": \"GC\""), std::string::npos) << none[0];
+    EXPECT_NE(none[1].find("LISTING_REFUSED SIL: SIL.v.0 and SI.v.0"), std::string::npos) << none[1];
+    EXPECT_EQ(ListingDates::unpaired_micro_refusals(fill_mm, equity).size(), 2u) << "the equity pairs alone";
+    std::vector<ListedContract> gold_only = equity;
+    gold_only.push_back({"MGC", "GC", "2010-10-04", 10.0});
+    const auto silver = ListingDates::unpaired_micro_refusals(fill_mm, gold_only);
+    ASSERT_EQ(silver.size(), 1u);
+    EXPECT_NE(silver[0].find("LISTING_REFUSED SIL"), std::string::npos) << silver[0];
+    // a full-size equity root stored beside its micro, unpaired: refused the same way
+    const auto es = ListingDates::unpaired_micro_refusals({"ES.v.0", "MES.v.0"}, {});
+    ASSERT_EQ(es.size(), 1u);
+    EXPECT_NE(es[0].find("MES.v.0 and ES.v.0 are both stored"), std::string::npos) << es[0];
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals({"GC.v.0", "SI.v.0"}, {}).empty()) << "no micro stored";
+    EXPECT_TRUE(ListingDates::unpaired_micro_refusals({"MGC.v.0"}, {}).empty()) << "no full-size root stored";
+}
+
 // The predecessor's bars and vendor ids are the rows stored under the listed contract's symbol,
 // handed on unchanged under its own symbol, after the stored rows and in their order.
 TEST(ListingDates, ThePredecessorReadsTheRowsStoredUnderTheListedSymbol) {
@@ -381,7 +594,7 @@ TEST(ListingDates, SleeveSwitchesContractOnTheListingDateAndKeepsTheHistory) {
 }
 
 // A held E-mini at the switch: on the listing date's rebalance the sleeve's answers make the
-// predecessor a close-out (one fill to flat, LOOP_SPEC section 6.2) and the micro a free row opened
+// predecessor a close-out (one fill to flat) and the micro a free row opened
 // from flat, in the one pass the engine runs.
 TEST(ListingDates, AHeldPredecessorIsClosedAndTheMicroOpenedOnTheListingDatesRebalance) {
     Guard guard;
@@ -448,7 +661,7 @@ TEST(ListingDates, AHeldPredecessorIsClosedAndTheMicroOpenedOnTheListingDatesReb
     }
 }
 
-// ---- the switch day: an exact conversion (HD 2026-10-08) ----
+// ---- the switch day: an exact conversion ----
 
 namespace {
 ListingLegCost test_cost(const std::string& symbol, double signed_qty, double price) {
@@ -567,7 +780,7 @@ TEST(ListingDates, ConvertAFlatPositionDoesNothing) {
 }
 
 // Rule open_at_target: the predecessor is closed and the micro opened at its rounded target whatever
-// was held: HD's cases (0.2 of an E-mini against none held; 0.6 against one held; a short; near zero).
+// was held: the cases 0.2 of an E-mini against none held; 0.6 against one held; a short; near zero.
 TEST(ListingDates, OpenAtTargetIgnoresWhatWasHeld) {
     const auto rule = ListingSwitchRule::kOpenAtTarget;
     ListingSwitch p = plan_listing_switch(rule, 10.0, 0.0, 0.0, 2.0, 40.0);  // target 0.2 E-mini, held 0
@@ -962,4 +1175,30 @@ TEST(ListingDates, TheEquitySlowRuleRulesThePredecessorThroughItsListedContract)
     EXPECT_TRUE(data.at(kBig).slow_rule_zeroed) << "the predecessor is ruled as its listed contract is";
     EXPECT_EQ(data.at(kBig).current_forecast, 0.0);
     EXPECT_EQ(sleeve.target(kBig), 0.0);
+}
+
+// With per_contract_rolls on the declared relabels are not read (the rule names the micros' change
+// as one alias roll): the runners install relabels_read's list, so a bar carrying the new id keeps it and
+// the per-contract roll on the change bar stays an id change. With the switch off the declared list is
+// read.
+TEST(InstrumentIdRelabel, TheSwitchOnReadsNoRelabel) {
+    const std::vector<InstrumentIdRelabel> declared = {{"MES", "2026-02-22", "42140878", "42003800"},
+                                                       {"M2K", "2026-02-22", "42005017", "42002147"}};
+    EXPECT_TRUE(relabels_read(declared, true).empty());
+    const auto off = relabels_read(declared, false);
+    ASSERT_EQ(off.size(), 2u);
+    EXPECT_EQ(off[1].symbol, "M2K");
+    EXPECT_EQ(off[1].to, "42002147");
+    EXPECT_TRUE(relabels_read({}, false).empty());
+    EXPECT_EQ(relabels_not_read_line(declared),
+              "INSTRUMENT_ID_RELABELS not read: per_contract_rolls is on and the rule rolls each change (trigger "
+              "alias): MES 2026-02-22 42140878 -> 42003800; M2K 2026-02-22 42005017 -> 42002147;");
+    using namespace std::chrono;
+    auto& rule = ListingDates::instance();
+    for (const bool on : {true, false}) {
+        rule.set_relabels(relabels_read(declared, on));
+        EXPECT_EQ(rule.read_id("MES.v.0", sys_days{2026y / 2 / 23}, "42003800"), on ? "42003800" : "42140878") << on;
+        EXPECT_EQ(rule.has_relabels(), !on);
+    }
+    rule.set_relabels({});
 }

@@ -10,7 +10,7 @@ namespace trade_ngin {
 namespace core {
 
 /**
- * What the report says about its charts (T-EMAIL P2-2, HD ruling Q2).
+ * What the report says about its charts.
  *
  * A chart that is not in the report is named there in one line with the reason, so a reader
  * never has to guess whether a chart is missing: "Equity Curve: not shown (the chart program did

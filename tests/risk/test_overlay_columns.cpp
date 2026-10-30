@@ -1,10 +1,9 @@
 // tests/risk/test_overlay_columns.cpp
 //
-// The six overlay columns of trading.live_results (migration 036; HD 2026-10-10; the lead's ten
-// rulings): which cells have a value, the one-day VaR's formula, the signed net leverage, and
-// where the runners take them from. The readings themselves are the overlay's
-// (tests/risk/test_overlay.cpp) and the accessor's equality with the pass is
-// OnePassBookTest.TheOverlaysReadingsOfTheStoredBookAreThePassesToTheBit.
+// The six overlay columns of trading.live_results (migration 036): which cells have a value, the
+// one-day VaR's formula, the signed net leverage, and where the runners take them from. The
+// readings themselves are the overlay's (tests/risk/test_overlay.cpp) and the accessor's equality
+// with the pass is OnePassBookTest.TheOverlaysReadingsOfTheStoredBookAreThePassesToTheBit.
 
 #include <gtest/gtest.h>
 

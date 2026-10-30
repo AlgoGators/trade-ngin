@@ -147,7 +147,7 @@ public:
     /**
      * @brief Create market data object from bar data
      * @param data Bar data to convert
-     * @param adjusted T-ROLLX (LOOP_SPEC v6.1 section 2.3): the adjusted levels the return rows
+     * @param adjusted The adjusted levels the return rows
      *        read, r = (A_t - A_prev) / P_prev over consecutive timestamps of `data`; when null
      *        they are built from `data`'s own bars (each bar's instrument_id). The gate passes the
      *        levels of its whole window so a switch on a date its F5 filter drops is still a
@@ -155,11 +155,18 @@ public:
      * @return MarketData object
      */
     MarketData create_market_data(const std::vector<Bar>& data,
-                                  const AdjustedLevels* adjusted = nullptr);
+                                  const AdjustedLevels* adjusted = nullptr,
+                                  const AdjustedLevels* resolved = nullptr);
 
     /// The adjusted levels of every symbol's bars in `data` (one level per (symbol, timestamp);
     /// a repeated timestamp keeps the last bar, as create_market_data's price map does).
     static AdjustedLevels adjusted_levels_of(const std::vector<Bar>& data);
+
+    /// The bars of `data` whose close the next return divides by is another one: a
+    /// vendor switch bar the next bar confirms divides as the target's close
+    /// (roll_series::return_bases). Only those bars; empty when no bar carries a roll field.
+    /// create_market_data's `resolved` (built from `data` itself when null) divides by them.
+    static AdjustedLevels base_closes_of(const std::vector<Bar>& data);
 
     /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
     /// valued exactly as process_positions values it (average price x contract multiplier, over

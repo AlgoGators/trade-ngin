@@ -79,13 +79,12 @@ struct LoggerConfig : public ConfigBase {
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
     /**
-     * Optional sub-directory of `log_directory` for this session's files (drift-F).
+     * Optional sub-directory of `log_directory` for this session's files.
      *
-     * EMPTY by default, which is exactly the previous behaviour. A replay sets it to the
+     * EMPTY by default: the files go in `log_directory` itself. A replay sets it to the
      * date being replayed, so `logs/2026-04-17/` holds that date's run and the retention
-     * budget below is spent per date instead of globally: a 126-day chain used to leave
-     * eight files behind and every dividend-applying run in the middle of it was
-     * unreconcilable after the fact.
+     * budget below is spent per date instead of globally, which keeps every run of a long
+     * replay chain on disk.
      */
     std::string log_subdirectory{};
     std::string filename_prefix{"trade_ngin"};  // Prefix for log files
@@ -95,10 +94,9 @@ struct LoggerConfig : public ConfigBase {
     /**
      * Maximum number of log files to keep -- counting only files this logger WROTE, i.e.
      * those named exactly `<filename_prefix>_YYYYMMDD_HHMMSS_partN.log` in this session's own
-     * directory (drift-F). Rotation used to delete the oldest file of ANY name in
-     * `log_directory`, so with nine prefixes sharing `logs/` a futures session evicted the
-     * equity session's evidence and vice versa; the budget was global where the retention
-     * question is per runner.
+     * directory. Deleting the oldest file of ANY name in `log_directory` would, with nine
+     * prefixes sharing `logs/`, let a futures session evict the equity session's evidence
+     * and vice versa; the retention question is per runner.
      *
      * The match is the whole filename, not `starts_with(filename_prefix)`: the prefixes NEST.
      * `live_trend` is a prefix of `live_trend_conservative` and `bt_portfolio` of
@@ -263,14 +261,13 @@ private:
     /**
      * @brief The calling thread's component name, for the "[Component] " prefix.
      *
-     * E2-F61. This used to be `static thread_local std::string
-     * current_component_`. A thread_local with a non-trivial destructor is
-     * destroyed alongside the static objects at process exit, in an order
-     * nothing here controls -- and PostgresDatabase::disconnect() logs
+     * It is a pointer, not a `static thread_local std::string`. A thread_local with
+     * a non-trivial destructor is destroyed alongside the static objects at process
+     * exit, in an order nothing here controls -- and PostgresDatabase::disconnect() logs
      * "Disconnected from PostgreSQL database" from a DatabasePool that is itself
-     * a static. When the string went first, format_message() read a destroyed
-     * std::string and printed its freed bytes in front of the message. Undefined
-     * behaviour, visible as garbage on every runner's last log line.
+     * a static. If the string went first, format_message() would read a destroyed
+     * std::string and print its freed bytes in front of the message: undefined
+     * behaviour, visible as garbage on a runner's last log line.
      *
      * The pointer here is trivially destructible, so it has no destructor to
      * run and the storage stays valid for the whole thread. What it points at is

@@ -17,6 +17,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -46,13 +47,12 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
-    // LOOP_SPEC section 4: the sleeve whose own series feed the risk overlay (the book's FIRST
-    // sleeve) and that sleeve's risk target tau, the unit the overlay's three risk limits are
-    // ratios to. Empty and 0: the book supplies no overlay inputs, and its risk modules read the
-    // book as they did before.
+    // The sleeve whose own series feed the risk overlay (the book's FIRST sleeve) and that
+    // sleeve's risk target tau, the unit the overlay's three risk limits are ratios to. Empty
+    // and 0: the book supplies no overlay inputs, and its risk modules read the book itself.
     std::string overlay_sleeve;
     double overlay_tau{0.0};
-    // LOOP_SPEC sections 5.2, 5.3, 6.4 and 12, the one pass's constants on a book that names an
+    // The one pass's constants on a book that names an
     // overlay sleeve: the per-name cap L on the sizing capital, the deferral band (a sign close
     // waits while |F| is below it), B_sigma's floor as a ratio to tau and the most contracts the
     // trim removes in a day. The search's cost multiplier and the floor on its pass cap are
@@ -60,39 +60,42 @@ struct PortfolioConfig : public ConfigBase {
     double per_name_cap{2.0};
     double sign_close_band{2.0};
     double b_sigma_floor{0.05};
+    // The overlay's covariance (risk.json's carver module overlay_covariance): false is "sample",
+    // true is "carver" (overlay::carver_covariance).
+    bool overlay_carver{false};
     int trim_max{5};
-    // LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run
+    // The design keys a futures book records with every run
     // (to_json below): how the book is sized and the equity slow rule of its first sleeve, as its
     // files state them (portfolio/loop_config.hpp fills both).
     std::string sizing_mode;
     std::vector<std::string> equity_slow_symbols;
     std::vector<std::pair<int, int>> equity_slow_pairs;
-    // The risk modules this book runs, portfolio scope, in evaluation order. There is
-    // no boolean any more: a book that runs no risk layer carries a single `none`
-    // assignment naming who ruled it and when, and an EMPTY list is a configuration
-    // mistake the constructor throws on rather than a book that quietly runs ungated.
+    // The risk modules this book runs, portfolio scope, in evaluation order. A book that
+    // runs no risk layer carries a single `none` assignment naming who ruled it and when,
+    // and an EMPTY list is a configuration mistake the constructor throws on rather than a
+    // book that quietly runs ungated.
     std::vector<RiskModuleConfig> risk_modules;
     // Per strategy id, that sleeve's own modules. Empty on every shipped book.
     std::map<std::string, std::vector<RiskModuleConfig>> sleeve_risk_modules;
     // Whether a fractional target quantity is a legitimate end state for this
     // portfolio. Futures trade whole contracts and leave this false, so the
-    // optimizer/risk loop keeps iterating until positions are integral, exactly
-    // as it always has. Equities with fractional shares enabled set it true:
-    // there is nothing to converge to, and re-entering the loop would re-apply
-    // the risk scale to an already-scaled book (see E2-F1).
+    // optimizer/risk loop keeps iterating until positions are integral.
+    // Equities with fractional shares enabled set it true: there is nothing to
+    // converge to, and re-entering the loop would re-apply the risk scale to an
+    // already-scaled book.
     bool allow_fractional_positions{false};
     // How many daily closes per symbol the PortfolioManager keeps for the optimiser's
     // covariance (portfolio.json "covariance_history_prices"; absent means 756). The PM
     // records one close per symbol per date from the bars it is fed and drops the oldest
     // date first once a symbol holds more than this. 756 is the trend sleeve's own history
     // cap (max(vol_lookback_long, 756)), so a single-sleeve trend book covaries the prices
-    // it always did. Fewer than 2 cannot give a return and is refused (loader and
+    // its sleeve holds. Fewer than 2 cannot give a return and is refused (loader and
     // constructor). Not written by to_json(): that object is stored verbatim in
     // backtest.run_metadata.portfolio_config.
     size_t covariance_history_prices{756};
     // How many dates of the UNION of the covariance participants' dates a participant's last
     // close may trail the newest such date before the optimiser leaves it out of the date
-    // intersection (portfolio.json "covariance_stale_dates"; absent means 5; T-7b-1 7d). A
+    // intersection (portfolio.json "covariance_stale_dates"; absent means 5). A
     // participant left out gets the guarded 0.01 variance column. Not written by to_json(), for
     // the reason covariance_history_prices is not.
     size_t covariance_stale_dates{5};
@@ -118,15 +121,14 @@ struct PortfolioConfig : public ConfigBase {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         // risk_modules is deliberately absent: this object is stored verbatim in
-        // backtest.run_metadata.portfolio_config, and T-6a's declared diff is deletions
-        // only. The module list is recorded there by T-7 item 10, through describe().
+        // backtest.run_metadata.portfolio_config. The module list is recorded there
+        // through describe().
         j["allow_fractional_positions"] = allow_fractional_positions;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
-        // LOOP_SPEC section 7.5.1: a book that names an overlay sleeve records the loop's design
-        // keys, and none of the retired ones. A book with no overlay sleeve writes the object it
-        // always wrote.
+        // A book that names an overlay sleeve records the loop's design keys, and none of the
+        // retired ones. A book with no overlay sleeve writes the object above as it stands.
         if (!overlay_sleeve.empty()) {
             auto& opt = j["opt_config"];
             for (const char* retired : {"tau", "asymmetric_risk_buffer", "buffer_size_factor"}) {
@@ -146,6 +148,9 @@ struct PortfolioConfig : public ConfigBase {
                 risk["R_shock_max"] = carver->r_shock_max;
             }
             risk["per_name_cap"] = per_name_cap;
+            // Recorded only when it is not "sample", so a sample book stores the object it stored
+            // before the rule became a key.
+            if (overlay_carver) risk["overlay_covariance"] = "carver";
             risk["trim_max"] = trim_max;
             j["sizing_mode"] = sizing_mode;
             nlohmann::json pairs = nlohmann::json::array();
@@ -219,7 +224,7 @@ public:
      * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
      * @param session_symbols Optional: the symbols whose bar in `data` is a SESSION (the futures
      *        backtest passes it). On a book that names an overlay sleeve a symbol NOT in it joins
-     *        the hold set of the rebalance (LOOP_SPEC section 6.1): its row is fixed at the held
+     *        the hold set of the rebalance: its row is fixed at the held
      *        quantity, never opened, searched, trimmed or filled. A book with no overlay sleeve
      *        does not read it.
      * @return Result indicating success or failure
@@ -230,11 +235,11 @@ public:
         const std::unordered_set<std::string>* session_symbols = nullptr);
 
     /**
-     * @brief The capital the book is sized on from the next process_market_data (T-7b-2 9c,
-     *        HD 2026-09-25: compounding, sizing on current equity).
+     * @brief The capital the book is sized on from the next process_market_data (compounding,
+     *        sizing on current equity).
      *
-     * Every sizing input moves together (T-4c's W-B rule: a capital change that moves the
-     * strategies but not the gate or the optimizer changes what the leverage limit means):
+     * Every sizing input moves together (a capital change that moves the strategies but not
+     * the gate or the optimizer changes what the leverage limit means):
      * each strategy's capital becomes capital x its allocation (the position line, the buffer
      * width's Carver term and the notional concentration cap all read it); the optimizer's
      * weight per contract is notional / capital; every risk module is handed the capital
@@ -314,7 +319,7 @@ public:
      * timestamps, and cost fields. Idempotent at the per-call level; not
      * deduped across calls.
      */
-    /// T-ROLLX (section 6.5): inserts the ROLL legs of a confirming bar AHEAD of that bar's
+    /// Inserts the ROLL legs of a confirming bar AHEAD of that bar's
     /// STRATEGY fills (at `index`, the sleeve's execution count before the bar) so the stored
     /// order is closing leg, opening leg, then the day's fills; returns the index used.
     size_t insert_executions_at(const std::string& strategy_id, size_t index,
@@ -343,7 +348,7 @@ public:
      * @brief This manager's own cost model: it prices the one pass's cost vector (the cost of one
      *        contract of every symbol the pass weighs) and the executions this manager generates.
      *
-     * H-2 (T-7b-1 C8d): the backtest feeds it through update_cost_manager_market_data; the live
+     * The backtest feeds it through update_cost_manager_market_data; the live
      * futures runners feed it through feed_futures_cost_model (futures_cost_feed.hpp), the same
      * K2 feed as the execution manager's, before process_market_data. Unfed, every entry of the
      * cost vector is priced off the fallbacks (ADV 100,000, vol_mult 1.0).
@@ -353,7 +358,7 @@ public:
     }
 
     /**
-     * @brief Register ADV-tiered equity cost configs on THIS manager's cost model. E2-C9.
+     * @brief Register ADV-tiered equity cost configs on THIS manager's cost model.
      *
      * PortfolioManager owns its own TransactionCostManager, separate from the one
      * BacktestCoordinator holds, and the two cost different things:
@@ -395,7 +400,7 @@ public:
      *
      * get_strategy_positions() returns the sleeves' current TARGETS, which a cycle that generates
      * no executions (the backtest's warm-up) sets without filling them. A consumer that needs the
-     * book HELD at the start of a bar (the roll legs, LOOP_SPEC section 6.5) reads this one: a
+     * book HELD at the start of a bar (the roll legs) reads this one: a
      * target no fill stands behind is not a position, and has nothing to roll.
      */
     std::unordered_map<std::string, std::unordered_map<std::string, Position>>
@@ -455,7 +460,7 @@ public:
     nlohmann::json risk_decisions_json() const;
 
     /**
-     * @brief The last process_market_data call's delivered cut (T-7b-2 C9a, T-VOL C4): the
+     * @brief The last process_market_data call's delivered cut: the
      *        account book's gross notional after lap 1's optimizer step and at the end of the
      *        call, both at one notional per contract per symbol. A copy. Reset at the same
      *        rebalance boundary as last_risk_decisions(). Log only; nothing reads it back.
@@ -485,17 +490,17 @@ public:
     void record_no_pass(const std::string& signal_date, Timestamp cycle, bool is_warmup) const;
 
     /**
-     * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
+     * @brief The same rebalance's delivered cut with final_gross measured on `stored_book` (the
      *        account book the runner actually stores, e.g. after a live runner's BOOK_GATE hold), at the notionals
      *        of the end-of-call measurement; a symbol those did not cover (a position the hold re-inserted) is
-     *        valued by delivered_notional_per_contract now. The lap-1 book is unchanged. Returns
+     *        valued by delivered_notional_per_contract. The lap-1 book is unchanged. Returns
      *        last_delivered_cut() unchanged (every figure na) when no measurement ran.
      */
     DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
 
     /**
-     * @brief The delivered scale of the last one pass, measured on the book the runner STORES
-     *        (LOOP_SPEC sections 7.2 and 10): that book's gross weight over the gross weight of
+     * @brief The delivered scale of the last one pass, measured on the book the runner STORES:
+     *        that book's gross weight over the gross weight of
      *        the capped target the overlay read, both at the pass's own weight per contract (the
      *        raw signal closes), over the pass's participants. A runner step after the pass that
      *        changes a row (the live STRICT roll-back) is therefore in the numerator. A flat
@@ -506,7 +511,7 @@ public:
 
     /**
      * @brief The overlay's readings of the book the runner STORES, on the last one pass's own
-     *        window (LOOP_SPEC section 4; HD 2026-10-10): overlay::readings on that book's
+     *        window: overlay::readings on that book's
      *        weights at the pass's weight per contract, over the pass's participants in their
      *        order, with the pass's gate window and jump sigmas. A book the pass's own stored
      *        book equals reads OnePassDay's five readings to the bit; a runner step after the
@@ -520,15 +525,15 @@ public:
     /**
      * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
      *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
-     *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
+     *        sleeves' execution reports, which are the stored fills only in a backtest.
      */
     void set_backtest_mode(bool is_backtest) {
         is_backtest_ = is_backtest;
     }
 
     /**
-     * @brief The caller's part of the hold set of the next process_market_data (LOOP_SPEC section
-     *        6.1): the symbols whose last verdict is not SESSION and the change-bar symbols (D37).
+     * @brief The caller's part of the hold set of the next process_market_data: the symbols
+     *        whose last verdict is not SESSION and the change-bar symbols.
      *        A held symbol's row is fixed at its held quantity: it is counted in every reading,
      *        never scaled, searched, trimmed or filled. The live futures runners pass the set; the
      *        futures backtest gives it through process_market_data's session_symbols.
@@ -544,7 +549,7 @@ public:
 private:
     PortfolioConfig config_;
     std::string id_;
-    // T-7b-2 9c: what the book is sized on (set_sizing_capital); config_.total_capital, the
+    // What the book is sized on (set_sizing_capital); config_.total_capital, the
     // configured account size, is left as configured. Guarded by mutex_.
     Decimal sizing_capital_{Decimal(0.0)};
 
@@ -569,8 +574,8 @@ private:
     // Scopes whose previous book was actually SEEDED by the runner (update_strategy_position).
     // A REFUSE means "ship yesterday's book", and yesterday's book is only in current_positions
     // if somebody put it there: on a live PM that was never seeded, pinning would ship a FLAT
-    // book and the runner's diff against trading.positions would liquidate (T-6a ADVERSARIAL
-    // A-2). Never cleared: seeding is a fact about the run, not about the rebalance.
+    // book and the runner's diff against trading.positions would liquidate. Never cleared:
+    // seeding is a fact about the run, not about the rebalance.
     std::unordered_set<std::string> seeded_scopes_;
     // process_market_data has run at least once, so the sleeve keys have been checked against the
     // registered strategies (they cannot be checked in the constructor: strategies are added
@@ -621,11 +626,14 @@ private:
     overlay::GateWindow one_pass_window_;
     std::vector<double> one_pass_sigma_jump_;
     /// Per symbol, the raw close and the multiplier the last pass that could weigh it valued it
-    /// on: what a held row that cannot be weighed today is valued at (section 6.1).
+    /// on: what a held row that cannot be weighed today is valued at.
     std::unordered_map<std::string, std::pair<double, double>> one_pass_valued_;
-    /// T-ROLLX: each stored close's vendor instrument id (empty when unknown), the same keys as
+    /// Each stored close's vendor instrument id (empty when unknown), the same keys as
     /// closes_by_date_, so the optimizer's covariance reads the ADJUSTED returns (roll_series.hpp).
     std::unordered_map<std::string, std::map<int64_t, std::string>> ids_by_date_;
+    /// Each stored close's roll field (Bar::roll_from), the same keys; a date with
+    /// none has no entry.
+    std::unordered_map<std::string, std::map<int64_t, RollFrom>> roll_from_by_date_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
     MarketData current_market_data_;
 
@@ -650,10 +658,10 @@ private:
 
     /**
      * @brief The optimizer's cost vector: per symbol, the cost of one contract over that
-     *        contract's notional (F4, T-7b-1 C8d), so |dw| x costs[i] with dw in weight is the
+     *        contract's notional, so |dw| x costs[i] with dw in weight is the
      *        trade's dollar cost as a fraction of capital
      * @param symbols List of symbols to calculate costs for
-     * @param capital Unused since F4 (the entry does not depend on capital); kept for the call
+     * @param capital Unused (the entry does not depend on capital); kept for the call
      * @return Vector of cost_per_contract / notional_per_contract, 0 for a symbol no trend
      *         sleeve holds
      */
@@ -667,13 +675,13 @@ private:
     void update_historical_returns(const std::vector<Bar>& data);
 
     /**
-     * @brief The optimizer's return series, aligned by DATE (T-7a INSERT S3)
+     * @brief The optimizer's return series, aligned by DATE
      * @param closes_by_symbol The symbols in the matrix, each with its date-keyed closes
      * @return Per symbol, its returns between consecutive dates of the INTERSECTION of the
      *         symbols' dates (a date one symbol lacks is dropped for all, and the next return
      *         spans it for every symbol); all non-empty series have the same length. A symbol
      *         with fewer than two usable closes gets an empty series and does not shrink the
-     *         intersection. T-7b-1 7d: a participant whose last usable date trails the newest
+     *         intersection. A participant whose last usable date trails the newest
      *         date of the participants' union by more than config_.covariance_stale_dates dates,
      *         and (while the intersection gives fewer than 20 returns) the participant with the
      *         fewest usable dates, is left out with an empty series and a WARN, so
@@ -685,7 +693,7 @@ private:
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
 
     /**
-     * @brief date_aligned_returns on the ADJUSTED series (T-ROLLX; LOOP_SPEC v6.1 section 2.3)
+     * @brief date_aligned_returns on the ADJUSTED series
      * @param closes_by_symbol The raw closes (the usable dates and the return's denominator)
      * @param adjusted_by_symbol Per symbol, the adjusted level at each of the same dates (the raw
      *        close plus the later contract-switch steps, roll_series::adjusted_levels); a symbol
@@ -703,6 +711,18 @@ private:
      */
     std::unordered_map<std::string, std::map<int64_t, double>> adjusted_closes_by_symbol(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /**
+     * @brief The given closes with every vendor switch bar the next stored bar confirms
+     *        read as the target's close (roll_series::return_bases): the divisors of the
+     *        date-aligned returns. The closes themselves with no roll field stored.
+     */
+    std::unordered_map<std::string, std::map<int64_t, double>> base_closes_by_symbol(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /// The stored ids and roll fields of `symbol` on the dates of `closes`, in date order.
+    void stored_ids_of(const std::string& symbol, const std::map<int64_t, double>& closes,
+                       std::vector<std::string>& ids, roll_series::RollFields& roll_from) const;
 
     /**
      * @brief Calculate covariance matrix from returns
@@ -723,11 +743,11 @@ private:
     // set_hold_set's set, taken (and emptied) by the next process_market_data.
     std::unordered_set<std::string> pending_hold_set_;
 
-    /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
+    /// The risk gate's participants this rebalance (RiskContext::gate_participants),
     /// rebuilt before lap 1 by gate_participants_for_rebalance.
     std::set<std::string> gate_participants_;
-    /// The symbols some sleeve has signalled on an earlier rebalance (LOOP_SPEC section 6.2: a
-    /// symbol nobody signals any more is closed out only if one did).
+    /// The symbols some sleeve has signalled on an earlier rebalance (a symbol nobody signals
+    /// any more is closed out only if one did).
     std::set<std::string> ever_signalled_;
     OnePassDay one_pass_day_;  // guarded by mutex_
     std::optional<DeskBook> desk_book_;            // guarded by mutex_ (QT plan E5)
@@ -738,7 +758,7 @@ private:
     bool one_pass_book() const;
 
     /**
-     * @brief LOOP_SPEC sections 4 to 6, one rebalance of a book that names an overlay sleeve: the
+     * @brief One rebalance of a book that names an overlay sleeve: the
      *        capped target, the overlay once, the deferral band, the forecast-sign close, the search
      *        from the held book, the buffer and the rounding, the cap, the trim, the split back to
      *        the sleeves and the fills (optimization/one_pass.hpp is the arithmetic).
@@ -852,7 +872,7 @@ private:
     /// returns an error Result OR THROWS contributes a NONE decision and its message to
     /// `errors[k]`, and the scope then combines and applies what the HEALTHY modules returned.
     /// A REFUSE or a SCALE a module already returned is never discarded because a later module
-    /// failed: combine first, then fail closed (T-6a ADVERSARIAL A-1). Returns one decision per
+    /// failed: combine first, then fail closed. Returns one decision per
     /// module, in module order; `errors` is sized to match.
     std::vector<RiskDecision> evaluate_scope_modules(
         std::vector<RiskModulePtr>& modules,
@@ -861,7 +881,7 @@ private:
 
     /// The other half of fail-closed: a module that FAILED is treated as a refusal of its scope,
     /// because its silence cannot be read as consent. At PORTFOLIO scope that holds for a module
-    /// of any capability (HD 2026-09-21, option b: the lone Carver, {SCALE, WARN}, included); at
+    /// of any capability (the lone Carver, {SCALE, WARN}, included); at
     /// SLEEVE scope only for a module that could have REFUSED. Returns true when `verdict` was
     /// upgraded to REFUSE, with the failed module's row set to REFUSE; names it in `module_id`.
     bool refuse_on_failed_gatekeeper(const std::vector<RiskModulePtr>& modules,
@@ -892,9 +912,8 @@ private:
         return is_backtest_ || seeded_scopes_.count(scope_id) > 0;
     }
 
-    /// The ONE set of module rules, shared by the constructor and set_risk_modules (T-6a
-    /// ADVERSARIAL D-1: the constructor used to validate nothing and the only copy of these
-    /// checks had no production caller). Per scope: no null module, unique ids, at most one
+    /// The ONE set of module rules, shared by the constructor and set_risk_modules. Per scope:
+    /// no null module, unique ids, at most one
     /// REPLACE-capable module; and at most one COMPOSITION-term module along any
     /// sleeve -> portfolio chain. `known_strategy_ids` is checked only when it is engaged: the
     /// constructor runs before add_strategy, so a sleeve key naming no strategy is caught on the
@@ -908,7 +927,7 @@ private:
     /// strategy. The loader checks the JSON key against portfolio.json's `strategies`, which is
     /// NOT always the id the runner registers (the live equity runner registers
     /// LIVE_EQUITY_MEAN_REVERSION for the config key MEAN_REVERSION), so a sleeve module could
-    /// silently never fire live while firing in the backtest (T-6a ADVERSARIAL A-3). Refuse.
+    /// silently never fire live while firing in the backtest. Refuse.
     Result<void> validate_sleeve_keys_once();
 
     /**
@@ -927,7 +946,7 @@ private:
     std::unordered_map<std::string, Position> get_positions_internal() const;
 
     /**
-     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. A trend
+     * @brief One notional per contract for each symbol, for the delivered cut. A trend
      *        sleeve's own figure (contract_size x its latest price): on a book that names an
      *        overlay sleeve, THAT sleeve's row and no other; on any other book the sleeves in id
      *        order, the first that carries the symbol (never whichever an unordered walk visits last);

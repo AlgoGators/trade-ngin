@@ -37,7 +37,7 @@ const std::unordered_map<std::string, CorpActionClass>& label_table() {
     return table;
 }
 
-// Which ticker a class-3 row is keyed on (E2-F26). Separate axis from the
+// Which ticker a class-3 row is keyed on. Separate axis from the
 // effect class: every key here also appears in label_table() as TERMINATION,
 // and vendor_labels_for_termination_keying() asserts the partition by
 // construction below.

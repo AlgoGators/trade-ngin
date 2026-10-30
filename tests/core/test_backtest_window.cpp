@@ -1,18 +1,18 @@
-// Pin for M-12: the frozen backtest window.
+// The frozen backtest window.
 //
 // Two things have to hold and they pull against each other.
 //
 // 1. With `backtest.frozen_end_date` ABSENT -- which is how config_template and
 //    the deployed config ship -- resolve_backtest_window must produce exactly
-//    what the three bt runners produced inline before this existed:
+//    the legacy_window arithmetic below:
 //    end = now(), start = the same local broken-down time with tm_year reduced
 //    by lookback_years and re-normalised by std::mktime. Not "about the same":
 //    the same to the second, because a one-second shift moves which bars the
-//    window contains, and the whole class-A claim is that a run without the key
+//    window contains, and the whole claim is that a run without the key
 //    is unchanged.
 //
 // 2. With the key SET, the window must not move when the clock does. That is
-//    the property the A/B needs and the reason M-12 was opened.
+//    the property an A/B comparison needs.
 //
 // The first test is written as an independent RE-DERIVATION of the old inline
 // arithmetic rather than a call into the helper twice, so it fails if the
@@ -31,8 +31,8 @@ using namespace trade_ngin;
 
 namespace {
 
-// The arithmetic apps/backtest/*.cpp used to do inline, reproduced here so the
-// test is an oracle and not an echo.
+// The lookback-window arithmetic, written out here on its own so the test is an independent
+// check and not an echo.
 std::pair<Timestamp, Timestamp> legacy_window(int lookback_years, Timestamp now) {
     auto now_time_t = std::chrono::system_clock::to_time_t(now);
     std::tm* now_tm = std::localtime(&now_time_t);
@@ -264,9 +264,9 @@ struct TempConfigTree {
             {"strategies", strategies},
         };
         std::ofstream(root / "portfolios" / "probe" / "portfolio.json") << portfolio.dump(2);
-        // An EMPTY risk.json used to load; schema 2 refuses it, so the probe carries the
-        // smallest valid assignment. The G-03 window check is what this file is about, and
-        // the check runs after the risk config is parsed.
+        // Schema 2 refuses an EMPTY risk.json, so the probe carries the smallest valid
+        // assignment. The window check is what this file is about, and the check runs after
+        // the risk config is parsed.
         nlohmann::json risk = {
             {"schema", 2},
             {"modules", nlohmann::json::array({nlohmann::json{
@@ -442,7 +442,7 @@ TEST(LookbackValidationG03, TheShippedTemplateSatisfiesTheEnabledBooksRequiremen
         << ", fewer trading days than TREND_FOLLOWING's longest EMA needs (G-03)";
 }
 
-// ===== M-12: the APP half. =====
+// ===== The APP half. =====
 //
 // Everything above tests ConfigLoader::resolve_backtest_window. None of it
 // touches the three runners, so reverting only apps/backtest/*.cpp -- putting
@@ -450,7 +450,7 @@ TEST(LookbackValidationG03, TheShippedTemplateSatisfiesTheEnabledBooksRequiremen
 // left every one of those tests green. The helper existing is not the point;
 // the runners USING it is.
 //
-// Source-scanned, like the F-5 tripwire, because what is being asserted is that
+// Source-scanned, like the other source tripwires, because what is being asserted is that
 // a call site exists in a file this test does not link.
 TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
     namespace fs = std::filesystem;
@@ -470,8 +470,8 @@ TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
 
         EXPECT_NE(src.find("resolve_backtest_window"), std::string::npos)
             << rel << " does not call ConfigLoader::resolve_backtest_window, so its window is "
-                      "still computed inline and M-12 cannot freeze it";
-        EXPECT_NE(src.find("M-12 FROZEN BACKTEST WINDOW"), std::string::npos)
+                      "still computed inline and a frozen window cannot pin it";
+        EXPECT_NE(src.find("FROZEN BACKTEST WINDOW"), std::string::npos)
             << rel << " does not announce a frozen window, so a frozen run would be "
                       "indistinguishable from a production one in the log";
         // The inline arithmetic the helper replaced must be gone, or a runner
@@ -482,4 +482,16 @@ TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
         ++checked;
     }
     EXPECT_EQ(checked, 3);
+}
+
+// backtest.first_traded_date is test-only like frozen_end_date: absent from a shipped config and
+// not serialised when empty; set, it round-trips.
+TEST(BacktestFirstTradedDate, AbsentByDefaultAndRoundTripsWhenSet) {
+    BacktestSpecificConfig cfg;
+    EXPECT_TRUE(cfg.first_traded_date.empty());
+    EXPECT_FALSE(cfg.to_json().contains("first_traded_date"));
+    cfg.first_traded_date = "2025-10-04";
+    BacktestSpecificConfig back;
+    back.from_json(cfg.to_json());
+    EXPECT_EQ(back.first_traded_date, "2025-10-04");
 }

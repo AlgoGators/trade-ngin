@@ -4,15 +4,14 @@
 //
 // `coverage_description()` prints "first-last" and READS as a range without being one. A
 // calendar whose middle years failed to parse still says "2020-2030" while covering two, and
-// every consumer of that string -- the runners' refusal message (BA-1), the out-of-range warn,
+// every consumer of that string -- the runners' refusal message, the out-of-range warn,
 // the "extend the calendar" ERROR -- would repeat the claim. The count is what distinguishes
-// them, and it is what the equity runner now prints beside the previous trading day it
-// resolved (drift-F).
+// them, and it is what the equity runner prints beside the previous trading day it resolved.
 //
-// The load path is what makes this non-trivial: `covered_years_` used to gain a year BEFORE
-// that year's entries parsed, so a malformed file advertised coverage it did not have. These
+// The load path is what makes this non-trivial: a year must join `covered_years_` only AFTER
+// that year's entries parse, or a malformed file advertises coverage it does not have. These
 // assertions pin the count against `covers_year()` and against the description, so the three
-// can never disagree again.
+// cannot disagree.
 
 #include <gtest/gtest.h>
 
@@ -90,9 +89,8 @@ TEST(HolidayCoverageYears, CoverageSpansEveryDateTheEquityGateWindowsUse) {
     HolidayChecker checker(path.string());
     ASSERT_TRUE(checker.loaded());
 
-    // Every date any equity replay in this campaign has run on, plus the pointed corp-action
-    // replays B-5a and B-5c used. A run outside coverage is refused outright, so these are
-    // the years the branch actually needs.
+    // Every date the equity replays have run on, plus the corp-action replays' dates. A run
+    // outside coverage is refused outright, so these are the years the book actually needs.
     for (const auto& date : {"2004-05-03", "2017-01-04", "2019-06-03", "2020-04-03",
                              "2024-04-01", "2025-06-30", "2026-04-15", "2026-08-06"}) {
         EXPECT_TRUE(checker.covers_date(date))

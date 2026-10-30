@@ -1,4 +1,4 @@
-// The equity slow rule (LOOP_SPEC v6.2 section 2.5, D40): on the symbols the rule names, a NEGATIVE
+// The equity slow rule: on the symbols the rule names, a NEGATIVE
 // combined forecast of a ruled sleeve stands only when the scaled forecast of every pair the rule
 // names, (32,128) and (64,256), is negative; otherwise the forecast, and the position sized from
 // it, is 0. A positive forecast, a symbol the rule does not name and a sleeve that is not ruled (the
@@ -43,9 +43,9 @@ const std::vector<std::pair<int, int>> kFast = {{2, 8}, {4, 16}, {8, 32}, {16, 6
 const std::vector<std::pair<int, int>> kSlowPairs = {{32, 128}, {64, 256}};
 const Timestamp kDay0 = std::chrono::system_clock::from_time_t(1262563200);  // Monday 2010-01-04
 
-// The rule's fields exist from the commit that adds the rule. Set through a constraint so that this
-// file also compiles on the commit before it, where a sleeve cannot be ruled and the zeroing test
-// fails: that run is the test's proof that it tests the rule.
+// The rule's fields are set through a constraint, so on a source where a sleeve cannot be
+// ruled this file still compiles and the zeroing test fails: that run is the test's proof that
+// it tests the rule.
 template <class Config>
 void rule(Config& config, const std::vector<std::string>& symbols,
           const std::vector<std::pair<int, int>>& pairs) {
@@ -239,7 +239,7 @@ TEST(EquitySlowRule, ARuledSleeveWithoutTheSlowPairsIsRefused) {
     EXPECT_NE(std::string(fast.initialized.error()->what()).find("(32, 128)"), std::string::npos);
 }
 
-// Both futures books' templates carry the rule as LOOP_SPEC section 7.5.1 writes it.
+// Both futures books' templates carry the rule.
 TEST(EquitySlowRule, TheFuturesTemplatesCarryTheRule) {
     std::filesystem::path root = std::filesystem::current_path();
     while (!(std::filesystem::exists(root / "CMakeLists.txt") &&

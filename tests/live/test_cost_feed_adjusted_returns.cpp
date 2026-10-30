@@ -1,5 +1,5 @@
-// The cost model's spread-vol multiplier reads the adjusted return (LOOP_SPEC v6.1 section 2.3,
-// L-08; T-ROLLX commit 1): on a change bar the volatility window takes a 0 (the date kept), and on
+// The cost model's spread-vol multiplier reads the adjusted return: on a change bar the
+// volatility window takes a 0 (the date kept), and on
 // every other bar the engine's own log return. A feed with a contract switch therefore gives the
 // multiplier of the same feed with the switch bar's return replaced by 0, never the one that books
 // the switch's price gap as a return. Both feed forms (one shot and per cycle) and the manager's own
@@ -87,7 +87,7 @@ TEST(CostFeedAdjustedReturns, ThePerCycleFeedCarriesTheLastIdAcrossCycles) {
     for (size_t i = 0; i < r.size(); ++i) {
         feed_futures_cost_model_step(rolled, {r[i]}, r[i].timestamp + std::chrono::hours(24), carry);
     }
-    EXPECT_EQ(carry.last_id.at(kNg), "863");
+    EXPECT_EQ(carry.trackers.at(kNg).held_id(), "863");
     EXPECT_EQ(rolled.get_volatility_multiplier(kNg), expected.get_volatility_multiplier(kNg));
 }
 

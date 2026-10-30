@@ -302,7 +302,7 @@ TEST_F(LivePnLManagerTest, GetPointValueFromRegistry) {
 
 TEST_F(LivePnLManagerTest, GetPointValueHasNoAnswerForAFutureNotInRegistry) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
-    // CL not registered: no guessed 1000.0, point value 0 and an ERROR (CM1 d)
+    // CL not registered: no guessed 1000.0, point value 0 and an ERROR
     EXPECT_DOUBLE_EQ(mgr.get_point_value("CL"), 0.0);
 }
 
@@ -317,7 +317,7 @@ TEST_F(LivePnLManagerTest, GetPointValueStripsVariantSuffix) {
     EXPECT_DOUBLE_EQ(mgr.get_point_value("ES.v.0"), 50.0);
 }
 
-// E2-F38 / BA-7: the fallback table is matched by SUBSTRING over futures contract
+// The fallback table is matched by SUBSTRING over futures contract
 // codes, so an unregistered EQUITY ticker that happens to contain one inherits a
 // futures multiplier. These are all real US tickers, and the multipliers below are
 // what the table actually returns for them today.
@@ -325,7 +325,7 @@ TEST_F(LivePnLManagerTest, UnregisteredEquityDoesNotInheritAFuturesMultiplier) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
     mgr.set_asset_type(AssetType::EQUITY);
 
-    // LEN is the spinoff parent in this campaign's own corp-action work (LEN/Millrose).
+    // LEN is a real spinoff parent (LEN/Millrose).
     EXPECT_DOUBLE_EQ(mgr.get_point_value("LEN"), 1.0) << "matches \"LE\", live cattle, 40000";
     EXPECT_DOUBLE_EQ(mgr.get_point_value("ZM"), 1.0) << "Zoom matches \"ZM\", soybean meal, 100";
     EXPECT_DOUBLE_EQ(mgr.get_point_value("UBER"), 1.0) << "matches \"UB\", ultra T-bond, 1000";
@@ -337,9 +337,9 @@ TEST_F(LivePnLManagerTest, UnregisteredEquityDoesNotInheritAFuturesMultiplier) {
     EXPECT_DOUBLE_EQ(mgr.get_point_value("AAPL"), 1.0);
 }
 
-// A futures manager (the default) has no fallback table any more (CM1 d): a future the registry
-// does not hold has no point value (0, ERROR), where the deleted table guessed, several times
-// wrongly (GC 1000 for 100).
+// A futures manager (the default) has no fallback table: a future the registry does not hold
+// has no point value (0, ERROR), where a fallback table would guess, and several of its guesses
+// were wrong (GC 1000 for 100).
 TEST_F(LivePnLManagerTest, DefaultAssetTypeHasNoFuturesFallbackTable) {
     LivePnLManager mgr(500000.0, InstrumentRegistry::instance());
     EXPECT_EQ(mgr.asset_type(), AssetType::FUTURE) << "silent callers stay on futures";

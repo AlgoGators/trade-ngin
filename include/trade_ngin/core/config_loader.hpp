@@ -142,7 +142,7 @@ struct BacktestSpecificConfig {
     int lookback_years{2};
     bool store_trade_details{true};
 
-    // M-12. TEST-ONLY. Freezes the backtest window's right-hand edge at this
+    // TEST-ONLY. Freezes the backtest window's right-hand edge at this
     // date instead of wall-clock now(), so two runs of the same binary hours
     // apart cover the same days.
     //
@@ -150,14 +150,12 @@ struct BacktestSpecificConfig {
     // start_date = now() - lookback_years. That window slides with the clock,
     // so a line-by-line A/B of two backtests is only tight for about six hours
     // after the baseline is taken; past that the two runs are reading different
-    // days and every downstream number legitimately differs. The sentinel-drift
-    // memory records this, and it is why the merge-time futures cross-regression
-    // never got a same-day baseline.
+    // days and every downstream number legitimately differs.
     //
     // How it stays out of production. The key is absent from
     // config_template/defaults.json and from the deployed config/defaults.json.
-    // Absent means empty, and empty means the runner takes the now() path it
-    // takes today, instruction for instruction. A run only freezes its window
+    // Absent means empty, and empty means the runner takes the now() path,
+    // instruction for instruction. A run only freezes its window
     // when a config that explicitly carries the key is pointed at, which is the
     // "read it only when explicitly passed" requirement: there is no CLI flag,
     // no environment variable and no default that can turn this on by accident.
@@ -165,8 +163,13 @@ struct BacktestSpecificConfig {
     // never be mistaken for a production one in a log.
     //
     // Format: "YYYY-MM-DD", interpreted at 00:00:00 LOCAL time, which is the
-    // same frame std::mktime gives the now() path it replaces.
+    // same frame std::mktime gives the now() path.
     std::string frozen_end_date{};
+    // Test-only, like frozen_end_date and absent from every shipped config: "YYYY-MM-DD", the
+    // first bar date a backtest may trade on. The warm-up runs on until that date (never shorter
+    // than the strategies' own warm-up), so the book starts empty on it. Absent: the warm-up is
+    // the strategies' own. Read by bt_portfolio_conservative.
+    std::string first_traded_date{};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -176,6 +179,8 @@ struct BacktestSpecificConfig {
         // not introduce the key.
         if (!frozen_end_date.empty())
             j["frozen_end_date"] = frozen_end_date;
+        if (!first_traded_date.empty())
+            j["first_traded_date"] = first_traded_date;
         return j;
     }
 
@@ -186,6 +191,8 @@ struct BacktestSpecificConfig {
             store_trade_details = j.at("store_trade_details").get<bool>();
         if (j.contains("frozen_end_date"))
             frozen_end_date = j.at("frozen_end_date").get<std::string>();
+        if (j.contains("first_traded_date"))
+            first_traded_date = j.at("first_traded_date").get<std::string>();
     }
 };
 
@@ -204,11 +211,11 @@ struct LiveSpecificConfig {
     // beyond it means the symbol is halted or missing from the feed, not merely
     // between sessions. Symbols exceeding the bound are not traded.
     int execution_price_max_staleness_days{5};
-    // E2-F31. What to do with a company a spinoff hands you that you never chose to own:
+    // What to do with a company a spinoff hands you that you never chose to own:
     // "liquidate_at_first_close" (default) books the child and sells it at its first close;
     // "hold" keeps it, which is only safe when the child is itself in the configured
     // universe -- otherwise no bars are loaded for it and the next run reports "Missing T-1
-    // price for symbol with a non-zero position" and rolls the target back forever (F-4).
+    // price for symbol with a non-zero position" and rolls the target back forever.
     // Unrecognised text takes the default; the runner logs which policy is in force.
     std::string spinoff_child_policy{"liquidate_at_first_close"};
 
@@ -236,7 +243,7 @@ struct LiveSpecificConfig {
 
 /**
  * @brief The statistics convention (defaults.json `statistics`): the sessions a year K each
- * stored statistic is annualised with, per series (T-8D R2 and R3, T-8D-2 R76).
+ * stored statistic is annualised with, per series.
  *
  * K is the row frequency of the grid the statistic is taken on, frozen per series, not measured
  * per run. Futures: 311.0574 = 3,111 grid dates / (3,653 days / 365.25) over 2016-01-01 to
@@ -271,10 +278,9 @@ struct StrategyDefaultsConfig {
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
     double max_strategy_allocation{1.0};
     double min_strategy_allocation{0.1};
-    // use_optimization moved to portfolio.json's top level in schema 2 (AppConfig::
-    // use_optimization) and use_risk_management was deleted with the boolean risk gate:
-    // both are load errors here now, so a leftover key cannot go on being read from a
-    // block that no longer owns it.
+    // use_optimization lives at portfolio.json's top level (AppConfig::use_optimization), and
+    // use_risk_management is not a key: both are load errors in this block, so a leftover key
+    // is never read from a block that does not own it.
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -312,7 +318,7 @@ struct StrategyDefaultsConfig {
  * - config/portfolios/{name}/email.json
  */
 /**
- * @brief portfolio.json's top-level equity_slow_rule (LOOP_SPEC sections 2.5 and 7.7, D40): for
+ * @brief portfolio.json's top-level equity_slow_rule: for
  * these symbols a negative combined forecast of the book's FIRST sleeve stands only when the scaled
  * forecast of every pair named is negative, and is 0 otherwise.
  *
@@ -325,6 +331,25 @@ struct EquitySlowRule {
     bool present{false};
     std::vector<std::string> symbols;
     std::vector<std::pair<int, int>> pairs;
+};
+
+/**
+ * @brief portfolio.json's optional top-level carry block (trade-ngin #185; Carver, strategy eleven):
+ *        the carry rules of the book's first sleeve, blended with its trend rules into one forecast.
+ *
+ *   "carry": {"weight": 0.4, "spans": [5, 20, 60, 120], "scalar": 30}
+ *
+ * `weight` is the carry style's share of the forecast weights (table 51: 0.4, trend 0.6), in [0, 1];
+ * `spans` the smoothing spans in business days, fastest first; `scalar` the forecast scalar. Absent,
+ * or with weight 0, carry is off and the strategy is today's to the last stored digit. With weight
+ * above 0 the book must be one enabled TrendFollowingStrategy sleeve and per_contract_rolls on.
+ */
+struct CarryConfig {
+    bool present{false};
+    double weight{0.0};
+    std::vector<int> spans{5, 20, 60, 120};
+    double scalar{30.0};
+    bool enabled() const { return present && weight > 0.0; }
 };
 
 struct AppConfig {
@@ -370,9 +395,23 @@ struct AppConfig {
 
     // portfolio.json's top-level covariance_stale_dates: how many dates of the union of the
     // covariance participants' dates a participant's last close may trail the newest before the
-    // optimiser leaves it out of the date intersection (PortfolioConfig::covariance_stale_dates,
-    // T-7b-1 7d). Absent means 5; a value that is not a whole number of at least 0 is a load error.
+    // optimiser leaves it out of the date intersection (PortfolioConfig::covariance_stale_dates).
+    // Absent means 5; a value that is not a whole number of at least 0 is a load error.
     size_t covariance_stale_dates{5};
+
+    // portfolio.json's optional top-level per_contract_rolls: the futures
+    // bars from the per-contract roll rule (data/contract_rolls.hpp) instead of the vendor's .v.0
+    // series. Absent means false. The four futures runners read it
+    // (contract_rolls::configure_per_contract_source); it is deliberately not in to_json(), so the
+    // stored run metadata does not change while it is off.
+    bool per_contract_rolls{false};
+
+    // portfolio.json's optional top-level per_contract_switch_bar: the bar the per-contract
+    // source hands out on an unconfirmed vendor switch bar,
+    // "held" (the held contract's own bar, the default) or "vendor" (the bar of the contract the
+    // vendor switched to, a one-bar stray included). Absent means "held"; read only with
+    // per_contract_rolls on; not in to_json().
+    std::string per_contract_switch_bar{"held"};
 
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;
@@ -396,22 +435,26 @@ struct AppConfig {
     // enabled sleeve, or whose sleeve is not a TrendFollowingStrategy, is refused with the block.
     std::map<std::string, std::vector<std::pair<int, int>>> trading_rule_removals;
 
-    // portfolio.json's top-level sizing_mode and starting_capital (LOOP_SPEC sections 3.1 and 7.7,
-    // D19); both required on a futures book. The one mode is "half_compounding": the book is sized
+    // portfolio.json's optional top-level carry block (CarryConfig); not in to_json(), so the stored
+    // run metadata does not change while it is off.
+    CarryConfig carry;
+
+    // portfolio.json's top-level sizing_mode and starting_capital; both required on a futures
+    // book. The one mode is "half_compounding": the book is sized
     // on the starting capital less the drawdown of its cumulative settled net P&L from its running
     // peak, never above the starting capital. starting_capital is S_0 and equals initial_capital
     // (one figure, written twice so that neither file can be changed alone). Empty and 0: absent.
     std::string sizing_mode;
     double starting_capital{0.0};
 
-    // The one pass's keys in defaults.json's optimization block (LOOP_SPEC sections 5.2, 5.3
-    // and 7.7), each required on a futures book (require_loop_keys): cost_penalty_scalar (the
+    // The one pass's keys in defaults.json's optimization block, each required on a futures
+    // book (require_loop_keys): cost_penalty_scalar (the
     // search's cost multiplier, read into opt_config), sign_close_band (the deferral band) and
     // b_sigma_floor (B_sigma's floor as a ratio to tau). `false` / 0: the key is absent.
     bool has_cost_penalty_scalar{false};
     double sign_close_band{0.0};
     double b_sigma_floor{0.0};
-    // Every RETIRED key the files still carry, as "<file>: <key>" (section 7.7). Collected at
+    // Every RETIRED key the files still carry, as "<file>: <key>". Collected at
     // load, never read for a value; a futures book refuses to run on a non-empty list
     // (require_loop_keys). The equity book's files are not searched for the futures-only keys.
     std::vector<std::string> retired_loop_keys;
@@ -533,14 +576,14 @@ public:
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
 
     /**
-     * @brief The keys LOOP_SPEC section 7.7 requires of a futures book, checked by the four futures
+     * @brief The keys a futures book requires, checked by the four futures
      *        runners right after load(): a book without one of them does not run.
      * @return an error naming the first missing key
      */
     static Result<void> require_loop_keys(const AppConfig& config);
 
     /**
-     * @brief Resolve a backtest's [start_date, end_date] window from config (M-12).
+     * @brief Resolve a backtest's [start_date, end_date] window from config.
      *
      * Single place the three bt runners agree on, so the frozen-window escape
      * hatch cannot be honoured by one runner and ignored by another.

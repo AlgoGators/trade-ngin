@@ -95,8 +95,8 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNonPositiveStartIsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_total_return(-1.0, 110.0), 0.0);
 }
 
-// T-8D R36: the annualised return is the CAGR, (1 + R)^(K / n) - 1, never R x K / n.
-//   | R    | n   | K   | geometric (now)        | linear (before) |
+// The annualised return is the CAGR, (1 + R)^(K / n) - 1, never R x K / n.
+//   | R    | n   | K   | geometric              | linear (wrong)  |
 //   | 0.10 | 252 | 252 | 0.10                   | 0.10            |
 //   | 0.10 | 126 | 252 | 1.1^2 - 1 = 0.21       | 0.20            |
 //   | 0.10 | 126 | 315 | 1.1^2.5 - 1 = 0.269059 | 0.25            |
@@ -144,7 +144,7 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityConstantSeriesIsZeroNotNaN) {
     EXPECT_DOUBLE_EQ(vol, 0.0);
 }
 
-// T-8D R12: a constant series has no volatility, so its Sharpe ratio has no value. It is the
+// A constant series has no volatility, so its Sharpe ratio has no value. It is the
 // calculator's own kNoRatio (the volatility itself is a clean 0, not rounding dust), not a 0
 // that reads as a measured Sharpe.
 TEST_F(BacktestMetricsCalculatorTest, SharpeOfAConstantSeriesHasNoValue) {
@@ -156,11 +156,11 @@ TEST_F(BacktestMetricsCalculatorTest, SharpeOfAConstantSeriesHasNoValue) {
     EXPECT_TRUE(std::isnan(calc_.calculate_sharpe_ratio({0.01}, kEquityK, 0.0)));
 }
 
-// T-8D R8: volatility is the SAMPLE standard deviation (n - 1) x sqrt(K).
+// Volatility is the SAMPLE standard deviation (n - 1) x sqrt(K).
 //   returns 0.01, -0.01, 0.01, -0.01: mean 0, squares 0.0004
 //   | divisor          | daily sd              | x sqrt(252) |
-//   | n - 1 = 3 (now)  | sqrt(0.0004 / 3)      | 0.183303028 |
-//   | n = 4 (before)   | sqrt(0.0004 / 4)      | 0.158745079 |
+//   | n - 1 = 3        | sqrt(0.0004 / 3)      | 0.183303028 |
+//   | n = 4 (wrong)    | sqrt(0.0004 / 4)      | 0.158745079 |
 TEST_F(BacktestMetricsCalculatorTest, VolatilityIsTheSampleStandardDeviationAnnualised) {
     std::vector<double> r{0.01, -0.01, 0.01, -0.01};
     EXPECT_NEAR(calc_.calculate_volatility(r, 252.0), std::sqrt(0.0004 / 3.0) * std::sqrt(252.0), 1e-12);
@@ -172,7 +172,7 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityIsTheSampleStandardDeviationAnnu
 }
 
 // The calculator holds no factor of its own: every annualised figure uses the sessions a year it
-// is handed (the K of the grid the returns are taken on, T-8D R2), on either grid's K.
+// is handed (the K of the grid the returns are taken on), on either grid's K.
 //   returns 0.010, -0.004, 0.006, -0.012, 0.003, 0.000, 0.008: mean 0.0015714286,
 //   sample sd 0.0076563077, downside sqrt((0.004^2 + 0.012^2) / 7) = 0.0047809144
 //   | K        | volatility  | downside    | Sharpe      | Sortino     |
@@ -253,8 +253,8 @@ TEST_F(BacktestMetricsCalculatorTest, SortinoOfAnEmptySeriesHasNoValue) {
     EXPECT_TRUE(std::isnan(calc_.calculate_sortino_ratio({0.01}, 0)));
 }
 
-// T-8D R12: with no return under the target there is no downside to divide by. The ratio has no
-// value; it was 999 here.
+// With no return under the target there is no downside to divide by. The ratio has no value (not
+// 999).
 TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideHasNoValue) {
     const double sortino = calc_.calculate_sortino_ratio({0.01, 0.02, 0.03}, 252);
     EXPECT_TRUE(std::isnan(sortino));
@@ -262,7 +262,7 @@ TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideHasNoValue) {
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideHasNoValueWhateverTheSignOfTheMean) {
-    // Returns all above target=-0.01 (no downside) but mean*252 is negative: it was 0 here.
+    // Returns all above target=-0.01 (no downside) but mean*252 is negative: no value, not 0.
     EXPECT_TRUE(std::isnan(calc_.calculate_sortino_ratio({-0.005, 0.001}, 252, -0.01)));
 }
 
@@ -272,7 +272,7 @@ TEST_F(BacktestMetricsCalculatorTest, SortinoComputesWithDownsideVolatility) {
     EXPECT_GT(calc_.calculate_sortino_ratio(r, 252), 0.0);
 }
 
-// T-8D R12: no drawdown, no denominator, no value (it was 999 or 0 by the return's sign).
+// No drawdown, no denominator, no value (not 999 or 0 by the return's sign).
 TEST_F(BacktestMetricsCalculatorTest, CalmarWithNoDrawdownHasNoValue) {
     EXPECT_TRUE(std::isnan(calc_.calculate_calmar_ratio(0.10, 0.0)));
     EXPECT_TRUE(std::isnan(calc_.calculate_calmar_ratio(-0.10, 0.0)));
@@ -284,11 +284,11 @@ TEST_F(BacktestMetricsCalculatorTest, CalmarStandardCase) {
     EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.20, 0.10), 2.0);
 }
 
-// T-8D R36: calmar = CAGR (geometric, K / n) / max_dd, through the composite. Own rows at K 252:
+// calmar = CAGR (geometric, K / n) / max_dd, through the composite. Own rows at K 252:
 //   levels 100, 101, 100.5, 102, 103: n 4, R 0.03, max_dd 0.5 / 101 = 0.004950
 //   | numerator                                 | calmar      |
-//   | CAGR 1.03^(252 / 4) - 1 = 5.437914 (now)  | 1098.458585 |
-//   | mean x 252 = 1.876064 (before)            | 378.965004  |
+//   | CAGR 1.03^(252 / 4) - 1 = 5.437914        | 1098.458585 |
+//   | mean x 252 = 1.876064 (wrong)             | 378.965004  |
 TEST_F(BacktestMetricsCalculatorTest, CalmarIsTheGeometricAnnualisedReturnOverTheMaximumDrawdown) {
     const std::vector<std::pair<Timestamp, double>> curve = {
         {date_at(2026, 1, 5), 100.0}, {date_at(2026, 1, 6), 101.0}, {date_at(2026, 1, 7), 100.5},
@@ -341,12 +341,12 @@ TEST_F(BacktestMetricsCalculatorTest, Var95PicksWorst5thPercentileLoss) {
     EXPECT_NEAR(calc_.calculate_var_95(r), 0.04, 1e-9);
 }
 
-// T-8D R36: CVaR includes the VaR observation: the mean of the worst floor(0.05 n) + 1 returns,
+// CVaR includes the VaR observation: the mean of the worst floor(0.05 n) + 1 returns,
 // the last of them being the one var_95 reads.
 //   20 returns -0.10 .. 0.09: floor(0.05 x 20) = 1, VaR = the second worst = 0.09
 //   | rule                              | CVaR                       |
-//   | with the VaR observation (now)    | (0.10 + 0.09) / 2 = 0.095  |
-//   | the returns below it (before)     | 0.10                       |
+//   | with the VaR observation          | (0.10 + 0.09) / 2 = 0.095  |
+//   | the returns below it (wrong)      | 0.10                       |
 TEST_F(BacktestMetricsCalculatorTest, Cvar95AveragesTheTailWithTheVarObservation) {
     std::vector<double> r;
     for (int i = -10; i <= 9; ++i) r.push_back(i * 0.01);
@@ -465,15 +465,15 @@ TEST_F(BacktestMetricsCalculatorTest, SymbolPnLAccumulatesPerSymbol) {
     EXPECT_DOUBLE_EQ(m["NQ"], -5.0);
 }
 
-// T-8D R11 (a), S3b 7.1: a trade is scored in DOLLARS, the price move times the symbol's point
-// value (the metadata's contract size, the figure the equity curve books with). Real fills of the
-// futures book (MES n=70 and ZN n=128 of the run S3b read):
+// A trade is scored in DOLLARS, the price move times the symbol's point value (the metadata's
+// contract size, the figure the equity curve books with). Real fills of the futures book (MES n=70
+// and ZN n=128 of one run):
 //
 //   | row            | closed | entry       | exit       | points    | point value | gross     | cost        | trade        |
 //   | MES SELL 1     | 1      | 6785.25     | 6641.75    | -143.5    | 5           | -717.50   | 2.14618282  | -719.646183  |
 //   | ZN  SELL 2     | 2      | 113.2578125 | 112.390625 | -0.8671875| 1000        | -1734.375 | 11.00661929 | -1745.381619 |
 //
-// RED on the parent: the price term is in points (MES -145.646183, ZN -12.740994).
+// A price term in points would score MES -145.646183, ZN -12.740994.
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsPricesFuturesTradesInDollars) {
     auto t0 = date_at(2025, 11, 10);
     auto day = [&](int k) { return t0 + std::chrono::hours(24 * k); };
@@ -497,7 +497,7 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsPricesFuturesTradesInDollar
     EXPECT_NEAR(m["ZN.v.0"], -1745.381619 - 5.47021144 - 5.49488994, 1e-6);
 }
 
-// T-8D R11, S3b 7.2: a fill that takes the position through zero closes what was held and opens the
+// A fill that takes the position through zero closes what was held and opens the
 // remainder at ITS price.
 //
 //   | day | fill          | position | entry | trade                              |
@@ -505,7 +505,7 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsPricesFuturesTradesInDollar
 //   | 1   | SELL 3 at 110 | -1       | 110   | closes 2: 2 x (110 - 100) = +20    |
 //   | 2   | BUY 1 at 105  | 0        |       | closes the short: 110 - 105 = +5   |
 //
-// RED on the parent: the short keeps the long's entry 100 and scores 100 - 105 = -5.
+// Keeping the long's entry 100 for the short would score 100 - 105 = -5.
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFlipOpensTheRemainderAtTheFillPrice) {
     auto t0 = date_at(2026, 1, 1);
     auto day = [&](int k) { return t0 + std::chrono::hours(24 * k); };
@@ -524,7 +524,7 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFlipOpensTheRemainderAtTheF
     EXPECT_DOUBLE_EQ(m["X"], 25.0);  // the fills' cash: -200 + 330 - 105
 }
 
-// T-8D R11 (d), S3b 7.3 (E2-F60): a position under 1e-9 after a fill is flat. Fractional share
+// A position under 1e-9 after a fill is flat. Fractional share
 // quantities summed in binary leave a residue after a full close (0.3 - 0.1 - 0.2 = -2.8e-17):
 //
 //   | day | fill            | position            | trade                                  |
@@ -534,8 +534,8 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFlipOpensTheRemainderAtTheF
 //   | 5   | BUY 1 at 200    | +1 at 200           | none: it opens                         |
 //   | 6   | SELL 1 at 210   | 0                   | 210 - 200 = +10                        |
 //
-// RED on the parent: the residue is a short position, the BUY of day 5 "closes" it (a fourth
-// trade, a loss of 2.8e-15) and the last SELL is measured from 100 (+110).
+// Taken as a short position, the residue would make the BUY of day 5 "close" it (a fourth trade, a
+// loss of 2.8e-15) and measure the last SELL from 100 (+110).
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFloatResidueIsFlat) {
     auto t0 = date_at(2026, 1, 1);
     auto day = [&](int k) { return t0 + std::chrono::hours(24 * k); };
@@ -557,10 +557,10 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsFloatResidueIsFlat) {
 
 namespace {
 
-// Real rows of the BASE backtest (two sleeves; lookback 2 to 2026-10-07 at d440f84a; the
-// backtest.executions ids are in the last column), three contracts. The statistics are the
-// BOOK's (HD 2026-10-10): the STRATEGY rows of one contract on one day are first netted into the
-// account's fill. T = TREND_FOLLOWING, F = TREND_FOLLOWING_FAST; cost = own cost - adjustment.
+// Real rows of a two-sleeve futures backtest (the backtest.executions ids are in the last column),
+// three contracts. The statistics are the BOOK's: the STRATEGY rows of one contract on one day are
+// first netted into the account's fill. T = TREND_FOLLOWING, F = TREND_FOLLOWING_FAST; cost = own
+// cost - adjustment.
 //
 // ZF (point value 1000):
 //   | date       | sleeve rows (side qty, net cost)                         | account fill      | cost        | position (entry)    | trade, dollars                                    |
@@ -638,12 +638,11 @@ constexpr double kBaseWin = 174.98965655;
 
 }  // namespace
 
-// LEAD_RULINGS_IN_SESSION R-G (HD 2026-10-10): the trade statistics are the book's. The table
-// above: a full cross is no fill and no trade; a partial offset is one fill of the net size,
-// charged the sum of its rows' costs after netting; two sleeves on one side are one fill.
-// RED on the parent: every sleeve row is a fill of one tracker, in points: the crossed rows score
-// trades (the 6C cross a "win" of 0.00455 or 0.0091 by the order of the sleeves) and the dollars
-// are price points.
+// The trade statistics are the book's. The table above: a full cross is no fill and no trade; a
+// partial offset is one fill of the net size, charged the sum of its rows' costs after netting; two
+// sleeves on one side are one fill. Scoring every sleeve row as a fill of one tracker, in points,
+// would score trades on the crossed rows (the 6C cross a "win" of 0.00455 or 0.0091 by the order of
+// the sleeves) and read price points as dollars.
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsAreTheBooksAndACrossIsNeitherAFillNorATrade) {
     const auto execs = base_rows();
     ASSERT_EQ(execs.size(), 26u);
@@ -690,10 +689,10 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsAreTheBooksAndACrossIsNeith
     EXPECT_NEAR(m["MES.v.0"], 176.25 - 1.31259197 - 1.26034345, 1e-7);
 }
 
-// R-G point 4: the order is the calculator's own (by day, then contract), so the order the rows
+// The order is the calculator's own (by day, then contract), so the order the rows
 // arrive in changes nothing. The same rows reversed, and in seven seeded shuffles, give the same
 // statistics to the last bit and the same account fills.
-// RED on the parent: its one walk follows the input order (reversed, the first row "closes").
+// A walk in the input order would let the first row of the reversed rows "close".
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsDoNotDependOnTheOrderOfTheRows) {
     const auto rows = base_rows();
     const auto want = calc_.calculate_trade_statistics(rows, base_points());
@@ -797,8 +796,8 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsWarmupGreaterThanSizePassesFullC
 }
 
 // A UTC date the curve carries twice counts once, by its LAST row: the metrics of the repeated
-// curve equal the metrics of the curve with one row per date. Before the de-duplication the
-// repeated date added a return of its own (two more observations here, one of them a 20 percent
+// curve equal the metrics of the curve with one row per date. Not de-duplicated, the repeated
+// date would add a return of its own (two more observations here, one of them a 20 percent
 // fall that no date-level series holds).
 TEST_F(BacktestMetricsCalculatorTest, AllMetricsCountAUtcDateOnceByItsLastRow) {
     const std::vector<double> levels = {100.0, 102.0, 101.0, 104.0, 103.0, 106.0};
@@ -872,7 +871,7 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsPopulatesNonZeroFields) {
     EXPECT_GE(r.max_drawdown, 0.0);
 }
 
-// ===== The statistics grid (T-8D R1, R3; T-8D-2 R79) =====
+// ===== The statistics grid =====
 
 namespace {
 
@@ -945,7 +944,7 @@ TEST_F(BacktestMetricsCalculatorTest, TheGridCurveDropsASaturdayPointAndAThinDat
         << "an empty grid leaves the base and no return";
 }
 
-// T-8D-2 R79: a backtest with a thin Sunday-to-Friday date and a Saturday point, through the
+// A backtest with a thin Sunday-to-Friday date and a Saturday point, through the
 // composite. The grid statistics read the seven grid returns at K = 311.0574; total_return and
 // the drawdown curve read every row.
 //   | figure        | on the grid (stored)   | on every row, K 311.0574 | every row, n, K 252 (before) |
@@ -1005,7 +1004,7 @@ TEST_F(BacktestMetricsCalculatorTest, AThinDateAndASaturdayPointAreNoObservation
     EXPECT_DOUBLE_EQ(rows.total_return, r.total_return);
 }
 
-// The oracle of commit (1): ONE P&L series through both calculators gives one number per
+// ONE P&L series through both calculators gives one number per
 // statistic. The backtest calculator is handed the curve and the grid; the live helper the same
 // rows as stored levels, the same grid dates, the base as the book's start (units: the live
 // helper is in percent).
@@ -1047,7 +1046,7 @@ TEST_F(BacktestMetricsCalculatorTest, BothCalculatorsGiveOneNumberForOnePnlSerie
     EXPECT_NEAR(bt.calmar_ratio, live.total_annualized_return / live.max_drawdown, 1e-8);
 }
 
-// E2-F63, the backtest half (T-8D R27, R28): a run has ONE as-of date, its last curve row, and
+// The backtest half: a run has ONE as-of date, its last curve row, and
 // every grid statistic reads the grid rows up to it. A run whose last row is off the grid (a
 // Saturday point) therefore ends its series at the last grid date: every statistic of the series
 // equals that of the same run stopped on the Friday; the levels (total_return, the drawdown
@@ -1156,7 +1155,7 @@ TEST_F(BacktestMetricsCalculatorTest, AMonthEndingOnAnOffGridRowIsCompleteOnItsG
         << "the month's return ends on the Friday level: the Saturday row is in no grid return";
 }
 
-// T-8D R12 through the composite: a run that only rises has no downside return, no drawdown and
+// Through the composite: a run that only rises has no downside return, no drawdown and
 // (with one winning trade) no losing trade. Its three ratios have no value; its Sharpe ratio,
 // which has a denominator, is a number. A flat run has no volatility either.
 //   | curve               | sharpe | sortino | calmar | profit factor |
@@ -1215,8 +1214,8 @@ TEST_F(BacktestMetricsCalculatorTest, AConsoleLinePrintsNaForARatioWithNoValue) 
 
 TEST_F(BacktestMetricsCalculatorTest, NanEquityPointExcludedFromMonthlyReturns) {
     // NaN in the middle of the curve: neither the NaN-as-current nor the
-    // NaN-as-previous transition may contribute. Pre-fix, `prev <= 0.0` was
-    // false for NaN and a NaN period_return poisoned the month's total.
+    // NaN-as-previous transition may contribute. `prev <= 0.0` is false for
+    // NaN, so an unguarded NaN period_return would poison the month's total.
     std::vector<std::pair<Timestamp, double>> curve = {
         {date_at(2024, 3, 1), 100.0},
         {date_at(2024, 3, 4), 110.0},
@@ -1249,9 +1248,9 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNanInputsReturnZero) {
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustHitsSentinelNotAbsurdValue) {
-    // Returns an epsilon below target leave ~1e-17 downside "dust". Pre-fix,
-    // Sortino divided by the dust and reported an absurd finite magnitude;
-    // post-fix the dust collapses to 0 and the ratio has no value (T-8D R12).
+    // Returns an epsilon below target leave ~1e-17 downside "dust". Dividing by
+    // the dust would report an absurd finite magnitude; the dust collapses to 0
+    // and the ratio has no value.
     std::vector<double> returns(100, -1e-18);
     const double sortino =
         calc_.calculate_sortino_ratio(returns, /*sessions_per_year=*/kEquityK, /*mar=*/0.0);

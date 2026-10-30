@@ -1,12 +1,9 @@
 // tests/backtest/test_backtest_k01_feed.cpp
 //
-// LOOP_SPEC v6.1 section 2.1, K-01 (LOCKED; T-ROLLX-FIX commit 1): in the futures backtest a JUNK
-// bar and a thin first print of the signal group are WITHHELD from every consumer and never fed
-// later; an unconfirmed instrument-id change the classifier holds is CONSUMED (it is the change bar
-// of section 2.2). This file drives BacktestCoordinator::process_portfolio_day through the APIs the
-// parent 9fe44f1a already has, so each test fails there on the behaviour, not on a missing name:
-// the parent fed a withheld bar on the next cycle ahead of its symbol's next bar (T-7b-1 7a) and
-// withheld the id-change bar like any JUNK bar.
+// In the futures backtest a JUNK bar and a thin first print of the signal group are WITHHELD from
+// every consumer and never fed later (not on the next cycle ahead of the symbol's next bar); an
+// unconfirmed instrument-id change the classifier holds is CONSUMED (it is the change bar), not
+// withheld like a JUNK bar. This file drives BacktestCoordinator::process_portfolio_day.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -161,7 +158,7 @@ TEST_F(BacktestK01FeedTest, AWithheldJunkBarIsNeverFedOnALaterCycle) {
     EXPECT_EQ(strat_->calls[0], (Keys{"AA@0", "XX@0"}));
     EXPECT_EQ(strat_->calls[1], (Keys{"AA@1"})) << "XX's JUNK bar is withheld on its own cycle";
     EXPECT_EQ(strat_->calls[2], (Keys{"AA@2", "XX@2"}))
-        << "and never fed later: no return is formed across it (K-01)";
+        << "and never fed later: no return is formed across it";
     EXPECT_EQ(pm_->closes_by_date_.at("XX").size(), 2u)
         << "the PortfolioManager's own history never holds day 1";
 }

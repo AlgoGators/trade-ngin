@@ -1,4 +1,4 @@
-// The live statistics of migration 036 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
+// The live statistics of migration 036:
 // the worst day's date and symbol, the three statistics on the sizing capital, the monthly skew
 // and tail ratio, the calendar-year returns with the losing years, and the three fill counts.
 //
@@ -64,11 +64,11 @@ struct SizingReturns {
 };
 
 /**
- * @brief The series of returns on the sizing capital (LOOP_SPEC section 10).
+ * @brief The series of returns on the sizing capital.
  *
  * E_t of a grid return is the sizing capital of the last stored row on or before its grid date
  * that carries one: the grid row's own where it has one, else the row before it (a Sunday row
- * that sized nothing reads Saturday's, which the recursion of section 3.1 leaves equal to its
+ * that sized nothing reads Saturday's, which the sizing capital's recursion leaves equal to its
  * own). A Saturday or holiday row folded into the return adds its P&L to the numerator and
  * never supplies the denominator of a grid row that has its own. The series starts at the first
  * grid date that has such a capital: a row written before risk_detail existed has none.
@@ -177,8 +177,8 @@ LiveStatisticsColumns live_statistics_columns(const StatisticsSeries& series,
                                               const std::string& first_return_after = std::string());
 
 /**
- * @brief Set the three fill counts from the book's stored executions (LOOP_SPEC section 10; HD
- *        2026-10-10): total_trades = round trips, total_strategy_fills = the ACCOUNT's fills
+ * @brief Set the three fill counts from the book's stored executions:
+ *        total_trades = round trips, total_strategy_fills = the ACCOUNT's fills
  *        after netting between sleeves, total_roll_fills = the ROLL legs. One definition with
  *        the backtest: BacktestMetricsCalculator::account_fill_counts. Returns the reason when
  *        the counts could not be taken (the helper threw); the three then stay NULL.

@@ -63,7 +63,7 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
             continue;
         }
 
-        // E2-F17: refuse an event for a position the book did NOT hold on the ex-date.
+        // Refuse an event for a position the book did NOT hold on the ex-date.
         //
         // A class-1 event restates a basis into post-event units. That is only right when the
         // basis was formed BEFORE the event. A position opened after the ex-date was bought at
@@ -80,10 +80,8 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
         // name bought within 14 days after an ex-date lands here. Magnitude scales with the
         // event: 0.62% for that dividend, 2400% for a 25:1 split.
         //
-        // Decided by BASIS PROVENANCE, not by a quantity, and it runs for EVERY class-1 type.
-        // The predecessor gated on `book_state_known_at_ex_date && qty_at_ex_date == 0`, which
-        // the runner only ever populated inside its DIVIDEND branch -- so the guard was inert
-        // for SPLITS, the case where the magnitude is catastrophic rather than small.
+        // Decided by BASIS PROVENANCE, not by a quantity, and it runs for EVERY class-1 type,
+        // SPLITS included, the case where the magnitude is catastrophic rather than small.
         //
         // Only POSITIVE evidence of contamination may skip. UNKNOWN applies, because dropping a
         // real 25:1 split leaves basis and mark 25x apart, which is strictly worse than the
@@ -96,14 +94,14 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                  "double-adjust it. Evidence: " +
                  (ev.basis_provenance_evidence.empty() ? std::string("(none recorded)")
                                                        : ev.basis_provenance_evidence) +
-                 " (E2-F17).");
+                 ".");
             continue;
         }
         if (ev.basis_provenance == CorpActionEvent::BasisProvenance::UNKNOWN) {
             WARN("CorporateActionsApplier: basis provenance for " + ev.symbol + " (ex_date " +
                  ev.ex_date + ", " + std::string(type_to_string(ev.type)) + ") is UNKNOWN; "
                  "APPLYING, because dropping a real adjustment is worse than a double-adjusted "
-                 "basis. Investigate if this repeats (E2-F17).");
+                 "basis. Investigate if this repeats.");
         }
 
         PositionAdjustment adj;
@@ -153,16 +151,16 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 const double ratio = 1.0 + ev.value / ev.close_at_ex_date;
                 const double avg_after = avg_before > 0.0 ? avg_before / ratio : 0.0;
                 // Dividend doesn't change quantity; only rescales avg_price into
-                // the post-dividend adjusted-price frame (audit §1.15).
+                // the post-dividend adjusted-price frame.
                 if (avg_before > 0.0) {
                     pos.average_price = Decimal(avg_after);
                 }
                 // For the audit log's cash-flow figure, the basis is the
-                // qty held on ex_date - 1 (ultrareview bug_021). When the
+                // qty held on ex_date - 1. When the
                 // caller supplied that, record it; otherwise fall back to
-                // the live position qty (same as before).
+                // the live position qty.
                 //
-                // Design note (ultrareview PR #39 follow-up): the `> 0`
+                // Design note: the `> 0`
                 // sentinel uses zero, not -1 / NaN, because:
                 //   (a) `CorpActionEvent::qty_at_ex_date` defaults to 0.0
                 //       (legacy callers that don't populate it get the
@@ -207,14 +205,14 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 break;
             }
             case CorpActionType::TERMINATION:
-                // E2-F13: class-3 lifecycle events are CorporateActionsLifecycle's business,
+                // Class-3 lifecycle events are CorporateActionsLifecycle's business,
                 // not the applier's. A TERMINATION reaching here means an event was mis-typed
                 // upstream; skip it rather than apply price-restating logic to it.
                 WARN("CorporateActionsApplier: TERMINATION is a lifecycle class, not a "
                      "price-restating action -- skipping " + ev.symbol + " on " + ev.ex_date);
                 continue;
             case CorpActionType::SPINOFF:
-                // E2-F31, same reason and a sharper edge: `value` on a spinoff is the CHILD
+                // Same reason for a spinoff, with a sharper edge: `value` on a spinoff is the CHILD
                 // RATIO (0.25, 0.33333), so restating a parent by it as if it were a split
                 // factor would cut the share count to a quarter. apply_spinoffs owns this.
                 WARN("CorporateActionsApplier: SPINOFF is a lifecycle class, not a "

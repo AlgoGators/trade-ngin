@@ -1,4 +1,4 @@
-// K3, the netting adjustment (T-7b-2 8b). See include/trade_ngin/transaction_cost/netting.hpp.
+// The netting adjustment. See include/trade_ngin/transaction_cost/netting.hpp.
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -111,7 +111,7 @@ NettingOutcome net_symbol_day(const std::vector<NettingLeg>& legs, const Account
 
     // credit_total split pro rata to C(q_i) in whole 1e-8 units: the floor of each exact quota,
     // then one unit to each of the largest remainders (a tie to the smaller sleeve name) until the
-    // parts sum to |credit_total|; the sign is applied after, as S2's split does for a short book.
+    // parts sum to |credit_total|; the sign is applied after, so a negative credit splits as its magnitude does.
     // magnitude * w is exact in 128 bits (mul_div below); the quota never exceeds magnitude
     // because w <= weight_total, so it fits in 64.
     const uint64_t magnitude = credit < 0 ? 0 - static_cast<uint64_t>(credit)

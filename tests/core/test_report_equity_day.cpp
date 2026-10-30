@@ -1,4 +1,4 @@
-// The equity report's day banners (HD 2026-10-14, section 17): one test per row of the table, the texts
+// The equity report's day banners: one test per row of the banner table, the texts
 // asserted word for word.
 #include <gtest/gtest.h>
 

@@ -1,5 +1,5 @@
 // The numbers of a results statement, guarded: a double that is not finite is never formatted
-// into the text of a statement (T-8D R12, T-8D-2 R54).
+// into the text of a statement.
 //
 // std::to_string prints a NaN as `nan` and an infinity as `inf`, unquoted, which Postgres reads
 // as a column name: the whole statement fails, and with it the row (a backtest whose summary
@@ -8,8 +8,8 @@
 // the row is refused, no statement is sent, and the caller logs the column and the value.
 //
 // A finite value is written as the shortest decimal text that reads back as the same double
-// (D-16): std::to_string's six decimals kept about four significant digits of a 6J-sized price
-// and let a cumulative cost column drift from the sum of its executions.
+// (std::to_string's six decimals keep about four significant digits of a 6J-sized price
+// and let a cumulative cost column drift from the sum of its executions).
 
 #pragma once
 

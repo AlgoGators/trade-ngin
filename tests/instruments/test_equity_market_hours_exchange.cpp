@@ -9,11 +9,10 @@
 
 using namespace trade_ngin;
 
-// Phase 6 §6b -- pins exchange-aware is_market_open dispatch.
+// Pins exchange-aware is_market_open dispatch.
 //
-// The audit flagged that is_market_open ignored spec_.exchange and
-// silently applied NYSE rules to every equity (including LSE/TSE/etc.).
-// Phase 6 adds a dispatch:
+// is_market_open reads spec_.exchange rather than silently applying NYSE
+// rules to every equity (including LSE/TSE/etc.). The dispatch:
 //   - US exchanges (NYSE/NASDAQ/ARCA/AMEX/BATS, empty default) -> US calendar
 //   - any other -> fail OPEN with a one-time WARN per unknown exchange
 //
@@ -86,15 +85,10 @@ TEST(EquityMarketHoursExchange, NasdaqIsUs) {
 }
 
 // ---------------------------------------------------------------------------
-// C-5 §9-A3 -- the pins above cannot see the dispatch they claim to pin.
-//
-// THE TEST DEFECT: every assertion in this file is
-// `EXPECT_TRUE(is_market_open(trading_hours_instant()))`. The pre-dispatch code ignored
-// `spec_.exchange` entirely and applied US weekday-plus-holiday rules, which ALSO return
-// true on a weekday inside trading hours. Executed revert (C-5 L-CLOSURE): with
-// src/instruments/equity.{cpp,hpp} reverted to 4210ab14^, all five PASS:
-//
-//     [----------] 5 tests from EquityMarketHoursExchange  ... [  PASSED  ]
+// The pins above cannot see the dispatch alone: each is
+// `EXPECT_TRUE(is_market_open(trading_hours_instant()))`, and code that ignored
+// `spec_.exchange` and applied US weekday-plus-holiday rules would ALSO return true on a
+// weekday inside trading hours.
 //
 // The two branches only disagree where the US calendar would say CLOSED and the fail-open
 // dispatch says OPEN: a non-US exchange on a weekend, or on a US market holiday. That is

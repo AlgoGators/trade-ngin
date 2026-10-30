@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The seven-day schedule and the watchdog (T-7a commit 4; HD 2026-09-17, T-5 W5 / WATCHDOG-frames).
+"""The seven-day schedule and the watchdog.
 
   * live_portfolio.cron runs the futures runner every calendar day (`30 9 * * *`), and
     scripts/run_live_portfolio.sh no longer exits on a Saturday or Sunday;
@@ -115,7 +115,7 @@ class Evaluate(unittest.TestCase):
     def test_the_old_upsertable_clock_is_not_read(self):
         src = read("scripts/check_live_trading.py")
         code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-        # T-7b-1 C7b R5 reads live_run_metadata for the day's refusal MARK; the run CLOCK must
+        # The watchdog reads live_run_metadata for the day's refusal MARK; the run CLOCK must
         # still never come from that upsertable table.
         self.assertNotRegex(code, r"max\((?:created_at|updated_at)\)[^\n]*FROM trading\.live_run_metadata")
         self.assertNotIn("max(updated_at)", code)
@@ -124,10 +124,10 @@ class Evaluate(unittest.TestCase):
 
 
 class C7bHeldDay(unittest.TestCase):
-    """T-7b-1 C7b R5 (T-7a_CODE_REVIEW R5): a day whose run refused its book (a portfolio risk
+    """A day whose run refused its book (a portfolio risk
     REFUSE or a risk module that could not answer, exit 3) stores live_results and positions, so
     the three write stamps read healthy. The metadata row carries the mark; the watchdog reports it.
-    The STRICT assertion's mark (R4) is reported the same way."""
+    The STRICT assertion's mark is reported the same way."""
 
     def setUp(self):
         self.w = load_watchdog()
@@ -190,7 +190,7 @@ class C7bHeldDay(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("TRADE_NGIN_TEST_DSN"), "TRADE_NGIN_TEST_DSN not set")
 class C7bFetchOnTheClone(unittest.TestCase):
-    """R5 and R12 against the real schema, inside one transaction that is rolled back."""
+    """The run mark and the run clock on the real schema, in one transaction that is rolled back."""
 
     def test_the_latest_runs_mark_is_read(self):
         import psycopg2
@@ -239,7 +239,7 @@ class C7bFetchOnTheClone(unittest.TestCase):
             conn.close()
 
     def test_the_run_clock_is_read_in_utc(self):
-        # R12: created_at is a timestamp WITHOUT time zone, written in the writer session's zone.
+        # created_at is a timestamp WITHOUT time zone, written in the writer session's zone.
         # On a session in New York, 21:30 on 2030-01-10 is 02:30 UTC on 2030-01-11, the frame of
         # the watchdog's `today`.
         import psycopg2

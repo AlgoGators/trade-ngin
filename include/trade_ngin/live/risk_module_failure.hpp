@@ -14,14 +14,14 @@ namespace trade_ngin {
 /**
  * The live futures runners' side of a portfolio risk module that could not answer.
  *
- * HD 2026-09-21, option (b): when a portfolio-scope risk module's evaluate errors (the shipped
+ * When a portfolio-scope risk module's evaluate errors (the shipped
  * futures books run one Carver module), the PortfolioManager REFUSES the scope: every strategy
  * is held at its seeded T-1 book and no orders are generated. The runner then stores the day
  * exactly as it stores any REFUSE day (the metadata row marked by run_metadata_marks.hpp, the
  * held positions, no executions, live_results), logs an ERROR, flags the email, and exits
  * NON-ZERO so the cron wrapper and the operator see a day the gate did not measure.
  *
- * T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope module that cannot answer (any
+ * A SLEEVE-scope module that cannot answer (any
  * capability, or the sleeve's risk step throwing) refuses its sleeve the same way: that sleeve is
  * held at its seeded T-1 book and sends no orders while the other sleeves trade. The runner flags
  * it with the SAME exit code and email flag as a portfolio failure (a book the gate did not
@@ -54,7 +54,7 @@ inline std::optional<nlohmann::json> portfolio_risk_module_failure(
     return std::nullopt;
 }
 
-/// T-7b-2 C10b: the first SLEEVE-scope record of the last process_market_data call whose module
+/// The first SLEEVE-scope record of the last process_market_data call whose module
 /// (or the sleeve's risk step, kRiskStepModuleId) failed AND whose sleeve was refused for it, or
 /// nullopt. The same keys as portfolio_risk_module_failure plus "scope" ("sleeve"), "action"
 /// ("REFUSE") and "reason" (the error), so the object is also the metadata row's risk_refusal
@@ -82,7 +82,7 @@ inline std::optional<nlohmann::json> sleeve_risk_module_failure(
 }
 
 /// What main() returns after the day is stored: 0, or kRiskModuleFailureExitCode when a
-/// portfolio risk module failed and the book was held, or (T-7b-2 C10b) a sleeve risk module
+/// portfolio risk module failed and the book was held, or a sleeve risk module
 /// failed and its sleeve was held.
 inline int live_run_exit_code(const std::optional<nlohmann::json>& module_failure) {
     return module_failure.has_value() ? kRiskModuleFailureExitCode : 0;
@@ -130,7 +130,7 @@ inline std::string risk_module_failure_email_banner(const nlohmann::json& failur
         html += "</div>\n";
         return html;
     }
-    // T-7b-3 R-3 (HD 2026-09-27 ruling 5): a sizing read failed (live/live_sizing_read.hpp).
+    // A sizing read failed (live/live_sizing_read.hpp).
     if (failure.value("scope", std::string()) == "sizing") {
         html += "<strong>SIZING READ FAILED - BOOK HELD:</strong> the account's equity could not "
                 "be read to size today's book (" +

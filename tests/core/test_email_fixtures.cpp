@@ -235,12 +235,10 @@ OverLimitReport over_limit_of(double sizing_capital, double gross, double net) {
     return over_limit_report(day, columns, overlay_modules(), 2.0);
 }
 
-// What a runner tells the report about the day: its settled day, and the n and K of its statistics.
-EmailReportContext context_of(const std::string& settled_date, int sessions, double per_year) {
+// What a runner tells the report about the day: its settled day.
+EmailReportContext context_of(const std::string& settled_date) {
     EmailReportContext context;
     context.settled_date = settled_date;
-    context.statistics_sessions = sessions;
-    context.sessions_per_year = per_year;
     return context;
 }
 
@@ -252,20 +250,11 @@ EmailReportContext with_book(EmailReportContext context, const std::string& live
     return context;
 }
 
-// The two capital keys of the day's risk_detail: sizing_capital and account_value.
-// The symbols whose settled bar booked no move, by kind (T-EMAIL).
+// The symbols whose settled bar booked no move, by kind.
 EmailReportContext with_zero_kinds(EmailReportContext context, const std::string& roll,
                                    const std::string& withheld = "") {
     if (!roll.empty()) context.settled_zero_kinds.roll.insert(roll);
     if (!withheld.empty()) context.settled_zero_kinds.withheld.insert(withheld);
-    return context;
-}
-
-EmailReportContext with_capital(EmailReportContext context, double sizing_capital,
-                                double account_value) {
-    context.has_sizing_capital = true;
-    context.sizing_capital = sizing_capital;
-    context.account_value_at_sizing = account_value;
     return context;
 }
 
@@ -409,11 +398,7 @@ protected:
             settled_prices.previous, settled_metrics, "LIVE_TREND_FOLLOWING",
             // gross 431,957.5625 and net 121,699.32 on the sizing capital 497,745.27
             over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012),
-            with_zero_kinds(with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
-                                                   kConservativeCapital.sizing_capital,
-                                                   kConservativeCapital.account_value),
-                                      "2025-10-05"),
-                            "QMBT.v.0"));
+            with_zero_kinds(with_book(context_of("2026-04-27"), "2025-10-05"), "QMBT.v.0"));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold
@@ -477,9 +462,7 @@ protected:
             marks, nullptr, settled, settled_prices.latest, settled_prices.previous,
             settled_metrics, "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
             over_limit_of(kBaseCapital.sizing_capital, 0.5035118, 0.5035118),
-            with_book(with_capital(context_of("2026-04-26", 320, 311.0574),
-                                   kBaseCapital.sizing_capital, kBaseCapital.account_value),
-                      "2025-11-11"));
+            with_book(context_of("2026-04-26"), "2025-11-11"));
     }
 
     // The equity book: Wednesday 2026-06-24; its settled day is the previous session, Tuesday
@@ -545,7 +528,7 @@ protected:
             positions, std::nullopt, metrics, executions, "2026-06-24", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
             "EQUITY_MR_PORTFOLIO",
-            with_book(context_of("2026-06-23", 55, 252.0), "2026-04-01", true));
+            with_book(context_of("2026-06-23"), "2026-04-01", true));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -571,7 +554,7 @@ TEST_F(EmailFixture, TheEquityBodyIsTheStoredBody) {
 static std::string plain_notes(std::string body) {
     return std::regex_replace(body, std::regex("<sup style=\"font-size: 9px; color: #000;\">[0-9]+</sup>"), "^");
 }
-// T-8D D1 and HD 2026-10-12: the labels, on the bodies. The settled table's two price columns are
+// The labels, on the bodies. The settled table's two price columns are
 // named in plain words, with no "T-1" or "T-2".
 TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
     const std::string futures = conservative_body();
@@ -590,7 +573,7 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
             EXPECT_EQ(body.find(gone), std::string::npos) << gone;
         }
         if (equities) {
-            // HD 2026-10-14 (section 16): average cost first, then the day's move, then the split
+            // Average cost first, then the day's move, then the split
             EXPECT_NE(body.find("<th>Symbol</th><th>Quantity</th><th>Average Cost</th><th>Previous price</th>"
                                 "<th>Latest price</th><th>Day's PnL</th><th>Unrealized PnL</th><th>Realized PnL</th>"),
                       std::string::npos);
@@ -610,9 +593,8 @@ TEST_F(EmailFixture, TheSleeveNamesItsKindAndTheSettledTableNamesItsTwoPrices) {
     EXPECT_EQ(base.find("Netting Adjustment:</strong>"), std::string::npos) << "the arithmetic is one footnote";
 }
 
-// The lead's 2026-10-07 list: a price was printed to two fixed decimals (a yen future read $0.01)
-// and a symbol with no bar read 0.00. A price prints every decimal it has, to eight at most and
-// two at least.
+// A price prints every decimal it has, to eight at most and two at least, so a yen future does
+// not read $0.01 (as two fixed decimals print it) and a symbol with no bar does not read 0.00.
 TEST(ReportPriceText, APricePrintsEveryDecimalItHasAndNeverFewerThanTwo) {
     EXPECT_EQ(report_price_text(0.0062995), "0.0062995");
     EXPECT_EQ(report_price_text(103.73828125), "103.73828125");
@@ -629,7 +611,7 @@ TEST(ReportPriceText, APricePrintsEveryDecimalItHasAndNeverFewerThanTwo) {
 }
 
 
-// HD 2026-10-12: the settled table's two prices are the pair the settle booked the row on, so a
+// The settled table's two prices are the pair the settle booked the row on, so a
 // row with a bar multiplies out to its P&L; a row whose symbol printed no bar shows its last known
 // close and the words "no bar", and ONE footnote under the table says what the words mean, only on
 // a body that has such a row.
@@ -659,7 +641,7 @@ TEST_F(EmailFixture, ASettledRowMultipliesOutAndANoBarRowSaysSoWithOneFootnote) 
               std::string::npos);
     EXPECT_EQ(base.find("679.50"), std::string::npos);
 
-    // HD 10-13: no sentence under the table; a no-bar row is a dash with footnote 1, once.
+    // No sentence under the table; a no-bar row is a dash with footnote 1, once.
     for (const std::string& body : {futures, base}) {
         EXPECT_NE(body.find("\xE2\x80\x93^"), std::string::npos);
         EXPECT_NE(body.find(" No price received that day. P&amp;L is logged as 0 and updates on later days.</div>"), std::string::npos);
@@ -731,9 +713,6 @@ TEST(EmailSettledSplitTwinSourceGuard, BothFuturesRunnersReadTheReturnLinesFromT
                            "                            today_row.total_annualized_return;"),
                   std::string::npos)
             << runner;
-        EXPECT_NE(src.find("report_context.statistics_sessions = today_row.total_days;"),
-                  std::string::npos)
-            << runner;
         for (const char* gone :
              {"strategy_metrics[\"Daily Return\"]", "strategy_metrics[\"Daily Total PnL\"]",
               "strategy_metrics[\"Total Annualized Return\"] = "
@@ -768,9 +747,9 @@ TEST_F(EmailFixture, TheCapitalInputsOfTheFuturesFixturesSatisfyTheSizingRule) {
     EXPECT_LT(half_compounded_capital(500000.0, {5759.80, -2254.73}).capital, 501250.34);
 }
 
-// READS SOURCE: a twin guard. Both futures runners hand the two keys under the condition and
-// from the values of their set_risk_detail call.
-TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfRiskDetail) {
+// READS SOURCE: a twin guard. Both futures runners store the account value the sizing read in the
+// day's risk_detail.
+TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersStoreTheSizingReadsAccountValue) {
     for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
                                "apps/strategies/live_portfolio.cpp"}) {
         fs::path dir = fs::current_path();
@@ -786,18 +765,10 @@ TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfR
         EXPECT_NE(src.find("risk_detail_json(one_pass_day, sizing_capital_read.capital.account)"),
                   std::string::npos)
             << runner;
-        EXPECT_NE(src.find("if (one_pass_day.stores_detail()) {\n"
-                           "                        report_context.has_sizing_capital = true;\n"
-                           "                        report_context.sizing_capital = "
-                           "one_pass_day.sizing_capital;\n"
-                           "                        report_context.account_value_at_sizing =\n"
-                           "                            sizing_capital_read.capital.account;"),
-                  std::string::npos)
-            << runner;
     }
 }
 
-// The lead, 2026-10-12: a report body carries no symbol of the specification, and the words
+// A report body carries no symbol of the specification, and the words
 // "account value" name one figure only, the day's current portfolio value the leverage pair divides
 // by.
 TEST_F(EmailFixture, NoBodyCarriesASymbolOfTheSpecificationOrTwoAccountValues) {
@@ -997,7 +968,7 @@ TEST(EmailConfigKey, TheConfigHasOneRecipientListAndAnOldFileStillLoads) {
     EXPECT_TRUE(written.contains("to_emails"));
 }
 
-// READS FILES: the three templates and their README no longer name the key.
+// READS FILES: the three templates and their README do not name the deleted key.
 TEST(EmailConfigKey, TheTemplatesDoNotNameTheDeletedKey) {
     fs::path root = fs::current_path();
     for (int i = 0; i < 8 && !root.empty(); ++i, root = root.parent_path()) {
@@ -1051,9 +1022,9 @@ std::string metadata_json(const std::string& ib, const std::string& name,
            "\",\"months\":\"" + months + "\"}";
 }
 
-// T-EMAIL Q10 (HD): the Symbols Reference lists each contract's months and nothing about a front
-// month, and the report carries no rollover notice. The month came from the calendar, not from the
-// position, and was wrong for HO, NG and RB.
+// The Symbols Reference lists each contract's months and nothing about a front month, and the
+// report carries no rollover notice. A month taken from the calendar rather than the position is
+// wrong for HO, NG and RB.
 TEST_F(EmailFixture, TheSymbolsReferenceHasNoFrontMonthColumnAndTheReportNoRolloverNotice) {
     auto db = std::make_shared<SymbolsDatabase>(std::vector<std::string>{
         metadata_json("HO", "Heating Oil", "All Months"), metadata_json("ZS", "Soybeans", "FHKNQUX")});
@@ -1066,6 +1037,121 @@ TEST_F(EmailFixture, TheSymbolsReferenceHasNoFrontMonthColumnAndTheReportNoRollo
     EXPECT_NE(table.find("<td>Heating Oil</td>"), std::string::npos) << table;
     EXPECT_EQ(conservative_body().find("Rollover"), std::string::npos);
     EXPECT_EQ(base_body().find("Rollover"), std::string::npos);
+}
+
+// With per_contract_rolls on, the table has a Front Month column showing the contract held, and the
+// Contract Months column reads the root's cycle; a root with no outlook keeps the metadata's months and
+// an empty Front Month cell. With the switch off (no roll view, or an empty one) the table has no
+// Front Month column.
+TEST_F(EmailFixture, WithTheSwitchOnTheSymbolsReferenceShowsTheContractHeldAndTheCycle) {
+    auto db = std::make_shared<SymbolsDatabase>(std::vector<std::string>{
+        metadata_json("HO", "Heating Oil", "All Months"), metadata_json("ZS", "Soybeans", "FHKNQUX")});
+    const std::unordered_map<std::string, Position> held = {{"HO.v.0", row("HO.v.0", 1.0, 2.5)},
+                                                             {"ZS.v.0", row("ZS.v.0", 1.0, 1000.0)}};
+    ReportRolls rolls;
+    rolls.per_contract_rolls = true;
+    ReportRollOutlook zs;
+    zs.root = "ZS";
+    zs.held = "ZSX6";
+    zs.cycle = "FHKNX";
+    rolls.outlook["ZS"] = zs;
+    const std::string table = sender_.format_symbols_table_for_positions(held, db, "2026-04-10", &rolls);
+    EXPECT_NE(table.find("<th>Contract Months</th><th>Front Month</th></tr>"), std::string::npos) << table;
+    EXPECT_NE(table.find("<td>Soybeans</td>\n<td>Jan Mar May Jul Nov</td>\n<td>ZSX6</td>\n</tr>"), std::string::npos)
+        << table;
+    EXPECT_NE(table.find("<td>Heating Oil</td>\n<td>All Months</td>\n<td></td>\n</tr>"), std::string::npos) << table;
+    const std::string off = sender_.format_symbols_table_for_positions(held, db, "2026-04-10");
+    EXPECT_EQ(off, sender_.format_symbols_table_for_positions(held, db, "2026-04-10", nullptr));
+    const ReportRolls empty;
+    EXPECT_EQ(off, sender_.format_symbols_table_for_positions(held, db, "2026-04-10", &empty));
+    EXPECT_EQ(off.find("Front Month"), std::string::npos);
+}
+
+// With per_contract_rolls on, the CONSERVATIVE body with MBT's roll a per-contract roll
+// carrying its split prints one plain roll line under the roll legs; ZT's contract inside its window
+// gets the Rollover Warning box; KE's settled row, a per-contract roll bar, carries the roll footnote
+// with its new words; the footer's data sentence becomes the roll sentence. The switch-off body is the
+// stored fixture (EmailFixture.Conservative...), so none of this is printed there.
+TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAndTheFooter) {
+    const std::unordered_map<std::string, Position> sleeve = {
+        {"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0)},
+        {"QMBT.v.0", row("QMBT.v.0", 1.0, 77740.0)}};
+    const StrategyPositionsMap book = {{"TREND_FOLLOWING", sleeve}};
+    ExecutionReport rc = roll_leg("QMBT.v.0", true, Side::SELL, 77960.0, 2.45, "42185193");
+    rc.roll_bar_move = 1.0 * (77960.0 - 78500.0) * 0.1;
+    rc.roll_gap_points = 79070.0 - 77960.0;
+    rc.roll_gap_value = (79070.0 - 77960.0) * 1.0 * 0.1;
+    // QMES rolls by the rule like every root, its closing leg carrying its split; a leg with no split
+    // (QM2K's here) prints no line.
+    ExecutionReport mes = roll_leg("QMES.v.0", true, Side::SELL, 7217.25, 1.30, "42140878");
+    mes.roll_bar_move = 1.0 * (7217.25 - 7200.00) * 5.0;
+    mes.roll_gap_points = 7262.50 - 7217.25;
+    mes.roll_gap_value = (7262.50 - 7217.25) * 1.0 * 5.0;
+    const StrategyExecutionsMap executions = {
+        {"TREND_FOLLOWING", {rc, roll_leg("QMBT.v.0", false, Side::BUY, 79070.0, 2.45, "42013708"), mes,
+                             roll_leg("QMES.v.0", false, Side::BUY, 7262.50, 1.32, "42003800"),
+                             roll_leg("QM2K.v.0", true, Side::SELL, 2806.7, 1.10, "42005017"),
+                             roll_leg("QM2K.v.0", false, Side::BUY, 2830.1, 1.10, "42002147")}}};
+    const StrategyPositionsMap settled = {
+        {"TREND_FOLLOWING",
+         {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0, 425.0)}}}};
+    const std::unordered_map<std::string, double> t1 = {{"QZT.v.0", 103.73828125}, {"QKE.v.0", 677.0}};
+    const std::unordered_map<std::string, double> t2 = {{"QZT.v.0", 103.71484375}, {"QKE.v.0", 668.5}};
+    EmailReportContext context = with_book(context_of("2026-04-27"), "2025-10-05");
+    context.settled_zero_kinds.per_contract_roll.insert("QKE.v.0");
+    context.rolls.per_contract_rolls = true;
+    context.rolls.names["ROLL_QMBT.v.0_RC"] = ReportRollNames{"Micro Bitcoin Futures", "April", "May", 1};
+    context.rolls.names["ROLL_QMES.v.0_RC"] = ReportRollNames{"Micro E-mini S&P500 Index", "September", "December", 2};
+    context.rolls.names["ROLL_QM2K.v.0_RC"] = ReportRollNames{"Micro E-Mini Russell-2000 Index", "September", "December", 1};
+    ReportRollOutlook zt;
+    zt.root = "QZT";
+    zt.held = "QZTM6";
+    zt.cycle = "HMUZ";
+    zt.in_window = true;
+    zt.roll_by = "2026-05-28";
+    zt.deadline = "2026-05-29";
+    zt.first_notice = true;
+    zt.target = "QZTU6";
+    context.rolls.outlook["QZT"] = zt;
+    const std::string body = sender_.generate_trading_report_body(
+        book, sleeve, std::nullopt, futures_metrics(), executions, "2026-04-28", "CONSERVATIVE_PORTFOLIO", true,
+        {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
+        over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), context);
+    EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro Bitcoin Futures, April to May: market "
+                        "move booked -$54; contract price difference 1110.0 ($111, not profit or loss); roll cost "
+                        "$4.90.</p>"),
+              std::string::npos)
+        << body;
+    EXPECT_LT(body.find("<th>Roll Leg</th>"), body.find("Micro Bitcoin Futures, April to May")) << "under the legs";
+    EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro E-mini S&P500 Index, September to December: "
+                        "market move booked $86; contract price difference 45.25 ($226, not profit or loss); roll "
+                        "cost $2.62.</p>"),
+              std::string::npos)
+        << "a micro's roll gets the full line";
+    EXPECT_EQ(body.find("Micro E-Mini Russell-2000 Index, September"), std::string::npos) << "no split: no line";
+    EXPECT_EQ(body.find("not shown for this contract yet"), std::string::npos) << "the cost-only line is gone";
+    EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "
+                        "<strong>QZTU6</strong> by 05-28, first notice 05-29</li>"),
+              std::string::npos)
+        << body;
+    EXPECT_NE(body.find(kReportRollBarNote), std::string::npos) << body;
+    EXPECT_NE(body.find(std::string("futures assets. ") + kReportRollsFooter), std::string::npos) << body;
+    EXPECT_EQ(body.find("We currently only provide data for the front-month contract"), std::string::npos);
+    EXPECT_EQ(body.find("P&amp;L is not booked on the roll."), std::string::npos)
+        << "no row booked 0 on a roll: the old footnote is not printed";
+    // The same body with the switch off: none of it.
+    EmailReportContext off = context;
+    off.rolls = ReportRolls{};
+    off.settled_zero_kinds.per_contract_roll.clear();
+    const std::string off_body = sender_.generate_trading_report_body(
+        book, sleeve, std::nullopt, futures_metrics(), executions, "2026-04-28", "CONSERVATIVE_PORTFOLIO", true,
+        {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
+        over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), off);
+    for (const char* absent : {"Micro Bitcoin Futures, April", "Rollover Notice", "rolled to the next one before",
+                               "The old contract's move that day is booked", "not shown for this contract yet"}) {
+        EXPECT_EQ(off_body.find(absent), std::string::npos) << absent;
+    }
+    EXPECT_NE(off_body.find("We currently only provide data for the front-month contract"), std::string::npos);
 }
 
 // N6: the note about a contract with no metadata sits after the table, not inside it.
@@ -1103,7 +1189,7 @@ TEST_F(EmailFixture, EveryBodyRendersTheSameBytesTwice) {
     EXPECT_EQ(equity_body(), equity_body());
 }
 
-// HD 10-13 (EMAIL_FEEDBACK_HD_2026-10-13.md): the layout of the bodies. Plain and short: the headings,
+// The layout of the bodies. Plain and short: the headings,
 // the blocks, the lines that are gone, and the one note at the bottom.
 TEST_F(EmailFixture, TheBodiesFollowHDsLayout) {
     const std::string equity_text = equity_body();

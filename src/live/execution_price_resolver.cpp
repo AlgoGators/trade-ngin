@@ -10,7 +10,7 @@ namespace trade_ngin {
 
 namespace {
 
-/** UTC YYYY-MM-DD, matching the date convention the equity path settled on. */
+/** UTC YYYY-MM-DD, matching the equity path's date convention. */
 std::string format_utc_date(const Timestamp& ts) {
     std::time_t t = std::chrono::system_clock::to_time_t(ts);
     std::tm tm_utc{};

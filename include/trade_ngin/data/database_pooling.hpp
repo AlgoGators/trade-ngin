@@ -76,15 +76,15 @@ public:
      * @return Reference to the database pool instance
      */
     static DatabasePool& instance() {
-        // E2-F30. Function-local statics are destroyed in reverse order of
+        // Function-local statics are destroyed in reverse order of
         // CONSTRUCTION, and the pool's pooled PostgresDatabase objects call
         // StateManager::instance().unregister_component() from their own
         // destructors (postgres_database.cpp, disconnect()). If StateManager
         // happened to be constructed after the pool -- which it is whenever a
         // runner touches the pool before anything registers a component -- it is
         // destroyed BEFORE the pool, and every pooled connection's shutdown then
-        // locks a recursive_mutex inside a destroyed StateManager. That is the
-        // five "recursive mutex" warnings every live run ends with.
+        // locks a recursive_mutex inside a destroyed StateManager, which shows as
+        // "recursive mutex" warnings at the end of a run.
         //
         // Touching StateManager here, before `pool` is constructed, makes its
         // construction strictly earlier and therefore its destruction strictly

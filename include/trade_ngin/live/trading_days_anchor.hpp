@@ -10,14 +10,14 @@ namespace trade_ngin {
 /**
  * @brief Is the annualization anchor consistent with the book it annualizes?
  *
- * E2-F32. `trading.get_trading_days(strategy, target, portfolio)` takes its
+ * `trading.get_trading_days(strategy, target, portfolio)` takes its
  * start date from `trading.strategy_trading_days_metadata.live_start_date` and
  * falls back to `MIN(date)` over that portfolio's `live_results` only when no
  * row exists. A row that is LATER than the book's own first day is therefore
  * strictly worse than no row at all, and nothing anywhere notices:
  *
- *   EQUITY_MR_PORTFOLIO carries live_start_date 2026-07-24 (seeded by hand for a
- *   10-day window) while the replayed book starts 2026-04-01. Every date before
+ *   A book replayed from 2026-04-01 with live_start_date 2026-07-24 (a row
+ *   seeded by hand for a 10-day window): every date before
  *   07-24 gets `GREATEST(1, target - start + 1)` = 1 trading day, so
  *   total_annualized_return collapses onto total_cumulative_return for 115 rows;
  *   at 07-27 the count is 4 and a -3.5 % cumulative return annualizes to
@@ -25,19 +25,15 @@ namespace trade_ngin {
  *
  * The check is one comparison the DB function cannot make, because the function
  * stops looking the moment it finds a metadata row. The metadata row is the
- * authoritative anchor (HD, 2026-09-10): `effective_anchor` is the row when there
+ * authoritative anchor: `effective_anchor` is the row when there
  * is one and the book's own first day only when there is none. A mismatch is
  * reported through `anchor_is_late` so the runner can WARN, but it never moves
- * the anchor by itself: a stray backdated row (BASE_PORTFOLIO carries two rows
- * dated 2025-01-29/02-06 that were written on 2026-02-08, nine months before
- * the stream's real start) would otherwise annualise the book over a span it
+ * the anchor by itself: a stray backdated row (rows dated months before the
+ * stream's real start) would otherwise annualise the book over a span it
  * never traded. Bad data is fixed in the data, not by the runner.
  *
- * This is NOT equity-specific. Futures carries the same shape -- as of 2026-09-03
- * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST / BASE_PORTFOLIO is anchored at
- * 2025-11-11 against live_results from 2025-01-29 -- so the check belongs beside
- * the function, not inside one runner. Wiring the futures runners is a separate
- * change with its own regression, deliberately not made here.
+ * This is NOT equity-specific: a futures book can carry the same shape, so the
+ * check belongs beside the function, not inside one runner.
  */
 struct TradingDaysAnchor {
     /// True when strategy_trading_days_metadata has a row for this (strategy, portfolio).

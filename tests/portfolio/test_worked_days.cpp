@@ -1,7 +1,7 @@
-// LOOP_SPEC v6.2 section 9, the three worked days, through the engine: one test a day feeds the
-// section's inputs (the illustrative covariance, the prices, the forecasts and slow forecasts, the
-// held books, E_1 = E_2 = 500,000 and E_3 = 475,500) to the engine's own code and asserts every
-// digit the three tables print.
+// The three worked days, through the engine: one test a day feeds the worked example's inputs (the
+// illustrative covariance, the prices, the forecasts and slow forecasts, the held books, E_1 = E_2
+// = 500,000 and E_3 = 475,500) to the engine's own code and asserts every digit the three tables
+// print.
 //
 // What runs. The equity slow rule is trend_estimator::equity_slow_ruled, N* is
 // TrendFollowingStrategy::calculate_position, the sizing capital is half_compounded_capital, and
@@ -19,8 +19,8 @@
 // spread and no impact, registered with the manager's cost model.
 //
 // Not engine outputs, and not asserted: the uncapped readings (printed "for the record"), the
-// exhaustive optimum and its gap (the oracle's diagnostic search), and the order of the search's
-// passes (the count is asserted).
+// exhaustive optimum and its gap (a diagnostic search outside the engine), and the order of the
+// search's passes (the count is asserted).
 
 #include <gtest/gtest.h>
 

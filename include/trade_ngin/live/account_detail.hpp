@@ -1,6 +1,6 @@
 // include/trade_ngin/live/account_detail.hpp
 //
-// The account detail file attached to every report (HD 10-13): one row for the day, taken from the stored
+// The account detail file attached to every report: one row for the day, taken from the stored
 // live_results row (its text as stored: no new computation) and from the over-limit report the email
 // already holds. Column names are plain words. A figure the day does not carry is an empty cell.
 #pragma once
@@ -129,7 +129,7 @@ inline std::vector<std::pair<std::string, std::string>> account_detail_columns(
 }
 
 
-/// The file as rows: group, item, value (HD 10-14): one line per figure, grouped so it reads top to
+/// The file as rows: group, item, value: one line per figure, grouped so it reads top to
 /// bottom: the account, leverage on the account value, leverage on the sizing capital, the limits,
 /// the over-limit marks, risk, and the statistics on the sizing capital.
 inline std::vector<std::vector<std::string>> account_detail_rows(

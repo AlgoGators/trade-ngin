@@ -158,7 +158,7 @@ public:
     Result<void> check_risk_limits() override;
 
     /**
-     * @brief Replace config_.capital_allocation, the capital every sizing line reads (T-7b-2 9c).
+     * @brief Replace config_.capital_allocation, the capital every sizing line reads.
      *        Refuses a capital that is not a finite positive number and leaves the old one.
      */
     Result<void> set_capital_allocation(double capital) override;
@@ -179,7 +179,7 @@ public:
      * @brief Get the most recent per-symbol signals computed by on_data().
      *
      * Exposes the protected last_signals_ map for diagnostics and for the
-     * live-vs-backtest signal-parity test (review T-OR.5).
+     * live-vs-backtest signal-parity test.
      * @return Map of symbol -> latest signal value
      */
     const std::unordered_map<std::string, double>& get_last_signals() const {

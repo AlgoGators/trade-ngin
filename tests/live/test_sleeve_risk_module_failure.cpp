@@ -1,7 +1,7 @@
 // tests/live/test_sleeve_risk_module_failure.cpp
 //
-// T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope risk module that cannot answer refuses
-// its sleeve, as the portfolio rule (T-7a C5, HD 2026-09-21 option b) does for the book. The
+// A SLEEVE-scope risk module that cannot answer refuses its sleeve, as the portfolio rule does
+// for the book. The
 // PortfolioManager holds that sleeve at its seeded T-1 book (no order for it) while the other
 // sleeves trade; the live futures runners see it through sleeve_risk_module_failure(), log an
 // ERROR, mark today's live_run_metadata row (risk_refusal, scope "sleeve") unless a portfolio
@@ -212,7 +212,7 @@ protected:
 
     /// BASE's shape: two sleeves, the module on TF only. Day 1 healthy (TF 2 lots, FAST 1), day 2
     /// the module throws while TF asks 5 and FAST asks 3. Both sleeves seeded as the runners seed
-    /// them (T-7a C3). Returns day 2's stdout.
+    /// them. Returns day 2's stdout.
     std::string run_two_days() {
         static int n = 0;
         pm_ = std::make_unique<PortfolioManager>(base_config(), "PM_SRMF_" + std::to_string(++n));
@@ -346,7 +346,7 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
         EXPECT_LT(sleeve_detect, error_check)
             << "read before the error check, so an unseeded sleeve's failure (exit 1) is logged";
         const std::string block =
-            between(src, "            // T-7b-2 C10b (HD 2026-09-24 ruling 18)",
+            between(src, "            // SLEEVE RISK MODULE FAILURE",
                     "            if (port_process_result.is_error())");
         ASSERT_FALSE(block.empty());
         EXPECT_NE(block.find("if (!risk_module_failure) {"), npos);
@@ -363,5 +363,5 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
             << "the email flag is put on by deliver_email_report (EmailDelivery.*)";
         blocks[i++] = block;
     }
-    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' C10b blocks differ";
+    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' blocks differ";
 }

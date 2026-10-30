@@ -1,6 +1,6 @@
 // tests/live/test_equity_cash_available.cpp
 //
-// HD 2026-10-14 (EMAIL_FEEDBACK section 16.6): an equity book's cash_available is the portfolio value
+// An equity book's cash_available is the portfolio value
 // less the unrealized P&L less the margin posted, in BOTH writers of the column: the day's insert and the
 // next run's Day T-1 finalise UPDATE. The 2026-06-23 row: value 99,737.41, unrealized -71.39 (a loss, so
 // it adds back), margin posted 5,933.47: cash 93,732.55.

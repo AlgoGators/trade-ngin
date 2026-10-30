@@ -77,11 +77,11 @@ const std::vector<std::string>& vendor_labels_for_class(CorpActionClass c);
  *
  * Feeding those to a query keyed on `ticker` and turning each row into a
  * TerminationEvent closes out a holding in a company that is alive and still
- * printing bars (E2-F26): 1,611 acquisitionof, 78 spunofffrom and 13
+ * printing bars: 1,611 acquisitionof, 78 spunofffrom and 13
  * mergerfrom rows in equities_data.corporate_action sit on tickers that kept
  * printing 30+ days after the row. Unreachable for the ten configured symbols,
- * reachable on any universe-scale replay, and ARMED by the deal-terms feed
- * revival that E4 asks for -- so the split lands before the ask is sent.
+ * reachable on any universe-scale replay, and armed by any revival of the
+ * deal-terms feed.
  *
  * This is deliberately a SECOND axis, not a narrowing of CorpActionClass.
  * `spunofffrom` is still a TERMINATION: it describes a termination event, its

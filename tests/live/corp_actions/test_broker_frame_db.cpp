@@ -121,7 +121,7 @@ TEST_F(BrokerFrameDbTest, AppliedRowCarriesTheRatioNeededToInvertIt) {
         ASSERT_EQ(r.size(), 1u)
             << "trading.corp_action_applied.basis_ratio is absent -- apply "
                "migrations/006_corp_action_applied_basis_ratio.sql. Without it the adjusted "
-               "cost basis cannot be inverted to the broker frame from the ledger (F-8).";
+               "cost basis cannot be inverted to the broker frame from the ledger.";
         EXPECT_EQ(std::string(r[0][0].c_str()), "double precision");
         EXPECT_EQ(std::string(r[0][1].c_str()), "YES")
             << "it must stay nullable: NULL is how a pre-006 row says UNKNOWN";

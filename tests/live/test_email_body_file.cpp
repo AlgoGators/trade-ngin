@@ -1,6 +1,6 @@
 // tests/live/test_email_body_file.cpp
 //
-// T-NETTING fix round 2 (HD 2026-10-10: --send-email wins). The futures runners decide what to do
+// --send-email wins. The futures runners decide what to do
 // about the daily report through plan_email_report, name the body file through
 // email_body_file_path and write it through write_email_body_file (email_body_file.hpp); the
 // runners' use of them is tested in tests/live/test_email_delivery.cpp.
@@ -63,7 +63,7 @@ TEST(EmailReportPlan, SendWithoutTheVariableMails) {
 }
 
 // --send-email WINS: with the variable set the report is still mailed, no file is written, and the
-// run warns once. RED if the variable can silence a requested send (the behaviour of 4398b2c6).
+// run warns once. RED if the variable can silence a requested send.
 TEST(EmailReportPlan, SendWinsOverTheVariableWhichIsIgnoredWithAWarning) {
     const auto plan = plan_email_report(true, "/var/tmp/bodies");
     EXPECT_TRUE(plan.build());
@@ -90,7 +90,7 @@ TEST(EmailReportPlan, NoSendWithTheVariableWritesTheBodyAndMailsNothing) {
 }
 
 // Neither: nothing is built. RED if the gate's default were anything but "not set" (a non-empty
-// default would build a body on every run, and before this round would have stopped every mail).
+// default would build a body on every run, and could stop every mail).
 TEST(EmailReportPlan, NoSendWithoutTheVariableBuildsNothing) {
     for (const char* unset : {static_cast<const char*>(nullptr), ""}) {
         const auto plan = plan_email_report(false, unset);

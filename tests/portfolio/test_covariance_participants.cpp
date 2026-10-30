@@ -1,15 +1,14 @@
 // tests/portfolio/test_covariance_participants.cpp
 //
-// T-7b-1 7d, the S3 follow-up (T-7a_S1_S3_CODE_REVIEW S3-1, S3-2 and §3.6; ledger
-// PM-covariance-intersection-followups). S3 builds the optimizer's covariance on the INTERSECTION of
-// the matrix symbols' dates. Two edges of that rule are fixed here:
+// The optimizer's covariance is built on the INTERSECTION of the matrix symbols' dates. Two edges
+// of that rule:
 //
-//  * S3-1, a stale participant: one symbol whose feed stopped ends the shared window for every
-//    symbol. A participant whose last usable date is more than k dates of the UNION of the
+//  * a stale participant: one symbol whose feed stopped ends the shared window for every
+//    symbol, so a participant whose last usable date is more than k dates of the UNION of the
 //    participants' dates behind the newest union date (k = portfolio.json
 //    "covariance_stale_dates", absent means 5) is left out of the intersection and gets the
-//    guarded column (0.01 variance, zero covariances: the C-20 path), with a WARN naming it.
-//  * S3-2, the 20-return floor on the intersection: when the intersection gives fewer than 20
+//    guarded column (0.01 variance, zero covariances), with a WARN naming it.
+//  * the 20-return floor on the intersection: when the intersection gives fewer than 20
 //    returns, the participant with the fewest usable dates is left out (ties: the later first
 //    usable date, then the smaller symbol name), again and again until it gives 20 or one
 //    participant is left, instead of the WHOLE matrix falling to the 0.01 diagonal.
@@ -17,11 +16,11 @@
 // And the optimizer's and the risk gate's max |rho| are logged side by side once per rebalance
 // (COVARIANCE_MAX_RHO, lap 1).
 //
-// Every test here compiles against the parent source (4c349ad5): the helper is read through
-// `#define private public` as test_portfolio_manager_internals.cpp does, the stale window is set
-// through PortfolioConfig::from_json, and the loader is read through AppConfig::to_json. The ones
-// that describe a change are RED there; the controls (exactly k stays, a calendar gap is not a
-// stale date, the KNOWN E-7 case, no line without the optimizer) pass on both.
+// The helper is read through `#define private public` as test_portfolio_manager_internals.cpp does,
+// the stale window is set through PortfolioConfig::from_json, and the loader is read through
+// AppConfig::to_json. Each case that pins a rule says what the rule prevents ("wrong:"); the
+// controls (exactly k stays, a calendar gap is not a stale date, the KNOWN signalled new symbol, no
+// line without the optimizer) hold with or without it.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -175,7 +174,7 @@ private:
 
 // A sleeve with a trend sleeve's warm-up rule (it signals a symbol once its own history holds as
 // many prices as the longest EMA window of the TREND or the FAST configuration) that holds a fixed
-// book and a hand-set price count per symbol: on_data only counts the call. T-OPT E-7.
+// book and a hand-set price count per symbol: on_data only counts the call.
 // It is NOT a TrendFollowingStrategy: a book that holds one and names no overlay sleeve is refused
 // (PortfolioManager::process_market_data), and these cases are the generic step's participant
 // rule, which reads a sleeve through is_signalling() alone.
@@ -413,7 +412,7 @@ protected:
 // A and B print days 1000..1059; C stops at 1053, six union dates (1054..1059) behind. C is left
 // out of the intersection, so A's and B's series run over all 60 dates, exactly what they are
 // without C; C's series is empty and its column is guarded.
-//   parent: the intersection ends at C's 1053 for everyone: A and B get 53 returns, not 59.
+//   wrong:  the intersection ends at C's 1053 for everyone: A and B get 53 returns, not 59.
 TEST_F(CovarianceParticipants, AParticipantMoreThanKUnionDatesStaleIsExcludedAndGuarded) {
     const DatedCloses closes{{"A", days("A", 1000, 1059)},
                              {"B", days("B", 1000, 1059)},
@@ -435,7 +434,7 @@ TEST_F(CovarianceParticipants, AParticipantMoreThanKUnionDatesStaleIsExcludedAnd
 }
 
 // At exactly k (C stops at 1054, five union dates behind) C stays, and the intersection ends at
-// its last date for everyone, as under S3. A control: the parent does the same.
+// its last date for everyone. A control.
 TEST_F(CovarianceParticipants, AParticipantExactlyKUnionDatesStaleStays) {
     const DatedCloses closes{{"A", days("A", 1000, 1059)},
                              {"B", days("B", 1000, 1059)},
@@ -448,7 +447,7 @@ TEST_F(CovarianceParticipants, AParticipantExactlyKUnionDatesStaleStays) {
 
 // A calendar gap nobody printed is not a stale date: A and B print 1000..1049 and 1057..1059,
 // C stops at 1049. C is ten calendar days behind but only three union dates, so it stays. A
-// control: the parent does the same.
+// control.
 TEST_F(CovarianceParticipants, StalenessCountsUnionDatesNotCalendarDays) {
     const auto gap = std::set<int64_t>{1050, 1051, 1052, 1053, 1054, 1055, 1056};
     const DatedCloses closes{{"A", days("A", 1000, 1059, gap)},
@@ -461,7 +460,7 @@ TEST_F(CovarianceParticipants, StalenessCountsUnionDatesNotCalendarDays) {
 
 // A union date counts whoever printed it: A alone prints 1055..1060, so B (stopped at 1054) is six
 // union dates behind and left out; A's series is its own 60 returns.
-//   parent: the intersection ends at 1054; A gets 54 returns and B is not empty.
+//   wrong:  the intersection ends at 1054; A gets 54 returns and B is not empty.
 TEST_F(CovarianceParticipants, ADatePrintedByOneParticipantIsAUnionDate) {
     const DatedCloses closes{{"A", days("A", 1000, 1060)}, {"B", days("B", 1000, 1054)}};
     const auto r = helper_->date_aligned_returns(closes);
@@ -471,7 +470,7 @@ TEST_F(CovarianceParticipants, ADatePrintedByOneParticipantIsAUnionDate) {
 
 // k comes from portfolio.json "covariance_stale_dates" (PortfolioConfig): at 2, a participant three
 // union dates behind is stale.
-//   parent: the key is not read; C stays and everyone's window ends at 1056.
+//   wrong:  the key is not read; C stays and everyone's window ends at 1056.
 TEST_F(CovarianceParticipants, TheStaleWindowIsConfigurable) {
     PortfolioConfig pc = participants_config();
     pc.from_json(nlohmann::json{{"covariance_stale_dates", 2}});
@@ -489,12 +488,12 @@ TEST_F(CovarianceParticipants, TheStaleWindowIsConfigurable) {
 
 // ===== (2) the 20-return floor on the intersection =====
 
-// S3-2 by hand. A and B print 1000..1059 without 1045; N is new: 1039..1059, 21 closes (20 own
+// The floor by hand. A and B print 1000..1059 without 1045; N is new: 1039..1059, 21 closes (20 own
 // returns, so the optimizer admits it) with 1045, which A and B lack. The four-way intersection is
 // 20 dates, 19 returns.
-//   parent: every series has 19 returns and calculate_covariance_matrix returns the 0.01 diagonal
+//   wrong:  every series has 19 returns and calculate_covariance_matrix returns the 0.01 diagonal
 //           for the WHOLE matrix (A/B covariance 0).
-//   fix:    N is left out; A and B keep their 58 returns and their real covariance.
+//   right:  N is left out; A and B keep their 58 returns and their real covariance.
 TEST_F(CovarianceParticipants, AShortIntersectionDropsTheShortestParticipantNotTheMatrix) {
     const std::set<int64_t> hole{1045};
     const DatedCloses closes{{"A", days("A", 1000, 1059, hole)},
@@ -520,7 +519,7 @@ TEST_F(CovarianceParticipants, AShortIntersectionDropsTheShortestParticipantNotT
 // Tie-break, first key: the FEWEST usable dates goes first. N1 has 23 dates (1036..1059 less
 // 1050), N2 21 (1037..1059 less 1040, 1041); together 20 dates, 19 returns. N2 is left out and
 // N1's 23 dates give 22 returns. (Leaving N1 out would have given N2 20.)
-//   parent: nobody is left out; 19 returns each.
+//   wrong:  nobody is left out; 19 returns each.
 TEST_F(CovarianceParticipants, TheFloorLeavesOutTheFewestDatesFirst) {
     const DatedCloses closes{{"A", days("A", 1000, 1059)},
                              {"B", days("B", 1000, 1059)},
@@ -560,10 +559,10 @@ TEST_F(CovarianceParticipants, TheFloorBreaksAFullTieByTheSmallerSymbol) {
 
 // ===== the optimizer path =====
 
-// S3-1 end to end: CCC has a zero target (it is in the matrix because the sleeve names it) and its
-// feed stops six weekdays before the others'. The optimizer's AAA/BBB block is the two-symbol
-// matrix over every date; CCC's column is guarded.
-//   parent: everyone's window ends at CCC's last date.
+// A stale participant end to end: CCC has a zero target (it is in the matrix because the sleeve
+// names it) and its feed stops six weekdays before the others'. The optimizer's AAA/BBB block is
+// the two-symbol matrix over every date; CCC's column is guarded.
+//   wrong:  everyone's window ends at CCC's last date.
 TEST_F(CovarianceParticipants, AStaleZeroTargetSymbolNoLongerTruncatesTheOptimizersWindow) {
     const auto w = weekdays(60);
     const Matrix cov = optimizer_covariance(
@@ -575,11 +574,11 @@ TEST_F(CovarianceParticipants, AStaleZeroTargetSymbolNoLongerTruncatesTheOptimiz
     expect_block(cov, pair, "AAA/BBB without CCC");
 }
 
-// S3-2 end to end (the edge of ledger OPT-new-symbol-collapses-min-periods, E-7, that the floor
-// closes): NEW prints the last 20 weekdays plus one Sunday among them, 21 closes and 20 own
-// returns, so the optimizer admits it; the intersection is 20 dates, 19 returns.
-//   parent: the whole matrix is the 0.01 diagonal.
-//   fix:    NEW is left out; AAA/BBB keep the two-symbol matrix over every date.
+// The floor end to end (a new symbol below it): NEW prints the last 20 weekdays plus one Sunday
+// among them, 21 closes and 20 own returns, so the optimizer admits it; the intersection is 20
+// dates, 19 returns.
+//   wrong:  the whole matrix is the 0.01 diagonal.
+//   right:  NEW is left out; AAA/BBB keep the two-symbol matrix over every date.
 TEST_F(CovarianceParticipants, ANewSymbolBelowTheFloorNoLongerCollapsesTheMatrix) {
     const auto w = weekdays(60);
     auto fresh = last_n(w, 20);
@@ -600,17 +599,16 @@ TEST_F(CovarianceParticipants, ANewSymbolBelowTheFloorNoLongerCollapsesTheMatrix
     expect_block(cov, pair, "AAA/BBB without NEW");
 }
 
-// ===== E-7, a symbol no strategy signals (T-OPT, ledger OPT-new-symbol-collapses-min-periods) =====
+// ===== a symbol no strategy signals =====
 //
 // NEW is a contract the trend sleeve does not signal yet: its own history holds one price fewer
 // than the longest EMA window, so on_data skips it ("Waiting for enough data") and it has no
 // target of its own (quantity 0 here). The PM's own history of it is 30 weekdays (29 returns),
-// above the optimizer's 20-return admission and above 7d's floor, so on the parent it enters the
-// optimizer and the intersection over every participant is its 30 dates: AAA's and BBB's window
-// falls from 60 dates (59 returns) to 30 (29). This was the pinned KNOWN case
-// (KnownANewSymbolAboveTheFloorStillSetsEveryonesWindow); it flips here.
-//   parent: the matrix is AAA/BBB/NEW and the AAA/BBB block is the one over NEW's 30 dates.
-//   fix:    NEW is left out of the optimizer; AAA/BBB is the two-symbol matrix over all 60 dates,
+// above the optimizer's 20-return admission and above the floor, so if it entered the optimizer
+// the intersection over every participant would be its 30 dates: AAA's and BBB's window would fall
+// from 60 dates (59 returns) to 30 (29).
+//   wrong:  the matrix is AAA/BBB/NEW and the AAA/BBB block is the one over NEW's 30 dates.
+//   right:  NEW is left out of the optimizer; AAA/BBB is the two-symbol matrix over all 60 dates,
 //           the logged window is 59 returns, and NEW keeps its own (zero) target.
 TEST_F(CovarianceParticipants, ANewSymbolNoStrategySignalsNoLongerSetsEveryonesWindow) {
     const auto w = weekdays(60);
@@ -652,8 +650,8 @@ TEST_F(CovarianceParticipants, ANewSymbolNoStrategySignalsNoLongerSetsEveryonesW
 // sleeve signals NEW (on_data's test is `size < max_window`), so NEW is admitted and a new symbol
 // the strategies DO signal still sets everyone's window to its 30 dates. Excluding a signalled
 // symbol would drop a real target from the optimizer; shortening everyone's window to a newly
-// listed, signalled contract's history is today's rule on both sides (T-OPT E-7 names only the
-// non-signalling case). A control: the parent does the same.
+// listed, signalled contract's history is the rule (only the non-signalling case is left out). A
+// control.
 TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsEveryonesWindow) {
     const auto w = weekdays(60);
     const auto fresh = last_n(w, 30);
@@ -669,7 +667,7 @@ TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsEveryo
 
 // The FAST sleeve (BASE's 0.3 sleeve, longest EMA window 64) has the same warm-up and the same
 // answer: one price short of it, NEW is left out.
-//   parent: NEW is in the matrix.
+//   wrong:  NEW is in the matrix.
 TEST_F(CovarianceParticipants, ANewSymbolTheFastSleeveDoesNotSignalIsLeftOut) {
     const auto w = weekdays(60);
     const auto fresh = last_n(w, 30);
@@ -681,7 +679,7 @@ TEST_F(CovarianceParticipants, ANewSymbolTheFastSleeveDoesNotSignalIsLeftOut) {
 
 // Two optimizing sleeves (BASE's shape, 0.7 trend + 0.3 fast): a symbol enters when ANY of them
 // signals it. The trend sleeve is one price short on NEW, the fast sleeve has its full 64; NEW
-// has the fast sleeve's target, so it stays in the optimizer. A control: the parent does the same.
+// has the fast sleeve's target, so it stays in the optimizer. A control.
 TEST_F(CovarianceParticipants, ASymbolAnyOptimizingSleeveSignalsStays) {
     const auto w = weekdays(60);
     const auto fresh = last_n(w, 30);
@@ -693,7 +691,7 @@ TEST_F(CovarianceParticipants, ASymbolAnyOptimizingSleeveSignalsStays) {
 }
 
 // ... and it is left out only when NO optimizing sleeve signals it: both one price short.
-//   parent: NEW is in the matrix.
+//   wrong:  NEW is in the matrix.
 TEST_F(CovarianceParticipants, ASymbolNoOptimizingSleeveSignalsIsLeftOut) {
     const auto w = weekdays(60);
     const auto fresh = last_n(w, 30);
@@ -706,7 +704,7 @@ TEST_F(CovarianceParticipants, ASymbolNoOptimizingSleeveSignalsIsLeftOut) {
 
 // While NO symbol is signalled (the backtest's warm-up) the optimizer builds no matrix and every
 // sleeve keeps its own (zero) target.
-//   parent: the optimizer builds the three-symbol matrix from the PM's history.
+//   wrong:  the optimizer builds the three-symbol matrix from the PM's history.
 TEST_F(CovarianceParticipants, NoMatrixWhileNoSymbolIsSignalled) {
     const auto w = weekdays(60);
     auto& pm = run_sleeves({{"AAA", w, 0.0}, {"BBB", w, 0.0}, {"CCC", w, 0.0}},
@@ -725,7 +723,7 @@ TEST_F(CovarianceParticipants, NoMatrixWhileNoSymbolIsSignalled) {
 // With the optimizer and the Carver gate on, each rebalance prints exactly one COVARIANCE_MAX_RHO
 // line. optimizer= is max |rho| of the optimizer's matrix over the pairs of lap 1's book (both
 // legs held), gate= is the Carver gate's own max |rho| on that book (RiskResult.correlation_risk).
-//   parent: no such line.
+//   wrong:  no such line.
 TEST_F(CovarianceParticipants, OneMaxRhoLinePerRebalanceCarriesTheOptimizersAndTheGates) {
     const auto w = weekdays(60);
     set_log_level(LogLevel::INFO);
@@ -791,20 +789,20 @@ TEST_F(CovarianceParticipants, NoMaxRhoLineWithoutTheOptimizer) {
     EXPECT_TRUE(lines_with(out, "COVARIANCE_MAX_RHO").empty());
 }
 
-// ===== (4) the Carver gate's window: the E-7 mechanism (T-7b-2 CGW) =====
+// ===== (4) the Carver gate's window: the same participant rule =====
 //
-// The gate's window keeps the last lookback_period dates of every bar it was fed, and F5 keeps only
-// the dates on which EVERY symbol of that window printed. Before CGW the intersection ran over every
-// symbol with a bar, so a symbol no strategy signals, targets or holds (a contract still warming up)
-// cut every other symbol's window to its own dates, exactly as it did the optimizer's before E-7.
-// Since CGW the intersection (and the gate's MarketData) runs over the gate's participants: a symbol
-// some strategy lists and signals, or one any strategy targets or holds non-zero. 150 weekdays keep
-// F5 engaged (floor 120).
+// The gate's window keeps the last lookback_period dates of every bar it was fed, and keeps only
+// the dates on which EVERY symbol of that window printed. Run over every symbol with a bar, that
+// intersection would let a symbol no strategy signals, targets or holds (a contract still warming
+// up) cut every other symbol's window to its own dates, as it would the optimizer's. So the
+// intersection (and the gate's MarketData) runs over the gate's participants: a symbol some
+// strategy lists and signals, or one any strategy targets or holds non-zero. 150 weekdays keep the
+// date intersection engaged (floor 120).
 
 // NEW prints only the last 130 of 150 weekdays; the trend sleeve is one price short of signalling it
 // and its target is 0. It is left out of the gate's window: the gate reads AAA and BBB over all 150
 // dates, and one GATE_NOT_SIGNALLING line names NEW.
-//   parent: the gate reads 3 symbols over NEW's 130 dates (20 dropped) and prints no such line.
+//   wrong:  the gate reads 3 symbols over NEW's 130 dates (20 dropped) and prints no such line.
 TEST_F(CovarianceParticipants, AGateWindowLeavesOutASymbolNoStrategySignalsTargetsOrHolds) {
     const auto w = weekdays(150);
     const auto fresh = last_n(w, 130);
@@ -831,8 +829,7 @@ TEST_F(CovarianceParticipants, AGateWindowLeavesOutASymbolNoStrategySignalsTarge
 }
 
 // A symbol no strategy signals but a strategy TARGETS (the sleeve's target stands while it warms up)
-// stays in the gate's window: the book can hold it, so the gate must measure it. A control: the
-// parent does the same (every symbol is in).
+// stays in the gate's window: the book can hold it, so the gate must measure it. A control.
 TEST_F(CovarianceParticipants, AGateWindowKeepsATargetedSymbolNoStrategySignals) {
     const auto w = weekdays(150);
     const auto fresh = last_n(w, 130);
@@ -853,9 +850,8 @@ TEST_F(CovarianceParticipants, AGateWindowKeepsATargetedSymbolNoStrategySignals)
     EXPECT_TRUE(lines_with(out, "POSGUARD_MISS").empty()) << "every held symbol maps: " << out;
 }
 
-// The residue that stays KNOWN, as for the optimizer (E-7): a newly listed contract the strategies DO
-// signal still sets everyone's window to its own dates, because the book can hold it. A control: the
-// parent does the same.
+// The residue that stays KNOWN, as for the optimizer: a newly listed contract the strategies DO
+// signal still sets everyone's window to its own dates, because the book can hold it. A control.
 TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsTheGatesWindow) {
     const auto w = weekdays(150);
     const auto fresh = last_n(w, 130);
@@ -878,7 +874,7 @@ TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsTheGat
 
 // Two sleeves (BASE's shape): NEW stays in the gate's window when ANY sleeve signals it, and is left
 // out only when none does. Here the fast sleeve signals it.
-//   A control for the first half: the parent keeps it too.
+//   A control for the first half.
 TEST_F(CovarianceParticipants, AGateWindowKeepsASymbolAnySleeveSignals) {
     const auto w = weekdays(150);
     const auto fresh = last_n(w, 130);

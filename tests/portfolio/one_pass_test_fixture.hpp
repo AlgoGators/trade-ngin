@@ -1,6 +1,6 @@
 #pragma once
 
-// A sleeve for the one pass's portfolio-level tests (LOOP_SPEC sections 4 to 6): a BaseStrategy
+// A sleeve for the one pass's portfolio-level tests: a BaseStrategy
 // whose per-symbol rows the test writes directly, published through the same three calls the trend
 // sleeve answers (get_target_positions, overlay_series, is_signalling). The portfolio manager sees
 // nothing else of a sleeve, so a book built on this stub runs the real one pass.
@@ -155,6 +155,7 @@ inline PortfolioConfig one_pass_config(const std::string& overlay_sleeve, double
     carver.r_shock_max = 4.0;
     carver.per_name_cap = 2.0;
     carver.trim_max = 5;
+    carver.overlay_covariance = "sample";
     pc.risk_modules = {module};
     return pc;
 }

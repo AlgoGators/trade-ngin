@@ -11,7 +11,8 @@ restored row (R32: history is never rewritten; the columns have no backfill). Ch
 The QT desk's migrations (021 to 029) add, on a book the desk never edited: portfolio_type 'system' on executions and
 live_results (021), moved_by NULL on positions (021), book_source NULL on live_results (023), settings_used,
 published_by, published_at (022), publish_source and sent_at (027) NULL on live_run_metadata, portfolio_group NULL and
-desk_editable false on strategy_registry (023); checked and projected away like the others. With the S0 directory as
+desk_editable false on strategy_registry (023); checked and projected away like the others. Migration 040's three roll
+split columns on executions hold NULL on every restored row; checked and projected away like the others. With the S0 directory as
 a third argument, a column S0's own file already has is kept and compared against S0 (positions.portfolio_type, from
 001, is in S0), and a table S0 has no file for (position_overrides, strategy_config) must hold no row of the book."""
 import csv, os, shutil, sys
@@ -25,6 +26,9 @@ EXPECTED.update({c: "" for c in M036})
 QT = {"portfolio_type": "system", "moved_by": "", "book_source": "", "settings_used": "", "published_by": "",
       "published_at": "", "publish_source": "", "sent_at": "", "portfolio_group": "", "desk_editable": "f"}
 EXPECTED.update(QT)
+# Migration 040 (rolls step 4, the roll split): roll_bar_move, roll_gap_points, roll_gap_value NULL on every executions
+# row written before it (no backfill; a value only on a per-contract roll's closing leg written with the switch on).
+EXPECTED.update({c: "" for c in ("roll_bar_move", "roll_gap_points", "roll_gap_value")})
 NUMERIC = {"daily_roll_costs", "total_roll_costs"}
 def hist(c, v):
     if c in NUMERIC:

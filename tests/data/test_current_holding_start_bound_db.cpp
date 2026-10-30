@@ -1,7 +1,6 @@
 // tests/data/test_current_holding_start_bound_db.cpp
 //
-// BA-19 -- `get_current_holding_start_dates` must not see rows the run cannot legitimately
-// see.
+// `get_current_holding_start_dates` must not see rows the run cannot legitimately see.
 //
 // `trading.positions` is not append-only in practice. An interrupted windowed reset, or a
 // replay abandoned partway through a chain, leaves rows dated AFTER the date being replayed.
@@ -98,7 +97,7 @@ protected:
         w.commit();
     }
 
-    // One position row. `quantity == 0` is a close (E2-F19 writes exactly one such row).
+    // One position row. `quantity == 0` is a close (a close writes exactly one such row).
     void insert_row(const std::string& symbol, const std::string& date, double quantity) {
         pqxx::connection c(conn_string_);
         pqxx::work w(c);
@@ -139,7 +138,7 @@ TEST_F(CurrentHoldingStartBoundDbTest, AFutureDatedNonZeroRowDoesNotBecomeTheHol
            "the run is about to apply renames to; it reported "
         << (bounded.count("ZZTEST") ? bounded.at("ZZTEST") : std::string());
 
-    // Unbounded is the defect, pinned so the fix cannot be quietly reverted: the 05-01 row is
+    // Unbounded is the hazard, pinned so the bound cannot be quietly dropped: the 05-01 row is
     // the only non-zero row after the 04-15 break, so it becomes the holding start -- a date
     // in the run's future.
     const auto unbounded = starts("");

@@ -51,9 +51,9 @@ bool CorporateActionsAuditLog::migrate_state_file_to_db() {
         r.ex_date = std::get<1>(key);
         r.action_type = CorporateActionsApplier::type_to_string(std::get<2>(key));
         // Dividend detail attaches where the file carried it -- and ONLY to a
-        // dividend. E2-F39 / BA-15: this used to match on (symbol, ex_date) alone,
-        // so a SPLIT sharing an ex-date with a DIVIDEND inherited the dividend's
-        // cash and cumulative dividend income counted it twice.
+        // dividend. Matching on (symbol, ex_date) alone would give a SPLIT sharing an
+        // ex-date with a DIVIDEND the dividend's cash, and cumulative dividend income
+        // would count it twice.
         if (const auto* de = dividend_detail_for(r.symbol, r.ex_date,
                                                  std::get<2>(key),
                                                  file_log.dividend_events_)) {
@@ -120,12 +120,12 @@ Result<bool> CorporateActionsAuditLog::load() {
             }
         }
 
-        // E2-F23 (audit option C-prime). A row stamped with a run date on or after
+        // A row stamped with a run date on or after
         // this run's was written by a LATER pass over this book. Honouring it skips
         // an event whose effect is NOT in the T-1 position row this run just
         // loaded, so T-1 is finalized in the wrong frame and the position is marked
-        // against a basis that never moved -- the E2-F16 phantom, measured at
-        // -4,824 on BKNG. No guard downstream can see it: skipped events never
+        // against a basis that never moved (a phantom P&L: -4,824 on BKNG's
+        // 25:1). No guard downstream can see it: skipped events never
         // reach the basis/mark bound, which only inspects events that were applied.
         //
         // Detection only, deliberately. Deleting the rows automatically is correct
@@ -159,7 +159,7 @@ Result<bool> CorporateActionsAuditLog::load() {
                     " corp-action dedup row(s) were written by a LATER pass over this book "
                     "(run date on or after " + run_date_ + "): " + detail +
                     ". Trusting them would skip events whose effect is not in the T-1 "
-                    "position row and finalize it in the wrong frame (E2-F23/E2-F16). "
+                    "position row and finalize it in the wrong frame. "
                     "Refusing to run: reset trading.corp_action_applied for this portfolio "
                     "TOGETHER with the book (positions, live_results, equity_curve, "
                     "executions) from the replay start date, then replay in order.";
@@ -172,7 +172,7 @@ Result<bool> CorporateActionsAuditLog::load() {
         for (const auto& r : existing.value()) {
             applied_.emplace(r.symbol, r.ex_date,
                              CorporateActionsApplier::type_from_type_string(r.action_type));
-            recorded_.push_back(r);  // F-8: keeps the basis_ratio chain
+            recorded_.push_back(r);  // keeps the basis_ratio chain
             if (r.total_cash != 0.0 || r.dividend_per_share != 0.0) {
                 DividendEvent de;
                 de.symbol = r.symbol;
@@ -338,10 +338,10 @@ void CorporateActionsAuditLog::record(const PositionAdjustment& adj) {
         row.symbol = adj.symbol;
         row.ex_date = adj.event_date;
         row.action_type = CorporateActionsApplier::type_to_string(adj.type);
-        // E2-F23 / migration 005: the pass's own as-of date, so a later pass's
+        // Migration 005: the pass's own as-of date, so a later pass's
         // rows are distinguishable from an earlier pass's. Empty stores NULL.
         row.run_date = run_date_;
-        // F-8 / migration 006: the factor this event divided the basis by, so the
+        // Migration 006: the factor this event divided the basis by, so the
         // adjusted basis can be inverted back to the broker's frame from the ledger
         // alone -- including after the position closes, when the basis itself is gone
         // (a closed row carries average_price = 0) and this row is the only surviving
@@ -356,7 +356,7 @@ void CorporateActionsAuditLog::record(const PositionAdjustment& adj) {
             row.dividend_per_share = adj.event_value;
             row.total_cash = row.qty_held * row.dividend_per_share;
         }
-        recorded_.push_back(row);  // F-8: this run's events join the lifetime chain
+        recorded_.push_back(row);  // this run's events join the lifetime chain
         pending_.push_back(std::move(row));
     }
 
@@ -473,7 +473,7 @@ bool CorporateActionsAuditLog::save() const {
         out["dividend_events"].push_back(std::move(entry));
     }
 
-    // Atomic write (ultrareview bug_003): writing directly to `path` leaves a
+    // Atomic write: writing directly to `path` leaves a
     // corrupt half-file if the process is killed mid-write, which makes the
     // next load() fail and silently zeroes the dedup state. Write to a temp
     // sibling, flush, then rename -- rename is atomic on the same filesystem,

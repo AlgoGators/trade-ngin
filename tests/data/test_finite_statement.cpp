@@ -1,4 +1,4 @@
-// The numbers of a results statement, guarded (T-8D R12, T-8D-2 R54): a double that is not
+// The numbers of a results statement, guarded: a double that is not
 // finite is never formatted into a statement. The three builders the writers call
 // (PostgresDatabase::store_backtest_summary, update_live_results, store_live_results_complete),
 // executed on their own, and the three writers themselves on a database that was never
@@ -61,7 +61,7 @@ const std::vector<double> kRoundTripTable = {
 };
 }  // namespace
 
-// D-16: the text of a stored number reads back as the same double, bit for bit.
+// The text of a stored number reads back as the same double, bit for bit.
 TEST(FiniteStatement, AFiniteNumberIsTextThatReadsBackAsTheSameDoubleBitForBit) {
     for (const double value : kRoundTripTable) {
         const auto text = finite_sql_number(value);
@@ -84,7 +84,7 @@ TEST(FiniteStatement, AFiniteNumberIsTextThatReadsBackAsTheSameDoubleBitForBit) 
               std::optional<std::string>("4.94065645841247e-324"));
 }
 
-// T-8D R12: a value that is not finite is still no value.
+// A value that is not finite is no value.
 TEST(FiniteStatement, ANumberThatIsNotFiniteIsNoValue) {
     EXPECT_FALSE(finite_sql_number(kNan).has_value());
     EXPECT_FALSE(finite_sql_number(kInf).has_value());
@@ -95,7 +95,7 @@ TEST(FiniteStatement, ANumberThatIsNotFiniteIsNoValue) {
 }
 
 // The typed cells of migrations 036 and 037 carry the same text: it reads back as the same
-// double (it was ten significant digits).
+// double (not ten significant digits).
 TEST(FiniteStatement, ATypedCellsNumberReadsBackAsTheSameDoubleBitForBit) {
     for (const double value : kRoundTripTable) {
         const auto text = live_results_number(value);

@@ -1,7 +1,7 @@
 // include/trade_ngin/core/report_settled_marks.hpp
 //
 // The two price columns of the settled day's table (the daily report's "Yesterday's Finalized
-// Position Results" and the live file <T-1>_positions_asof_<T>.csv), HD 2026-10-12.
+// Position Results" and the live file <T-1>_positions_asof_<T>.csv).
 //
 // The columns exist so a reader can work a row's P&L out in their head, the way the settle books
 // it: quantity x (latest price - previous price) x contract size. So the two prices are the two
@@ -27,7 +27,6 @@
 #include <unordered_set>
 
 #include "trade_ngin/core/report_price_text.hpp"
-#include "trade_ngin/data/finite_statement.hpp"
 
 namespace trade_ngin {
 
@@ -37,16 +36,29 @@ inline constexpr const char* kSettledPreviousPriceLabel = "Previous price";
 inline constexpr const char* kSettledLatestPriceLabel = "Latest price";
 /// What the latest-price cell of the report prints for a symbol that printed no bar that day.
 inline constexpr const char* kSettledNoBar = "\xE2\x80\x93";  // an en dash; the row carries footnote 1
-/// The symbols whose settled bar booked no move, by the kind the settle knew (T-EMAIL, HD 10-13):
+/// The symbols whose settled bar booked no move, by the kind the settle knew:
 /// a ROLL (the series switched contract on that bar: its two prices are of two contracts) and a
 /// price NOT ACCEPTED (a withheld bar: the move is booked with the next price).
 struct SettledZeroKinds {
     std::unordered_set<std::string> roll;
     std::unordered_set<std::string> withheld;
+    /// With per_contract_rolls on, the symbols whose settled bar was a
+    /// per-contract roll bar: the row books the old contract's move to its close on that bar (not
+    /// $0.00) and carries the roll footnote (kSettledNoteRollBar). Empty with the switch off.
+    std::unordered_set<std::string> per_contract_roll;
 };
-/// Footnote numbers of a settled row booked at zero (the report's footnote lines, HD 10-13).
+/// Footnote numbers of a settled row booked at zero (the report's footnote lines).
 inline constexpr int kSettledNoteRoll = 2;
 inline constexpr int kSettledNoteNotAccepted = 3;
+/// The footnote of a settled row whose bar was a per-contract roll bar.
+inline constexpr int kSettledNoteRollBar = 6;
+
+/// kSettledNoteRollBar for a futures row with a quantity whose symbol's settled bar was a
+/// per-contract roll bar, 0 otherwise (whatever its figure: the move is booked).
+inline int settled_roll_bar_note(bool equities, const std::string& symbol, double quantity,
+                                 const SettledZeroKinds& kinds) {
+    return !equities && quantity != 0.0 && kinds.per_contract_roll.count(symbol) ? kSettledNoteRollBar : 0;
+}
 
 /// The footnote number of a futures row's $0.00: 2 (contract roll), 3 (price not accepted) or 0
 /// (none). A row carries it when its symbol is in one of the two sets, the quantity is not zero,
@@ -121,8 +133,8 @@ struct SettledPriceCells {
 /**
  * @brief The report's two cells of a row. `latest` empty is the no-bar row: the cell reads
  *        "no bar" (no "n/a", no carried price) and the footnote prints. A previous price that is
- *        not known reads "n/a". A price prints every decimal it has, with its dollar sign and thousands separators
- *        (report_price_dollars).
+ *        not known reads "n/a". A price prints at `places` decimals, with its dollar sign and
+ *        thousands separators (report_price_dollars_places).
  */
 inline SettledPriceCells settled_price_cells(std::optional<double> previous,
                                              std::optional<double> latest, int places = 4) {
@@ -130,28 +142,6 @@ inline SettledPriceCells settled_price_cells(std::optional<double> previous,
     cells.previous = previous ? report_price_dollars_places(*previous, places) : std::string("n/a");
     cells.no_bar = !latest.has_value();
     cells.latest = latest ? report_price_dollars_places(*latest, places) : std::string(kSettledNoBar);
-    return cells;
-}
-
-/// The two cells of one row of the file: prior_mark and mark.
-struct SettledCsvCells {
-    std::string prior_mark;
-    std::string mark;
-};
-
-/**
- * @brief The file's two cells of a row, from the same two prices as the report's: each the
- *        shortest text that reads back as the same number; an unknown price is an empty cell, so
- *        the mark of a no-bar row is empty (a 0 would read as a price) and its prior_mark is the
- *        last known close.
- */
-inline SettledCsvCells settled_csv_cells(std::optional<double> previous,
-                                         std::optional<double> latest) {
-    SettledCsvCells cells;
-    if (previous)
-        cells.prior_mark = round_trip_number(*previous);
-    if (latest)
-        cells.mark = round_trip_number(*latest);
     return cells;
 }
 

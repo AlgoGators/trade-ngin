@@ -48,11 +48,14 @@ struct BacktestCoordinatorConfig {
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string csv_output_path = "apps/backtest/results";
     bool export_csv = true;  // Disable for runs started from an arbitrary working directory
-    /// K, the sessions a year of the grid the run's statistics are taken on (T-8D R2, T-8D-2
-    /// R76): the app hands the configured statistics.sessions_per_year of the run's series
+    /// K, the sessions a year of the grid the run's statistics are taken on: the app hands the
+    /// configured statistics.sessions_per_year of the run's series
     /// (futures or equities). The one source of the factor: there is no default, and a run
     /// without a positive value is refused before it loads a bar.
     double statistics_sessions_per_year = 0.0;
+    /// backtest.first_traded_date ("YYYY-MM-DD", test-only): the warm-up runs on until the first
+    /// bar date on or after it. Empty: the strategies' own warm-up.
+    std::string first_traded_date;
 };
 
 /**
@@ -100,19 +103,19 @@ private:
     // Portfolio backtest state
     bool portfolio_has_previous_bars_ = false;
     std::vector<Bar> portfolio_previous_bars_;
-    /// T-7a C4, the backtest predicate: every bar group seen so far, so the signal group's bars
+    /// The backtest predicate: every bar group seen so far, so the signal group's bars
     /// can be classified against each symbol's strictly prior weekday bars. Futures only
     /// (run_portfolio with AssetClass::FUTURES); the equity backtest is untouched.
     SessionClassifier session_classifier_;
     bool session_hold_enabled_ = false;
-    /// T-ROLLX-FIX: the oracle acceptance's record of the consumed bars (consumed_series_record.hpp);
+    /// The record of the consumed bars for an external check (consumed_series_record.hpp);
     /// enabled only when TRADE_NGIN_SERIES_DUMP_DIR is set, never in production.
     ConsumedSeriesRecord consumed_record_;
-    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 2.2, D37): each futures symbol's roll status on its
-    /// CONSUMED sequence (the bars fed to the strategies; a withheld bar never walks it), and the
+    /// Each futures symbol's roll status on its CONSUMED sequence (the bars fed to the
+    /// strategies; a withheld bar never walks it), and the
     /// status of its last consumed bar, which decides the change-bar hold of every rebalance until
     /// the symbol's next consumed bar.
-    /// Loads the bars before the window, K-01-filters them with their own classifier
+    /// Loads the bars before the window, filters them with their own classifier
     /// (live/live_estimator_history.hpp) and seeds the sleeves' estimator history with the consumed
     /// ones (futures books).
     Result<void> seed_estimator_history(std::shared_ptr<PortfolioManager> portfolio,
@@ -121,18 +124,23 @@ private:
                                         DataFrequency data_freq);
     std::unordered_map<std::string, roll_series::RollTracker> roll_trackers_;
     std::map<std::string, roll_series::RollTracker::Status> signal_roll_status_;
-    /// T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6, 7): this cycle's own bar group as the marks
-    /// consume it: the symbols whose bar is WITHHELD (K-01: no P&L, no previous close moved), the
+    /// This cycle's own bar group as the marks consume it: the symbols whose bar is WITHHELD (no
+    /// P&L, no previous close moved), the
     /// symbols whose bar is a change bar (no P&L), and the contract each symbol is held in after
     /// this cycle's bar (final_positions.instrument_id, every row of a futures symbol).
     std::unordered_set<std::string> mark_withheld_;
     std::unordered_set<std::string> mark_change_;
+    /// This cycle's marked bars whose move is to the old contract's close (a roll
+    /// bar of the per-contract source), and from the old contract's close (the bar after a vendor
+    /// switch it did not confirm): RollTracker::Status::mark_close and previous_close.
+    std::unordered_map<std::string, double> mark_close_;
+    std::unordered_map<std::string, double> mark_previous_close_;
     std::unordered_map<std::string, std::string> row_held_id_;
-    /// Migration 038 (T-8D-2 R50): per futures sleeve, the held symbols that printed no bar in
+    /// Migration 038: per futures sleeve, the held symbols that printed no bar in
     /// this cycle's group. Their row books nothing (realized_pnl 0, quantity and average price
     /// kept) and is stored with row_mark = 'NO_BAR'; filled where the row is zeroed.
     std::unordered_map<std::string, std::unordered_set<std::string>> row_no_bar_;
-    /// STAT_QUALITY (T-8D F10, T-8D-2 R82): per sleeve of any book, the held symbols that printed
+    /// STAT_QUALITY: per sleeve of any book, the held symbols that printed
     /// no bar in this cycle's group (a futures sleeve's are row_no_bar_'s), and the run's record
     /// of the stored dates with one. Read by the summary's log lines only.
     std::unordered_map<std::string, std::unordered_set<std::string>> held_no_bar_;
@@ -146,14 +154,14 @@ private:
     /// The summary's STAT_QUALITY lines: the run line, then one line a stored date with a held
     /// symbol that printed no bar, each saying whether the date is on `grid`.
     std::vector<std::string> stat_quality_lines(const BacktestStatisticsGrid& grid) const;
-    /// T-ROLLX-FIX (LOOP_SPEC v6.1 section 6.5): the ROLL legs booked so far per sleeve (the RL-
-    /// ids' sequence numbers); a ROLL_LEG STOP fails the run (code review X-3).
+    /// The ROLL legs booked so far per sleeve (the RL- ids' sequence numbers); a ROLL_LEG STOP
+    /// fails the run.
     std::unordered_map<std::string, size_t> roll_leg_seq_;
     bool roll_leg_stop_ = false;
-    /// T-NETTING fix round 2: a ROLL or BORROW row carrying a netting adjustment reached the day's
-    /// sum; the run loop fails the run on that day (a hard stop, as roll_leg_stop_ is).
+    /// A ROLL or BORROW row carrying a netting adjustment reached the day's sum; the run loop
+    /// fails the run on that day (a hard stop, as roll_leg_stop_ is).
     bool netting_refused_stop_ = false;
-    /// T-ROLLX-FIX commit 5 (F-3, section 6.5): the rolls this cycle's signal feed confirmed for a
+    /// The rolls this cycle's signal feed confirmed for a
     /// sleeve that holds the symbol ("<symbol> (<sleeve>) confirmed <date>"), from the moment the
     /// roll tracker has consumed the confirming bars until the legs are booked. A cycle that ends
     /// in between, by an error return or by an exception, would leave them un-legged for good.
@@ -161,11 +169,11 @@ private:
     /// The ROLL_LEG STOP of a cycle that failed with `what` while rolls are owed; an OK result
     /// when none is. Sets roll_leg_stop_.
     Result<void> roll_owed_stop(const std::string& what);
-    /// T-7b-1 C7 (RA-01): one RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
+    /// One RISK_SCALE_REPORT line per post-warmup rebalance. Futures only
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.
     bool risk_scale_report_enabled_ = false;
-    // LOOP_SPEC section 7.3: the risk_detail object of each sized rebalance, by the index of
+    // The risk_detail object of each sized rebalance, by the index of
     // its equity curve row, and the account value V_t the cycle's sizing capital was read with.
     std::map<size_t, std::string> equity_risk_detail_;
     double cycle_account_value_ = 0.0;
@@ -181,11 +189,11 @@ private:
     /// The risk_detail text of each equity-curve row (empty: a NULL cell), `rows` entries; empty
     /// altogether on a run that stored none.
     std::vector<std::string> equity_risk_detail_rows(size_t rows) const;
-    /// T-7b-2 9c (HD 2026-09-25, compounding): every cycle sizes the book on the equity curve's
-    /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
-    /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
+    /// Compounding: every cycle sizes the book on the equity curve's last row
+    /// (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
+    /// AssetClass::FUTURES), like the session hold; the equity backtest does not.
     bool size_on_equity_enabled_ = false;
-    /// T-7b-2 8c, K1: every cycle re-tiers each equity's cost config on both cost managers from
+    /// Every cycle re-tiers each equity's cost config on both cost managers from
     /// the 20 bars ending at the signal bar, in the window-end share unit, and the impact model's
     /// volume is fed in that unit (equity_cost_retier.hpp). Equities only (run_portfolio with
     /// AssetClass::EQUITIES); the futures backtest is untouched.
@@ -193,14 +201,14 @@ private:
     EquityCostRetier equity_cost_retier_;
     size_t equity_cost_retier_cycles_ = 0;
     size_t equity_cost_retier_changes_ = 0;
-    /// T-7b-2 8c, COST-H3 (T-VOL §4): both cost managers read live's basis (futures_cost_feed.hpp):
+    /// Both cost managers read live's basis (futures_cost_feed.hpp):
     /// the signal bar's own volume and the returns walk ending at it, fed from the cycle's signal
     /// feed before the book is sized, instead of the cycle's own group (day T, a one-bar
     /// look-ahead). Futures only (run_portfolio with AssetClass::FUTURES); one carry per manager.
     bool own_day_cost_feed_enabled_ = false;
     FuturesCostFeedCarry execution_cost_carry_;
     FuturesCostFeedCarry portfolio_cost_carry_;
-    /// T-7b-2 C8c4 (HD 2026-09-25 ruling 26): the group the equity cost feed fed on the previous
+    /// The group the equity cost feed fed on the previous
     /// cycle (the day before this cycle's signal group), whose closes give the fed bars' returns.
     std::vector<Bar> cost_feed_previous_group_;
     std::string current_run_id_;
@@ -211,7 +219,7 @@ private:
     std::unique_ptr<BacktestCSVExporter> csv_exporter_;
     /// The sleeves' rows of the previous bar date, for the position_changes file.
     SleevePositions sleeve_previous_positions_;
-    /// E2-F19: the strategy's cumulative realized per (strategy|symbol) at the last bar,
+    /// The strategy's cumulative realized per (strategy|symbol) at the last bar,
     /// so a cash-book position row can be written as that bar's realized FLOW -- the same
     /// definition the live equity runner persists -- rather than the running total.
     std::unordered_map<std::string, double> last_cumulative_realized_;
@@ -362,7 +370,7 @@ public:
      * @return Result indicating success or failure
      */
     /**
-     * @brief OPT-N5/N6: the data boundary of a run, stored as backtest.results.end_date and
+     * @brief The data boundary of a run, stored as backtest.results.end_date and
      *        backtest.run_metadata.end_date: the timestamp of the last bar the run consumed, which
      *        is the latest point of its equity curve (the curve gains one point a bar date, after
      *        the seed point at start_date). Never the requested end (a frozen end date or the
@@ -423,7 +431,7 @@ private:
 
 public:
     /**
-     * @brief The statistics grid of a run over these bars (T-8D R1, R3)
+     * @brief The statistics grid of a run over these bars
      *
      * A futures run: the Sunday-to-Friday UTC dates on which at least kStatisticsGridMinSymbols
      * distinct STORED symbols printed a bar (futures_statistics_grid_dates). A predecessor
@@ -446,8 +454,8 @@ public:
      * One entry per symbol: the realised P&L and the unrealised level of its rows, summed over
      * the sleeves, of the rows backtest.final_positions takes
      * (backtest_position_row_is_stored: a futures sleeve's zero-quantity row is not stored and
-     * not read). A futures row's realised P&L is the symbol's whole P&L of the day (LOOP_SPEC
-     * section 6.6); an equity row carries the realised flow and the open position's unrealised
+     * not read). A futures row's realised P&L is the symbol's whole P&L of the day; an equity
+     * row carries the realised flow and the open position's unrealised
      * level.
      *
      * @param strategy_positions The sleeves' position rows after the day's P&L was booked
@@ -455,7 +463,7 @@ public:
      * @param date The stored date, "YYYY-MM-DD"
      */
     /**
-     * @brief The six overlay cells of a backtest row (migration 037; HD 2026-10-10): the
+     * @brief The six overlay cells of a backtest row (migration 037): the
      *        overlay's own readings of the book the run STORES for the row's date
      *
      * PortfolioManager::overlay_readings_for_book (the accessor the live runners call) on the
@@ -482,7 +490,7 @@ public:
 private:
     /// The refusal of a run that was handed no sessions a year; ok otherwise.
     Result<void> require_statistics_sessions_per_year() const;
-    /// The run's one line on its statistics convention (T-8D R31).
+    /// The run's one line on its statistics convention.
     void log_statistics_convention(const BacktestStatisticsGrid& grid, AssetClass asset_class,
                                    const BacktestResults& results, size_t curve_rows) const;
 
@@ -512,7 +520,7 @@ private:
     void load_equity_cost_retier(const std::vector<std::string>& symbols,
                                  const Timestamp& start_date, const Timestamp& end_date);
 
-    /// Whether a sleeve's rows closed to zero are stored (E2-F54): its accounting is not the
+    /// Whether a sleeve's rows closed to zero are stored: its accounting is not the
     /// futures REALIZED_ONLY.
     static bool keeps_closed_rows(const std::shared_ptr<PortfolioManager>& portfolio,
                                   const std::string& strategy_id);

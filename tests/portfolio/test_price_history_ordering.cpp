@@ -1,18 +1,12 @@
 // PortfolioManager cycle behaviour.
 //
-// PM-price-history (E3, STAGE3_PLAN §25a.2 / §28b.3): process_market_data updates the
-// optimiser's price history AFTER the on_data loop, from this call's bars, so the history the
-// optimiser covaries includes the bars of this call -- its newest bar is the bar the strategy
-// signals from. The tests below pin that order.
+// process_market_data updates the optimiser's price history AFTER the on_data loop, from the
+// closes of this call's bars (one per symbol per date), so the history the optimiser covaries
+// includes the bars of this call -- its newest bar is the bar the strategy signals from. The
+// PM reads no strategy's price history, so every day is fed through the manager. The tests
+// below pin that order: after the call for day D the newest return is day D's.
 //
-// T-6c commit B changed the mechanism, not the intent: the PM used to copy each strategy's
-// get_price_history() after the loop; it now records the closes of the bars it is fed (one per
-// symbol per date) after the loop. The first test used to feed day D-1 to the strategy
-// directly and expect the PM to see it through the strategy's history; the PM no longer reads
-// that history, so the test now feeds D-1 through the manager too, and still pins that after
-// the call for day D the newest return is day D's.
-//
-// The file also holds the on_data-swallowed-futures guard.
+// The file also holds the guard against a swallowed on_data failure.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -135,12 +129,11 @@ protected:
     std::unique_ptr<PortfolioManager> manager_;
 };
 
-// ===== PM-price-history: the history is updated after on_data =====
+// ===== The history is updated after on_data =====
 //
 // The backtest feeds one day's bars per call. After the call that feeds day D, the returns
-// the manager holds must end with day D's return. Updated before the on_data loop from a
-// strategy's history (the pre-E3 order), the newest return was D-1's -- the one-bar lag T-4e
-// measured in the futures backtest (covariance through t-2 while signalling from t-1).
+// the manager holds must end with day D's return. Updated before the on_data loop, the newest
+// return would be D-1's -- a one-bar lag (covariance through t-2 while signalling from t-1).
 TEST_F(PriceHistoryOrderingTest, OneCallOnAFreshManagerReadsTheReturnOfTheDayItFeeds) {
     static int k = 0;
     auto strategy = std::make_shared<HistoryRecordingStrategy>(
@@ -184,18 +177,17 @@ TEST_F(PriceHistoryOrderingTest, EveryCallsNewestReturnIsThatCallsBar) {
     }
 }
 
-// ===== on_data-swallowed-futures =====
+// ===== A failed on_data stops the cycle =====
 //
-// PortfolioManager::process_market_data used to LOG an on_data failure and then
-// call get_target_positions() anyway. What comes back from a strategy that did
-// not ingest the bars is either the previous cycle's targets or -- from a
-// process whose instrument data starts empty -- zero for every symbol. Zero
-// targets against a held book is a full-book liquidation, not a no-op, and it
-// would have been produced with an ERROR in the log and exit code 0.
+// Logging an on_data failure and then calling get_target_positions() anyway is not
+// safe. What comes back from a strategy that did not ingest the bars is either the
+// previous cycle's targets or -- from a process whose instrument data starts empty
+// -- zero for every symbol. Zero targets against a held book is a full-book
+// liquidation, not a no-op, and it would be produced with an ERROR in the log and
+// exit code 0.
 //
-// The equity runner grew an assertion around this (BA-17 / E2-F43); the futures
-// runners never had one. The refusal now lives at the shared site, so it covers
-// both.
+// The refusal lives at the shared site, PortfolioManager::process_market_data, so
+// it covers the equity runner and the futures runners alike.
 //
 // The strategy below fails on_data while still holding a position map, which is
 // exactly the dangerous shape: there is something to liquidate, and the targets

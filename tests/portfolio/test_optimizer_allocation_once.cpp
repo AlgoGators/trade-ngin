@@ -1,28 +1,28 @@
 // tests/portfolio/test_optimizer_allocation_once.cpp
 //
-// Ledger N2, the S2 follow-up: the allocation applied twice in PortfolioManager::
-// optimize_positions. A sleeve sizes its contracts on its own capital slice (capital x
-// allocation), so one of its contracts is one contract of the account's book, and the account
-// holds the SUM of the sleeves' contracts (apply_risk_management says so and gates that sum).
-// The weight of one contract in the account is w = notional / total capital. Before this fix the
-// aggregation weighted every sleeve contract by w x allocation, so the optimizer answered in
-// allocation-weighted contracts, and the distribution divided by the allocation again:
+// The allocation is applied once in PortfolioManager::optimize_positions. A sleeve sizes its
+// contracts on its own capital slice (capital x allocation), so one of its contracts is one
+// contract of the account's book, and the account holds the SUM of the sleeves' contracts
+// (apply_risk_management says so and gates that sum). The weight of one contract in the account is
+// w = notional / total capital. An aggregation that weighted every sleeve contract by w x
+// allocation would make the optimizer answer in allocation-weighted contracts, and the distribution
+// would divide by the allocation again:
 //
 //     quota_s = (optimized / w) x share_s / allocation_s,   share_s = q_s a_s / sum(q a)
 //             = (optimized / w) x q_s / sum(q a)
 //
-// One optimizer step (one w) therefore became 1 / (sum(q a) / sum(q)) contracts of book: 1.64 on
+// One optimizer step (one w) would then be 1 / (sum(q a) / sum(q)) contracts of book: 1.64 on
 // BASE's 6C of 2026-04-24 (TF 1 at 0.7, FAST 0.293 at 0.3), 3.33 on a symbol only the 0.3 sleeve
-// holds. After the fix the aggregate carries the allocation once (inside q):
+// holds. The aggregate carries the allocation once (inside q):
 //
 //     contribution_s = q_s x w,   quota_s = (optimized / w) x q_s / sum(q),
-//     book = round(optimized / w), stored = largest-remainder split of book (S2's split)
+//     book = round(optimized / w), stored = largest-remainder split of book
 //
-// These tests drive a real PortfolioManager and observe only get_strategy_positions(), which
-// exists before and after the fix, so the same file is RED on the parent source and GREEN on
-// the fix. Fixed-book sleeves: every symbol is priced at the PM's default 0.01 weight per
-// contract and at zero cost; the optimizer's deadband is OFF, so the greedy's answer (whole
-// steps of w from zero) reaches the distribution as it is.
+// These tests drive a real PortfolioManager and observe only get_strategy_positions(). Each case
+// gives the doubled reading ("twice:") and the stored one ("once:"). Fixed-book sleeves: every
+// symbol is priced at the PM's default 0.01 weight per contract and at zero cost; the optimizer's
+// deadband is OFF, so the greedy's answer (whole steps of w from zero) reaches the distribution as
+// it is.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -205,13 +205,13 @@ protected:
 
 }  // namespace
 
-// BASE's 6C on 2026-04-24 (T-7a-REBUILD_AUDIT §2.2): TF (0.7) asks 1, FAST (0.3) asks 0.292997,
+// BASE's 6C on 2026-04-24: TF (0.7) asks 1, FAST (0.3) asks 0.292997,
 // the book asks 1.292997 contracts; nothing held.
-//   before: aggregate 0.7 x 1 + 0.3 x 0.292997 = 0.787899 weighted contracts; the greedy steps
+//   twice:  aggregate 0.7 x 1 + 0.3 x 0.292997 = 0.787899 weighted contracts; the greedy steps
 //           once (|0.787899 - 1| < 0.787899), answer 1; quotas TF 1 x 0.7 / 0.787899 / 0.7 =
 //           1.269199, FAST 1 x 0.087899 / 0.787899 / 0.3 = 0.371871; book round(1.641070) = 2;
 //           TF 1 / FAST 1: the book is rounded UP through the split, 2 for an ask of 1.29.
-//   after:  aggregate 1.292997 contracts; the greedy steps once (a second step would leave
+//   once:   aggregate 1.292997 contracts; the greedy steps once (a second step would leave
 //           0.707003 > 0.292997), answer 1; quotas TF 1 / 1.292997 = 0.773397, FAST 0.226603;
 //           book round(1.0) = 1; the one contract to the larger remainder: TF 1 / FAST 0.
 TEST_F(AllocationOnce, TheSixCBookOfTwentyFourAprilStoresOneNotTwo) {
@@ -228,9 +228,9 @@ TEST_F(AllocationOnce, TheSixCBookOfTwentyFourAprilStoresOneNotTwo) {
 }
 
 // A symbol only the 0.3 sleeve asks for, 2 contracts.
-//   before: aggregate 0.3 x 2 = 0.6; the greedy steps once, answer 1; quota 1 / 0.3 = 3.33;
+//   twice:  aggregate 0.3 x 2 = 0.6; the greedy steps once, answer 1; quota 1 / 0.3 = 3.33;
 //           stored 3, one optimizer step being 3.33 contracts of book.
-//   after:  aggregate 2; the greedy steps twice, answer 2; stored 2.
+//   once:   aggregate 2; the greedy steps twice, answer 2; stored 2.
 TEST_F(AllocationOnce, AFastOnlyAskOfTwoStoresTwoNotThree) {
     make_pm();
     add("TREND_FOLLOWING", once_book({{"6AX", 0.0}}), 0.7);
@@ -242,9 +242,9 @@ TEST_F(AllocationOnce, AFastOnlyAskOfTwoStoresTwoNotThree) {
 }
 
 // The same sleeve asks 1 contract.
-//   before: aggregate 0.3; a step would leave 0.7 > 0.3, answer 0; stored 0 (the quantum of
+//   twice:  aggregate 0.3; a step would leave 0.7 > 0.3, answer 0; stored 0 (the quantum of
 //           3.33 contracts rounds a lone FAST lot away as readily as it rounds 2 up to 3).
-//   after:  aggregate 1; answer 1; stored 1.
+//   once:   aggregate 1; answer 1; stored 1.
 TEST_F(AllocationOnce, AFastOnlyAskOfOneStoresOne) {
     make_pm();
     add("TREND_FOLLOWING", once_book({{"6AX", 0.0}}), 0.7);
@@ -259,10 +259,10 @@ TEST_F(AllocationOnce, AFastOnlyAskOfOneStoresOne) {
 // symbol. Here the substitute is exact: A6X and B6Y print the same closes (one covariance
 // entry for all four cells), TF (0.7) asks B6Y 1, FAST (0.3) asks A6X 0.441733. Both steps then
 // leave the same tracking error to the last bit and the greedy keeps the first index, A6X.
-//   before: aggregates A6X 0.132520, B6Y 0.7 (sum 0.832520); first step to A6X leaves |0.832520
+//   twice:  aggregates A6X 0.132520, B6Y 0.7 (sum 0.832520); first step to A6X leaves |0.832520
 //           - 1| = 0.167480, no second step; answer A6X 1, B6Y 0; FAST quota 1 / 0.3 = 3.33,
 //           stored FAST A6X 3: one contract of answer is three of book.
-//   after:  aggregates 0.441733 and 1 (sum 1.441733); first step to A6X leaves 0.441733, a
+//   once:   aggregates 0.441733 and 1 (sum 1.441733); first step to A6X leaves 0.441733, a
 //           second step 0.558267; answer A6X 1, B6Y 0; stored FAST A6X 1.
 TEST_F(AllocationOnce, ASubstitutedFastOnlySymbolStoresTheOptimizersOneContract) {
     make_pm();
@@ -280,7 +280,7 @@ TEST_F(AllocationOnce, ASubstitutedFastOnlySymbolStoresTheOptimizersOneContract)
 }
 
 // Control, CONSERVATIVE's shape: one sleeve at allocation 1.0. The weight and the quota are
-// the same numbers before and after (x 1.0 and / 1.0 are exact), so the stored book is too.
+// the same numbers either way (x 1.0 and / 1.0 are exact), so the stored book is too.
 TEST_F(AllocationOnce, OneSleeveAtAllocationOneStoresTheGreedyAnswer) {
     make_pm();
     add("TREND_FOLLOWING", once_book({{"6CX", 1.292997}}), 1.0);

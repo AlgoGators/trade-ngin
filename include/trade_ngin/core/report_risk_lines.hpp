@@ -1,10 +1,10 @@
 #pragma once
 
-// The two risk lines of the daily report and of the console (HD 2026-10-10): the overlay's
+// The two risk lines of the daily report and of the console: the overlay's
 // expected risk of the stored book as a percent of the sizing capital beside the risk target,
-// and the one-day 95 percent VaR in dollars. They replace the line "Portfolio VaR", which
-// printed trading.live_results.portfolio_var: a price-weighted figure with no contract
-// multiplier, not a value-at-risk and not the book's risk (its stored value is unchanged).
+// and the one-day 95 percent VaR in dollars. Neither prints trading.live_results.portfolio_var,
+// a price-weighted figure with no contract multiplier, not a value-at-risk and not the book's
+// risk.
 //
 // The runner puts the figures in the report's metric map under the keys below; a figure with no
 // value (no sized rebalance, a refused overlay, a blind window) is left out and its line is not

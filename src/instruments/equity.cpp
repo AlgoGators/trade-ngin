@@ -1,14 +1,12 @@
 // src/instruments/equity.cpp
 //
-// Phase 6 audit-status (Phase 6 §1.10 verification):
-//   - set_holiday_checker IS called in production (live_equity_mean_reversion.cpp,
+//   - set_holiday_checker is called in production (live_equity_mean_reversion.cpp,
 //     bt_equity_mean_reversion.cpp) and is consulted by is_market_open below.
 //   - calculate_commission returns qty * spec_.commission_per_share where the
-//     spec is populated by instrument_registry.cpp:227 (default $0.005/share)
-//     or :398 (ADV-tier classifier). Audit's "always returns 0" finding is
-//     stale.
-//   - get_margin_requirement(price, qty) implements the Phase 2 §1.3 Reg T
-//     math (CASH: 100% notional; REG_T long: 50%; REG_T short: 150%).
+//     spec is populated by InstrumentRegistry (default $0.005/share, or the
+//     ADV-tier classifier's rate).
+//   - get_margin_requirement(price, qty) implements the Reg T math
+//     (CASH: 100% notional; REG_T long: 50%; REG_T short: 150%).
 //   See tests/instruments/test_equity_audit_status.cpp for regression guards.
 
 #include "trade_ngin/instruments/equity.hpp"

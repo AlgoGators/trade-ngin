@@ -31,13 +31,11 @@ using namespace trade_ngin::testing;
 // register_equity_costs_from_bars derives a liquidity tier from recent
 // volume, so a thinly-traded symbol is not charged mega-cap spreads. Pins
 // the tier boundaries and that the wiring is actually reached.
-// (was: test_adv_classifier_wireup.cpp)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Regression test for audit finding §1.1 — Phase 1a-ii wire-up. Before this
-// fix, every traded equity needed an explicit hardcoded config in
-// TransactionCostManager. The new register_equity_costs_from_bars helper
-// computes ADV from recent bars and registers the appropriate tier.
+// register_equity_costs_from_bars computes ADV from recent bars and registers
+// the appropriate tier, so no traded equity needs an explicit hardcoded config
+// in TransactionCostManager.
 
 namespace {
 
@@ -68,9 +66,8 @@ std::vector<Bar> synthetic_equity_bars(const std::string& symbol,
 // Expected from get_tiered_equity_config:
 //   point_value = 1.0 (per share, not per "contract")
 //   commission_per_unit = 0.005 ($0.005/share, IBKR Pro)
-//   apply_regulatory_fees = FALSE -- E2-C3. The banner used to claim `true (SEC + FINRA on
-//     sells)`, contradicting the assertion twenty lines below it and every tier in
-//     asset_cost_config.cpp: IBKR Pro FIXED's $0.005/share is all-inclusive of exchange,
+//   apply_regulatory_fees = FALSE, as on every tier in asset_cost_config.cpp, not
+//     `true (SEC + FINRA on sells)`: IBKR Pro FIXED's $0.005/share is all-inclusive of exchange,
 //     clearing and regulatory fees, so charging SEC/FINRA on top double-charges. It would be
 //     true under Tiered, where those fees are passed through.
 //   baseline_spread_ticks = 1.0 (mega-cap = tight spread)
@@ -90,7 +87,7 @@ TEST(ADVClassifierWireupTest, MegaCapSymbolGetsTier1Config) {
     EXPECT_EQ(cfg.asset_type, AssetType::EQUITY);
     EXPECT_DOUBLE_EQ(cfg.point_value, 1.0);
     EXPECT_DOUBLE_EQ(cfg.commission_per_unit, 0.005);
-    // E2-C3: false under IBKR Pro Fixed, whose $0.005/share is all-inclusive of exchange,
+    // False under IBKR Pro Fixed, whose $0.005/share is all-inclusive of exchange,
     // clearing and regulatory fees. Charging SEC/FINRA on top double-charges. It would be
     // true under Tiered, where fees are passed through.
     EXPECT_FALSE(cfg.apply_regulatory_fees);
@@ -99,11 +96,11 @@ TEST(ADVClassifierWireupTest, MegaCapSymbolGetsTier1Config) {
         << cfg.baseline_spread_ticks;
 }
 
-// E2-F14: a symbol with no bars is registered with the UNTIERED EQUITY DEFAULT, not
-// skipped. Skipping left it absent from configs_, and an absent symbol does not fall back
-// to the equity default -- get_config() only reaches that when the caller passes
-// AssetType::EQUITY, which none of the nine production call sites does. So a skipped equity
-// resolved to the FUTURES default: $1.50/share instead of $0.005 and point_value 100
+// A symbol with no bars is registered with the UNTIERED EQUITY DEFAULT, not skipped.
+// Skipping would leave it absent from configs_, and an absent symbol does not fall back to
+// the equity default -- get_config() only reaches that when the caller passes
+// AssetType::EQUITY, which the production call sites do not. So a skipped equity would
+// resolve to the FUTURES default: $1.50/share instead of $0.005 and point_value 100
 // instead of 1. Worse, configs_ is one flat map shared across asset classes and real tickers
 // collide with futures roots (CL = Colgate-Palmolive AND Crude Oil; ES = Eversource AND the
 // E-mini S&P). Registering the default makes the futures fallthrough unreachable for a
@@ -125,7 +122,7 @@ TEST(ADVClassifierWireupTest, SymbolWithNoBarsGetsEquityDefaultNotFuturesPricing
         << "Unregistered equity inherited the futures per-contract fee, i.e. $1.50/SHARE.";
 }
 
-// E2-F14: same reasoning as the no-bars case -- a degenerate ADV must not leave a
+// Same reasoning as the no-bars case -- a degenerate ADV must not leave a
 // configured equity resolving as a future.
 TEST(ADVClassifierWireupTest, ZeroVolumeGetsEquityDefaultNotFuturesPricing) {
     TransactionCostManager::Config tcm_config;
@@ -183,10 +180,9 @@ TEST(ADVClassifierWireupTest, MultipleSymbolsBatch) {
 // A short equity position accrues a borrow fee per calendar day held.
 // Hard-to-borrow names cost more, and the accrual must not fire for longs
 // or on an account mode that forbids shorting.
-// (was: test_equity_borrow_fees.cpp)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Audit tests T2.6, T2.7, T2.8 -- borrow fee model on TCM (§3.2).
+// The borrow fee model on TCM.
 // Multi-factor risk scoring (dollar-volume + price + is_easy_to_borrow flag)
 // × volatility multiplier × short notional / 365. Per-symbol
 // borrow_rate_override bypasses the formula.
@@ -380,10 +376,9 @@ TEST_F(BorrowFeesTest, LongsAndNonEquitiesAreSkipped) {
     EXPECT_TRUE(fees.empty()) << "Long positions must not accrue borrow fees.";
 }
 
-// A SHORT futures position pays no equity borrow fee and is skipped SILENTLY. The skip used to go
-// through get_equity_instrument, which WARNs "Invalid equity instrument: <sym>" for every
-// non-equity, so a futures backtest holding a short printed that line once per short symbol per
-// day.
+// A SHORT futures position pays no equity borrow fee and is skipped SILENTLY, not through
+// get_equity_instrument, which WARNs "Invalid equity instrument: <sym>" for every non-equity
+// and would print that line once per short symbol per day of a futures backtest.
 TEST_F(BorrowFeesTest, ShortSignShortFuturesAreSkippedSilently) {
     TransactionCostManager::Config tcm_config;
     TransactionCostManager tcm(tcm_config);
@@ -430,20 +425,15 @@ TEST_F(BorrowFeesTest, ShortSignShortFuturesAreSkippedSilently) {
 // An equity symbol with no registered cost config must fall back to a
 // documented default rather than silently costing zero, which would make a
 // backtest look cheaper than reality.
-// (was: test_unknown_equity_costs_dispatch.cpp)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Regression test for audit finding §1.1 dispatch dead-end.
-//
-// Before Phase 1a-i, TransactionCostManager::calculate_costs() called
-// asset_configs_.get_config(symbol) without asset_type. The default branch
-// at asset_cost_config.cpp:670 gated on `asset_type == EQUITY` but always
-// received NONE, so unknown equity symbols fell through to the futures
-// default: point_value=100, commission=$1.50/share. ~157× cost overstatement.
-//
-// Post-fix, calculate_costs accepts an optional `asset_type` parameter that
-// threads through to get_config, allowing equity callers to opt into the
-// correct fallback even for unregistered symbols.
+// The default branch of asset_configs_.get_config() is gated on
+// `asset_type == EQUITY`; called without asset_type it receives NONE, so an
+// unknown equity symbol would fall through to the futures default:
+// point_value=100, commission=$1.50/share, a ~157× cost overstatement.
+// calculate_costs accepts an optional `asset_type` parameter that threads
+// through to get_config, allowing equity callers to opt into the correct
+// fallback even for unregistered symbols.
 
 // Unregistered symbol "ZZZZ", buy 100 shares at $50.
 // With AssetType::EQUITY hint: commission = max($1 floor, 100 × $0.005) = $1.00.
@@ -498,7 +488,7 @@ TEST(UnknownEquityCostsDispatchTest, WithoutHintFallsThroughToFuturesDefault) {
 }
 
 // ===========================================================================
-// E2-C1 / E2-C2 / E2-C3 -- the equity commission schedule is IBKR Pro FIXED:
+// The equity commission schedule is IBKR Pro FIXED:
 //   $0.005/share, minimum $1.00 per order, maximum 1% of trade value,
 //   all-inclusive of exchange, clearing and regulatory fees.
 //
@@ -507,15 +497,15 @@ TEST(UnknownEquityCostsDispatchTest, WithoutHintFallsThroughToFuturesDefault) {
 // small-but-normal orders; the cap protects the client on tiny ones. IBKR publishes the
 // cap as "Maximum per order", so it is a ceiling and must be applied LAST.
 //
-// The code computed max(floor, min(cap, raw)), which let the floor override the cap and
-// made max_commission_pct provably dead for any stock above $0.50/share: the inner
+// max(floor, min(cap, raw)) would let the floor override the cap and make
+// max_commission_pct provably dead for any stock above $0.50/share: the inner
 // min(cap, raw) picks the cap only when pct*price < commission_per_unit, so above that the
-// expression collapsed to max(floor, raw) and the configured cap could not change a single
+// expression collapses to max(floor, raw) and the configured cap cannot change a single
 // output value.
 //
 // Real numbers from EQUITY_MR_PORTFOLIO, 2026-07-24..08-03, so the fixture cannot drift
-// from what production produced: the cap should have bound on 5 of 15 executions and did
-// not, a 21% over-charge ($15.00 vs $12.35) concentrated on the smallest clips.
+// from what production produced: the cap binds on 5 of 15 executions; without it they are a
+// 21% over-charge ($15.00 vs $12.35) concentrated on the smallest clips.
 // ===========================================================================
 
 namespace {
@@ -585,22 +575,21 @@ TEST(EquityCommissionSchedule, RegulatoryFeesAreNotChargedOnTopOfFixed) {
 }
 
 // ===========================================================================
-// E2-F3: a missing prior close must omit the RETURN, not the VOLUME.
+// A missing prior close must omit the RETURN, not the VOLUME.
 //
-// BacktestCoordinator used to `continue` when a symbol had no bar on the previous processed
-// day, skipping update_market_data entirely -- which dropped the volume observation along
-// with the log return. Volume is a valid, correct observation regardless of whether a prior
-// bar exists, and ADV is what sizes market impact.
+// When a symbol has no bar on the previous processed day, BacktestCoordinator still calls
+// update_market_data, with prev_close = 0.0, relying on the gate below: skipping the call
+// would drop the volume observation along with the log return. Volume is a valid, correct
+// observation regardless of whether a prior bar exists, and ADV is what sizes market impact.
 //
 // The futures universe has mixed calendars: the eight grain/livestock roots have ZERO Sunday
 // bars while the rest of the book has ~95 over two years, so every Monday those symbols hit
-// the missing-prior-bar path. That excluded Mondays from a 20-day ADV window for ten symbols
-// -- 6.7% of all symbol-days, ~21% of trading days for those ten. KE.v.0 sits on the 20,000
-// ADV bucket boundary (20,092 with Mondays, 19,948 without), flipping its impact coefficient
-// 60 -> 80 bps purely on which days were counted.
+// the missing-prior-bar path. Skipping would exclude Mondays from a 20-day ADV window for ten
+// symbols -- 6.7% of all symbol-days, ~21% of trading days for those ten. KE.v.0 sits on the
+// 20,000 ADV bucket boundary (20,092 with Mondays, 19,948 without), flipping its impact
+// coefficient 60 -> 80 bps purely on which days are counted.
 //
-// The coordinator now passes prev_close = 0.0 instead of skipping, relying on the gate below.
-// Do NOT "fix" this by passing prev_close = close (what main does): that injects a
+// Do NOT pass prev_close = close instead: that injects a
 // log(close/close) = 0 return, a false observation that biases volatility downward.
 // ===========================================================================
 
@@ -655,7 +644,7 @@ TEST(MarketDataUpdate, ValidPrevCloseRecordsBothVolumeAndReturn) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// E2-F29: regulatory fees are keyed on the SIGN of quantity. A negative
+// Regulatory fees are keyed on the SIGN of quantity. A negative
 // quantity is a sell and carries SEC + TAF; a positive one does not; and the
 // fees stay off entirely on a config that does not enable them (IBKR Fixed).
 // ──────────────────────────────────────────────────────────────────────────
@@ -769,6 +758,33 @@ TEST(CostContractSpecSource, FutureOnlyInTheMetadataTakesItsSpecs) {
     const auto cfg = tcm.get_asset_config("M6E.v.0");
     EXPECT_DOUBLE_EQ(cfg.point_value, 12500.0);
     EXPECT_DOUBLE_EQ(cfg.tick_size, 0.0001);
+}
+
+// MGC and SIL have entries of their own, their full-size roots' spread in ticks
+// and impact caps (not the futures default's 2 ticks and 100 bps), and their fills pay impact on
+// their own volume: one MGC at 1,300 on a 100-contract ADV (the 2010-2015 micro) pays 80 x
+// sqrt(1/100) = 8 bps, on a 300,000 ADV (2025) 20 x sqrt(1/300,000) bps.
+TEST(CostContractSpecSource, TheGoldAndSilverMicrosHaveTheirOwnEntriesAndPayImpactOnTheirOwnVolume) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source([](const std::string& s) -> std::optional<ContractCostSpec> {
+        const std::string root = s.substr(0, s.find('.'));
+        if (root == "MGC") return ContractCostSpec{10.0, 0.1, 0.96};
+        if (root == "SIL") return ContractCostSpec{1000.0, 0.005, 0.86};
+        return std::nullopt;
+    });
+    const auto gold = tcm.get_asset_config("MGC.v.0");
+    EXPECT_DOUBLE_EQ(gold.baseline_spread_ticks, 1.0);
+    EXPECT_DOUBLE_EQ(gold.max_spread_ticks, 5.0);
+    EXPECT_DOUBLE_EQ(gold.max_impact_bps, 50.0);
+    const auto silver = tcm.get_asset_config("SIL.v.0");
+    EXPECT_DOUBLE_EQ(silver.baseline_spread_ticks, 1.0);
+    EXPECT_DOUBLE_EQ(silver.max_impact_bps, 60.0);
+    const auto thin = tcm.calculate_costs("MGC.v.0", 1.0, 1300.0, 100.0, 1.0);
+    const auto busy = tcm.calculate_costs("MGC.v.0", 1.0, 1300.0, 300000.0, 1.0);
+    EXPECT_DOUBLE_EQ(thin.spread_price_impact, 0.5 * 1.0 * 0.1);
+    EXPECT_NEAR(thin.market_impact_price_impact, 1300.0 * 8.0 / 1e4, 1e-9);
+    EXPECT_NEAR(busy.market_impact_price_impact, 1300.0 * 20.0 * std::sqrt(1.0 / 300000.0) / 1e4, 1e-12);
+    EXPECT_DOUBLE_EQ(thin.commissions_fees, 0.96);
 }
 
 // An equity cost config never reads a futures spec, even when the source answers for its ticker

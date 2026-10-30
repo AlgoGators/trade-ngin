@@ -53,9 +53,8 @@ inline std::time_t parse_ymd_utc(const std::string& ymd) {
  * `WHERE DATE(last_update) = DATE($n)`, so every row it returns carries the
  * requested date by construction (the live table has zero rows where
  * last_update differs from date). Any lookback derived from it collapses to
- * "yesterday" and silently leaves the window at its floor -- which is exactly
- * the 14-day window that dropped 8 of the 9 dividends the configured universe
- * saw after live last wrote on 2026-05-03.
+ * "yesterday" and silently leaves the window at its floor, which drops the
+ * events of any gap longer than the floor.
  *
  * A holding older than the bulk price load does not truncate the window; its
  * symbol is reported in deep_symbols so the closes its events need can be
@@ -97,17 +96,15 @@ inline CorpActionWindow derive_corp_action_window(
 /**
  * @brief Fill in an inception date for every held symbol the read did not answer for.
  *
- * BA-9 / C-1 D13. `get_position_inception_dates` returns one row per symbol that
+ * `get_position_inception_dates` returns one row per symbol that
  * has EVER been held non-zero under this (strategy, portfolio) triple. A held
  * symbol absent from that result is not "established recently" -- it is
  * "established at a date this run cannot determine", which is the same epistemic
- * state as a failed read. Only `is_error()` used to widen the window, so a
- * successful read that answered for none of the held symbols, or for only some,
- * silently contributed nothing and left the window at its `min_days` floor.
+ * state as a failed read. Widening only on `is_error()` would let a successful
+ * read that answered for none of the held symbols, or for only some, leave the
+ * window at its `min_days` floor.
  *
- * That is the exact shape of the regression this derivation replaced: a 14-day
- * window that dropped 8 of the 9 dividends the configured universe saw. The rule
- * for class 1 is stated in the runner and does not change here -- under-applying a
+ * The rule for class 1 is stated in the runner -- under-applying a
  * price rescale is the PERMANENT error, so an unknown inception fails WIDE, to the
  * bulk edge. Over-fetching only costs query time; `trading.corp_action_applied`
  * rejects an event that was already applied.
@@ -166,7 +163,7 @@ struct CloseFetchRange {
     std::string start;  ///< YYYY-MM-DD, inclusive
     std::string end;    ///< YYYY-MM-DD, inclusive
 
-    /// False when the range degenerates to a single day -- the FIX-2 failure shape.
+    /// False when the range degenerates to a single day.
     bool spans_more_than_one_day() const { return start < end; }
 };
 
