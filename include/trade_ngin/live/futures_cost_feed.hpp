@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 namespace trade_ngin {
@@ -182,6 +183,24 @@ struct FuturesCostFeedResult {
     std::vector<FuturesCostFeedSymbol> reevaluated;
 };
 
+/**
+ * @brief One bar's return into the spread model's volatility window, on the library's rule
+ *        (roll_series::RollTracker; this was the feed's own hand copy of it): a change bar's return
+ *        enters as 0 (LOOP_SPEC v6.1 section 2.3, L-08); with the per-contract source (rolls step 3)
+ *        a roll bar's log return is the old contract's own over the bar, and the bar that confirms a
+ *        vendor switch is read from the target's close on the switch bar. 0.0 = no previous close.
+ */
+inline void record_bar_log_return(transaction_cost::TransactionCostManager& tcm,
+                                  const std::string& symbol, roll_series::RollTracker& tracker,
+                                  const Bar& bar, double close, double prev_close,
+                                  FuturesCostFeedSymbol& entry) {
+    const roll_series::RollTracker::Status st = tracker.add(bar.instrument_id, close, bar.roll_from);
+    const double to = st.mark_close ? *st.mark_close : close;
+    const double from = st.previous_close ? *st.previous_close : prev_close;
+    tcm.record_log_return(symbol, to, from, st.change && !st.mark_close && !st.previous_close);
+    if (from > 0.0 && to > 0.0) ++entry.returns;
+}
+
 /// `fill_time`: the run's date T (the day the fill is made), which decides rule (2) vs (3).
 inline FuturesCostFeedResult feed_futures_cost_model(
     transaction_cost::TransactionCostManager& tcm, const std::vector<Bar>& feed_bars,
@@ -203,20 +222,14 @@ inline FuturesCostFeedResult feed_futures_cost_model(
         // last 20, which end at the T-1 bar. 0.0 = "no previous close" on the first bar.
         FuturesSessionVolume sessions;
         double prev_close = 0.0;
-        std::string last_id;  // T-ROLLX: the last known contract id fed (roll_series.hpp)
+        roll_series::RollTracker tracker;  // the library's rule (roll_series.hpp)
         for (size_t i = 0; i < bars.size(); ++i) {
             if (i > 0 && bars[i].timestamp == bars[i - 1].timestamp &&
                 (out.repeated_instants.empty() || out.repeated_instants.back() != symbol)) {
                 out.repeated_instants.push_back(symbol);
             }
             const double close = static_cast<double>(bars[i].close);
-            // A bar whose contract id differs from the last known one is a change bar: its
-            // return enters the volatility window as 0 (LOOP_SPEC v6.1 section 2.3, L-08).
-            const bool change_bar = !bars[i].instrument_id.empty() && !last_id.empty() &&
-                                    bars[i].instrument_id != last_id;
-            if (!bars[i].instrument_id.empty()) last_id = bars[i].instrument_id;
-            tcm.record_log_return(symbol, close, prev_close, change_bar);
-            if (prev_close > 0.0 && close > 0.0) ++entry.returns;
+            record_bar_log_return(tcm, symbol, tracker, bars[i], close, prev_close, entry);
             prev_close = close;
             sessions.add(bars[i]);
         }
@@ -250,7 +263,8 @@ inline FuturesCostFeedResult feed_futures_cost_model(
  */
 struct FuturesCostFeedCarry {
     std::map<std::string, double> last_close;  ///< the close of the symbol's last fed bar
-    std::map<std::string, std::string> last_id;  ///< T-ROLLX: the symbol's last known contract id
+    /// The library's rule on the symbol's fed bars (roll_series::RollTracker; T-ROLLX, rolls step 3)
+    std::map<std::string, roll_series::RollTracker> trackers;
     std::map<std::string, FuturesSessionVolume> sessions;  ///< the weekend merge's state (C8c3)
     std::map<std::string, double> applied_volume;  ///< the participation volume last set
 };
@@ -273,7 +287,7 @@ inline FuturesCostFeedResult feed_futures_cost_model_step(
 
         auto it = carry.last_close.find(symbol);
         double prev_close = it == carry.last_close.end() ? 0.0 : it->second;
-        std::string& last_id = carry.last_id[symbol];
+        auto& tracker = carry.trackers[symbol];
         auto& sessions = carry.sessions[symbol];
         for (size_t i = 0; i < bars.size(); ++i) {
             if (i > 0 && bars[i].timestamp == bars[i - 1].timestamp &&
@@ -281,11 +295,7 @@ inline FuturesCostFeedResult feed_futures_cost_model_step(
                 out.repeated_instants.push_back(symbol);
             }
             const double close = static_cast<double>(bars[i].close);
-            const bool change_bar = !bars[i].instrument_id.empty() && !last_id.empty() &&
-                                    bars[i].instrument_id != last_id;  // T-ROLLX, as above
-            if (!bars[i].instrument_id.empty()) last_id = bars[i].instrument_id;
-            tcm.record_log_return(symbol, close, prev_close, change_bar);
-            if (prev_close > 0.0 && close > 0.0) ++entry.returns;
+            record_bar_log_return(tcm, symbol, tracker, bars[i], close, prev_close, entry);
             prev_close = close;
             sessions.add(bars[i]);
         }

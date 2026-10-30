@@ -1072,13 +1072,20 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
         }
         series[day] = close;
         ids_by_date_[bar.symbol][day] = bar.instrument_id;  // T-ROLLX: the kept bar's contract id
+        if (bar.roll_from) {
+            roll_from_by_date_[bar.symbol][day] = *bar.roll_from;  // rolls step 3
+        } else if (auto rf = roll_from_by_date_.find(bar.symbol); rf != roll_from_by_date_.end()) {
+            rf->second.erase(day);
+        }
         touched.insert(bar.symbol);
     }
     for (const auto& symbol : touched) {
         auto& series = closes_by_date_.at(symbol);
         auto& ids = ids_by_date_[symbol];
+        auto rf = roll_from_by_date_.find(symbol);
         while (series.size() > max_prices) {
             ids.erase(series.begin()->first);
+            if (rf != roll_from_by_date_.end()) rf->second.erase(series.begin()->first);
             series.erase(series.begin());
         }
     }
@@ -1093,16 +1100,12 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
         // T-ROLLX (LOOP_SPEC v6.1 section 2.3): a bar whose contract id differs from the previous
         // stored bar's is a change bar; its return is 0 (the splice step is not a return).
         std::vector<std::string> ids;
-        ids.reserve(series.size());
-        if (auto id_series = ids_by_date_.find(symbol); id_series != ids_by_date_.end()) {
-            for (const auto& [day, close] : series) {
-                auto id = id_series->second.find(day);
-                ids.push_back(id == id_series->second.end() ? std::string() : id->second);
-            }
-        } else {
-            ids.assign(series.size(), std::string());
-        }
-        const roll_series::ChangeFlags flags = roll_series::classify_instrument_changes(ids);
+        roll_series::RollFields roll_from;
+        stored_ids_of(symbol, series, ids, roll_from);
+        const roll_series::ChangeFlags flags =
+            roll_series::classify_instrument_changes(ids, roll_from);
+        // Rolls step 3: the bar after a confirmed vendor switch moves from the target's close.
+        const std::vector<double> bases = roll_series::return_bases(prices, flags);
 
         // Clear previous returns for this symbol BEFORE the two-price guard, so a symbol
         // whose history dropped below two prices loses its stale returns instead of keeping
@@ -1123,13 +1126,16 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
 
         // Calculate returns - use all available history
         for (size_t i = 1; i < prices.size(); ++i) {
-            double prev_price = prices[i - 1];
-            double curr_price = prices[i];
+            double prev_price = bases[i - 1];
+            // a per-contract roll bar's return is the old contract's own (rolls step 3)
+            double curr_price = flags.old_close[i] ? *flags.old_close[i] : prices[i];
 
             if (prev_price <= 0.0)
                 continue;
 
-            double ret = flags.change[i] ? 0.0 : (curr_price - prev_price) / prev_price;
+            double ret = flags.change[i] && !flags.old_close[i] && !flags.base_close[i - 1]
+                             ? 0.0
+                             : (curr_price - prev_price) / prev_price;
 
             if (std::isfinite(ret)) {
                 historical_returns_[symbol].push_back(ret);
@@ -1223,22 +1229,69 @@ std::unordered_map<std::string, std::map<int64_t, double>> PortfolioManager::adj
         if (id_series == ids_by_date_.end() || closes.empty()) continue;
         std::vector<int64_t> days;
         std::vector<double> raw;
-        std::vector<std::string> ids;
         days.reserve(closes.size());
         raw.reserve(closes.size());
-        ids.reserve(closes.size());
         for (const auto& [day, close] : closes) {
             days.push_back(day);
             raw.push_back(close);
-            auto id = id_series->second.find(day);
-            ids.push_back(id == id_series->second.end() ? std::string() : id->second);
         }
-        const roll_series::ChangeFlags flags = roll_series::classify_instrument_changes(ids);
-        const std::vector<double> adjusted = roll_series::adjusted_levels(raw, flags.change);
+        std::vector<std::string> ids;
+        roll_series::RollFields roll_from;
+        stored_ids_of(symbol, closes, ids, roll_from);
+        const roll_series::ChangeFlags flags =
+            roll_series::classify_instrument_changes(ids, roll_from);
+        const std::vector<double> adjusted = roll_series::adjusted_levels(raw, flags);
         auto& levels = out[symbol];
         for (size_t i = 0; i < days.size(); ++i) levels[days[i]] = adjusted[i];
     }
     return out;
+}
+
+std::unordered_map<std::string, std::map<int64_t, double>>
+PortfolioManager::base_closes_by_symbol(
+    const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
+    std::unordered_map<std::string, std::map<int64_t, double>> out = closes_by_symbol;
+    for (auto& [symbol, closes] : out) {
+        auto rf = roll_from_by_date_.find(symbol);
+        if (rf == roll_from_by_date_.end() || rf->second.empty() || closes.empty()) continue;
+        std::vector<std::string> ids;
+        roll_series::RollFields roll_from;
+        stored_ids_of(symbol, closes, ids, roll_from);
+        const roll_series::ChangeFlags flags =
+            roll_series::classify_instrument_changes(ids, roll_from);
+        size_t i = 0;
+        for (auto& [day, close] : closes) {
+            if (flags.base_close[i]) close = *flags.base_close[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
+void PortfolioManager::stored_ids_of(const std::string& symbol,
+                                     const std::map<int64_t, double>& closes,
+                                     std::vector<std::string>& ids,
+                                     roll_series::RollFields& roll_from) const {
+    ids.clear();
+    roll_from.clear();
+    ids.reserve(closes.size());
+    auto id_series = ids_by_date_.find(symbol);
+    for (const auto& [day, close] : closes) {
+        if (id_series == ids_by_date_.end()) {
+            ids.emplace_back();
+            continue;
+        }
+        auto id = id_series->second.find(day);
+        ids.push_back(id == id_series->second.end() ? std::string() : id->second);
+    }
+    // The roll fields only when the symbol has one stored: no field is today's path, bit for bit.
+    auto rf = roll_from_by_date_.find(symbol);
+    if (rf == roll_from_by_date_.end() || rf->second.empty()) return;
+    roll_from.reserve(closes.size());
+    for (const auto& [day, close] : closes) {
+        auto f = rf->second.find(day);
+        roll_from.push_back(f == rf->second.end() ? std::optional<RollFrom>() : f->second);
+    }
 }
 
 std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
@@ -1893,8 +1946,9 @@ Result<void> PortfolioManager::optimize_positions() {
             DEBUG("Using cached covariance matrix for convergence iteration");
         } else {
             // Compute covariance matrix (first iteration or symbols changed)
-            covariance = calculate_covariance_matrix(date_aligned_returns(
-                closes_by_symbol, adjusted_closes_by_symbol(closes_by_symbol)));
+            covariance = calculate_covariance_matrix(
+                date_aligned_returns(base_closes_by_symbol(closes_by_symbol),
+                                     adjusted_closes_by_symbol(closes_by_symbol)));
             // Cache for subsequent iterations
             cached_symbols_ = symbols;
             cached_covariance_ = covariance;

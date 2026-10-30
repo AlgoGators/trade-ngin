@@ -461,3 +461,113 @@ TEST(LiveRollLegs, ARecurringContractWithBothRollsOwedLegsBoth) {
 TEST(LiveRollLegs, TheIdDateIsTheConfirmingBarsCompactDate) {
     EXPECT_EQ(compact_date("2026-05-03"), "20260503");
 }
+
+// ------------------------------------------------------------------------------------------------
+// Rolls step 3 (per_contract_rolls on): the source's bars carry the old contract's close on a roll
+// bar (Bar::roll_from). One dated run a day, the runner's composition (run_on). A roll known on its
+// bar is legged by the run whose T-1 it is, at that bar's two closes, and that run books the old
+// contract's own move; a vendor switch is legged by the run whose T-1 confirms it, at the switch
+// bar's closes; nothing is booked twice.
+// ------------------------------------------------------------------------------------------------
+namespace {
+
+// OLD 04-14 330.00, 04-15 331.00, 04-16 332.20; the roll bar 04-17 (NEW 321.10, OLD 333.00);
+// 04-20 NEW 322.00 (OLD 334.00 that day); 04-21 NEW 323.00. `kind` is the roll bar's.
+std::vector<Bar> pc_bars(RollFromKind kind, bool confirmed = true) {
+    auto with = [](Bar b, double close, const char* id, RollFromKind k) {
+        b.roll_from = RollFrom{close, id, k};
+        return b;
+    };
+    std::vector<Bar> out{bar(kZm, "2026-04-14", 330.00, "OLD"), bar(kZm, "2026-04-15", 331.00, "OLD"),
+                         bar(kZm, "2026-04-16", 332.20, "OLD")};
+    // a known roll is NEW's bar naming OLD; a vendor switch is OLD's own bar naming the target NEW
+    out.push_back(kind == RollFromKind::AWAITS_NEXT
+                      ? with(bar(kZm, "2026-04-17", 333.00, "OLD"), 321.10, "NEW", kind)
+                      : with(bar(kZm, "2026-04-17", 321.10, "NEW"), 333.00, "OLD", kind));
+    if (confirmed) {
+        out.push_back(with(bar(kZm, "2026-04-20", 322.00, "NEW"), 334.00, "OLD", RollFromKind::AFTER_ROLL));
+        out.push_back(bar(kZm, "2026-04-21", 323.00, "NEW"));
+    } else {
+        out.push_back(bar(kZm, "2026-04-20", 334.00, "OLD"));
+        out.push_back(bar(kZm, "2026-04-21", 335.00, "OLD"));
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(LiveRollLegsPerContract, AKnownRollIsLeggedByTheRunWhoseT1ItIsAtItsTwoCloses) {
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    const LegRun r17 = run_on(all, {}, "2026-04-17", "OLD");
+    EXPECT_NEAR(r17.pnl, 100.0 * (332.20 - 331.00), 1e-9);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", r17.stored_after);
+    ASSERT_EQ(r18.rolls.size(), 1u);
+    EXPECT_EQ(r18.rolls[0].confirm_date, "2026-04-17");
+    EXPECT_EQ(r18.rolls[0].outgoing_id, "OLD");
+    EXPECT_EQ(r18.rolls[0].incoming_id, "NEW");
+    EXPECT_NEAR(r18.rolls[0].closing_price, 333.00, 1e-9) << "the old contract's close on the roll bar";
+    EXPECT_NEAR(r18.rolls[0].opening_price, 321.10, 1e-9);
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9) << "the old contract's own move (today: 0)";
+    EXPECT_EQ(r18.stored_after, "NEW");
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    EXPECT_TRUE(r21.rolls.empty()) << "booked once";
+    EXPECT_NEAR(r21.pnl, 100.0 * (322.00 - 321.10), 1e-9);
+}
+
+TEST(LiveRollLegsPerContract, AVendorSwitchIsLeggedByTheRunWhoseT1ConfirmsIt) {
+    const auto all = pc_bars(RollFromKind::AWAITS_NEXT);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", "OLD");
+    EXPECT_TRUE(r18.rolls.empty()) << "the run ending on the switch bar cannot know it";
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9) << "the old contract's move, booked once here";
+    EXPECT_EQ(r18.stored_after, "OLD") << "held in the old contract while pending";
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-20");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 333.00, 1e-9) << "priced at the switch bar's two closes";
+    EXPECT_NEAR(r21.rolls[0].opening_price, 321.10, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * (322.00 - 321.10), 1e-9);
+    EXPECT_EQ(r21.stored_after, "NEW");
+}
+
+TEST(LiveRollLegsPerContract, AVendorSwitchTheNextBarRevertsLegsNothingAndBooksTheOldContract) {
+    const auto all = pc_bars(RollFromKind::AWAITS_NEXT, false);
+    const LegRun r18 = run_on(all, {}, "2026-04-18", "OLD");
+    EXPECT_NEAR(r18.pnl, 100.0 * (333.00 - 332.20), 1e-9);
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after);
+    EXPECT_TRUE(r21.rolls.empty());
+    EXPECT_NEAR(r21.pnl, 100.0 * (334.00 - 333.00), 1e-9) << "from OLD's close on the switch bar";
+    EXPECT_EQ(r21.stored_after, "OLD");
+}
+
+TEST(LiveRollLegsPerContract, ALateRollBarIsLeggedOnceAndItsMovesBookedOnce) {
+    // The 04-17 roll bar is a hole on its own run (04-18) and back-filled before the 04-21 run.
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    std::vector<StoredRealisedRow> stored;
+    const LegRun r17 = run_on(all, {}, "2026-04-17", "OLD", &stored);
+    const LegRun r18 = run_on(all, {"2026-04-17"}, "2026-04-18", r17.stored_after, &stored);
+    EXPECT_TRUE(r18.rolls.empty());
+    EXPECT_EQ(r18.pnl, 0.0);
+    const LegRun r21 = run_on(all, {}, "2026-04-21", r18.stored_after, &stored);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-17");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 333.00, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * ((333.00 - 332.20) + (322.00 - 321.10)), 1e-9)
+        << "the old contract's move over the roll bar and the new one's after it, once";
+    const LegRun r22 = run_on(all, {}, "2026-04-22", "NEW", &stored);
+    EXPECT_TRUE(r22.rolls.empty());
+}
+
+TEST(LiveRollLegsPerContract, AWithheldRollBarIsBookedOnTheNextConsumedBarAtItsCloses) {
+    // The roll bar is never consumed (withheld on every run, K-01): the 04-20 bar books the roll,
+    // the old contract's move up to it and both legs at its closes (HD 10-23).
+    const auto all = pc_bars(RollFromKind::KNOWN);
+    const LegRun r18 = run_on(all, {"2026-04-17"}, "2026-04-18", "OLD");
+    EXPECT_TRUE(r18.rolls.empty());
+    const LegRun r21 = run_on(all, {"2026-04-17"}, "2026-04-21", r18.stored_after);
+    ASSERT_EQ(r21.rolls.size(), 1u);
+    EXPECT_EQ(r21.rolls[0].confirm_date, "2026-04-20");
+    EXPECT_NEAR(r21.rolls[0].closing_price, 334.00, 1e-9);
+    EXPECT_NEAR(r21.rolls[0].opening_price, 322.00, 1e-9);
+    EXPECT_NEAR(r21.pnl, 100.0 * (334.00 - 332.20), 1e-9);
+    EXPECT_EQ(r21.stored_after, "NEW");
+}

@@ -119,13 +119,15 @@ public:
         for (const auto& [symbol, bars] : consumed_) {
             std::vector<double> raw;
             std::vector<std::string> ids;
+            roll_series::RollFields roll_from;
             raw.reserve(bars.size());
             ids.reserve(bars.size());
             for (const auto& b : bars) {
                 raw.push_back(static_cast<double>(b.close));
                 ids.push_back(b.instrument_id);
+                roll_from.push_back(b.roll_from);  // rolls step 3
             }
-            const roll_series::Series s = roll_series::build_series(raw, ids);
+            const roll_series::Series s = roll_series::build_series(raw, ids, roll_from);
             const auto seeded = history_bars_.find(symbol);
             const size_t first_window_bar = seeded == history_bars_.end() ? 0 : seeded->second;
             for (size_t t = first_window_bar; t < bars.size(); ++t) {

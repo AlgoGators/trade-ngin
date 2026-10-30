@@ -17,6 +17,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/roll_series.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -626,6 +627,9 @@ private:
     /// T-ROLLX: each stored close's vendor instrument id (empty when unknown), the same keys as
     /// closes_by_date_, so the optimizer's covariance reads the ADJUSTED returns (roll_series.hpp).
     std::unordered_map<std::string, std::map<int64_t, std::string>> ids_by_date_;
+    /// Rolls step 3: each stored close's roll field (Bar::roll_from), the same keys; a date with
+    /// none has no entry.
+    std::unordered_map<std::string, std::map<int64_t, RollFrom>> roll_from_by_date_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
     MarketData current_market_data_;
 
@@ -703,6 +707,18 @@ private:
      */
     std::unordered_map<std::string, std::map<int64_t, double>> adjusted_closes_by_symbol(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /**
+     * @brief Rolls step 3: the given closes with every vendor switch bar the next stored bar confirms
+     *        read as the target's close (roll_series::return_bases): the divisors of the
+     *        date-aligned returns. The closes themselves with no roll field stored.
+     */
+    std::unordered_map<std::string, std::map<int64_t, double>> base_closes_by_symbol(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /// The stored ids and roll fields of `symbol` on the dates of `closes`, in date order.
+    void stored_ids_of(const std::string& symbol, const std::map<int64_t, double>& closes,
+                       std::vector<std::string>& ids, roll_series::RollFields& roll_from) const;
 
     /**
      * @brief Calculate covariance matrix from returns
