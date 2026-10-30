@@ -23,8 +23,9 @@ namespace trade_ngin::contract_rolls {
  * ContractRollSeries::outlook(date): the contract held, the deadline (first notice day or last trading
  * day), the window's first day, the last actionable bar (its run date is the next calendar day) and the
  * target, the cycle's front month (the contract the rule rolls into when it prints that day, else the
- * cycle front's code). A root the source leaves on the vendor's series (the micros) gets the contract
- * the vendor's id names on its latest grid bar and no window.
+ * cycle front's code). The micros are read by the rule like every other root (R6): before the
+ * vendor's 2026-02-22 change their series holds the full-size root's contract, printed in the micro's
+ * IB format (ESZ5 under MES prints "MESZ5"), the micro of the same expiry the account holds.
  *
  * For each roll the run legged, its two contracts' months, read by (root, instrument id, date) from
  * the contract table, and the root's name from the contract metadata; `tick_of` gives the contract's
@@ -60,12 +61,9 @@ struct ReportContractName {
 struct ReportRollSources {
     /// The rule's series of `root` from its series start to `date` (warnings not logged).
     std::function<Result<ContractRollSeries>(const std::string& root, Day date)> series;
-    /// The vendor's grid of `root`'s continuous series over [from, to].
-    std::function<std::vector<VendorBar>(const std::string& root, Day from, Day to)> vendor_grid;
-    /// The contracts of `root` with bars in the year before `day`.
+    /// The contracts of `root` with bars in the year before `day` (for a micro, its full-size root's
+    /// too while that year reaches back before the change).
     std::function<Result<ContractBook>(const std::string& root, Day day)> contracts_around;
-    /// The root's CME trading-day calendar (the micros' window).
-    std::function<Result<TradingCalendar>(const std::string& root)> calendar;
     /// The contract metadata's names by Databento symbol.
     std::function<std::map<std::string, ReportContractName>()> names;
 };

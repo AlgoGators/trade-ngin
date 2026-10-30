@@ -126,7 +126,11 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
     for (const char* runner : kLiveRunners) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
-        const size_t relabels = src.find("ListingDates::instance().set_relabels(app_config.instrument_id_relabels);");
+        // R6: the relabels read are the switch's (none with per_contract_rolls on).
+        const size_t relabels = src.find(
+            "const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+            "            if (!relabels.empty()) {\n"
+            "                ListingDates::instance().set_relabels(relabels);");
         const size_t contracts = src.find("ListingDates::instance().set(app_config.listing_dates);");
         const size_t guard = src.find("live_listing_refusals(");
         const size_t es_filter = src.find("s == \"ES.v.0\"");
@@ -205,7 +209,11 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
         ASSERT_LT(from, to) << runner;
         const std::string hunk = src.substr(from, to - from);
         for (const char* needed :
-             {"ListingDates::instance().set_relabels(app_config.instrument_id_relabels);",
+             {"const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+              "            if (!relabels.empty()) {\n"
+              "                ListingDates::instance().set_relabels(relabels);",
+              "} else if (!app_config.instrument_id_relabels.empty()) {\n"
+              "                INFO(relabels_not_read_line(app_config.instrument_id_relabels));",
               "ListingDates::instance().set(app_config.listing_dates);",
               "ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);",
               "InstrumentRegistry::instance().set_full_size_remap(false);",
@@ -234,4 +242,37 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
     EXPECT_EQ(id_reads, 2u);
     EXPECT_NE(coordinator.find("return ListingDates::instance().read_ids(symbols, std::move(ids));"),
               std::string::npos);
+}
+
+// R6 fix round 1 (audit A S2): both backtest runners store in the run's config only the relabels the run
+// read: relabels_read gives none with per_contract_rolls on, so a switch-on run stores no
+// instrument_id_relabels key; with the switch off the declared list, as before. The stored block is the
+// only writer of the key, and it reads relabels_read's list, never the declared one.
+TEST(ListingRunnerWiring, BothBacktestRunnersStoreOnlyTheRelabelsTheRunRead) {
+    std::vector<std::string> hunks;
+    for (const char* runner : {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp"}) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string store = "portfolio_config_json[\"instrument_id_relabels\"] = relabels;";
+        const size_t at = src.find(store);
+        ASSERT_NE(at, std::string::npos) << runner;
+        EXPECT_EQ(src.find(store, at + 1), std::string::npos) << runner << ": one writer of the stored key";
+        const size_t from = src.rfind("            // the relabels the run read (none with per_contract_rolls on, R6)", at);
+        ASSERT_NE(from, std::string::npos) << runner;
+        const std::string hunk = src.substr(from, at + store.size() - from);
+        EXPECT_NE(hunk.find("const auto read = relabels_read(app_config.instrument_id_relabels, "
+                            "app_config.per_contract_rolls);\n            if (!read.empty()) {"),
+                  std::string::npos)
+            << runner << ": the stored list is the one the run read";
+        EXPECT_NE(hunk.find("for (const auto& r : read) {"), std::string::npos) << runner;
+        EXPECT_EQ(hunk.find("for (const auto& r : app_config.instrument_id_relabels)"), std::string::npos)
+            << runner << ": the declared list would be stored with the switch on";
+        hunks.push_back(hunk);
+    }
+    ASSERT_EQ(hunks.size(), 2u);
+    EXPECT_EQ(hunks[0], hunks[1]) << "the twins differ";
+    // and the list the run reads is empty with the switch on, the declared one with it off
+    const std::vector<InstrumentIdRelabel> declared = {{"MES", "2026-02-22", "42140878", "42003800"}};
+    EXPECT_TRUE(relabels_read(declared, true).empty());
+    EXPECT_EQ(relabels_read(declared, false).size(), 1u);
 }

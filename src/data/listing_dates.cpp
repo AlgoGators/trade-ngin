@@ -336,6 +336,18 @@ std::vector<ListingDates::RelabelEntry> ListingDates::build_relabels(
     return out;
 }
 
+std::vector<InstrumentIdRelabel> relabels_read(const std::vector<InstrumentIdRelabel>& declared,
+                                               bool per_contract_rolls) {
+    return per_contract_rolls ? std::vector<InstrumentIdRelabel>{} : declared;
+}
+
+std::string relabels_not_read_line(const std::vector<InstrumentIdRelabel>& declared) {
+    std::string line = "INSTRUMENT_ID_RELABELS not read: per_contract_rolls is on and the rule rolls each change "
+                       "(trigger alias):";
+    for (const auto& r : declared) line += " " + r.symbol + " " + r.date + " " + r.from + " -> " + r.to + ";";
+    return line;
+}
+
 void ListingDates::validate_relabels(const std::vector<InstrumentIdRelabel>& relabels) {
     (void)build_relabels(relabels);
 }

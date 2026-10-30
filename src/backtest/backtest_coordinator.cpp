@@ -932,6 +932,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // The symbols whose bar fed on this cycle CONFIRMED a roll, with that bar's date: their legs
         // are booked on this cycle, once (section 6.5).
         std::map<std::string, std::string> confirmed_now;
+        // R6 (HD 2026-10-26): the micros' changes of price source confirmed on this cycle: read as
+        // rolls by the series, never legged (no execution, no cost); logged with their gap.
+        std::map<std::string, std::string> source_changes_now;
         if (session_hold_enabled_ && had_previous_bars) {
             std::set<std::string> withheld_symbols;
             const std::vector<SymbolDayVerdict> verdicts =
@@ -986,8 +989,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     b.instrument_id, static_cast<double>(b.close), b.roll_from);
                 fed_now.insert(b.symbol);
                 if (signal_roll_status_[b.symbol].confirm) {
-                    confirmed_now[b.symbol] =
-                        SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp));
+                    auto& into = signal_roll_status_[b.symbol].price_source_change ? source_changes_now
+                                                                                    : confirmed_now;
+                    into[b.symbol] = SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp));
                 }
             }
             for (const auto& [symbol, st] : signal_roll_status_) {
@@ -1092,7 +1096,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Section 6.5: the held book at the START of the bar, per sleeve, the quantity the roll legs
         // are booked at. The book is the FILLED one: a sleeve's target that warm-up set and no fill
         // stands behind is not held, and a roll confirmed on the first traded cycle has no leg.
-        const auto start_of_bar_book = confirmed_now.empty()
+        const auto start_of_bar_book = confirmed_now.empty() && source_changes_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
                                            : portfolio->get_filled_strategy_positions();
         // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
@@ -1167,6 +1171,22 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 o << std::setprecision(12) << x;
                 return o.str();
             };
+            for (const auto& [symbol, confirm_date] : source_changes_now) {
+                const auto& st = signal_roll_status_.at(symbol);
+                const double points = st.change_bar_close - st.last_close_before_change;
+                const double point_value = pnl_manager_ ? pnl_manager_->get_point_value(symbol) : 1.0;
+                for (const auto& [strategy_id, book] : start_of_bar_book) {
+                    const auto held = book.find(symbol);
+                    const double q = held == book.end() ? 0.0 : static_cast<double>(held->second.quantity);
+                    INFO("PRICE_SOURCE_CHANGE " + strategy_id + " " + symbol + " date=" + confirm_date + " " +
+                         st.previous_held_id + "->" + st.held_id + " old_close=" +
+                         model_input(st.last_close_before_change) + " new_close=" +
+                         model_input(st.change_bar_close) + " qty=" + model_input(q) + " gap_points=" +
+                         model_input(points) + " gap_value=" + model_input(points * q * point_value) +
+                         ": the micro's price source changes to its own contract; no trade, no legs, "
+                         "no cost (the gap is not P&L)");
+                }
+            }
             for (const auto& [symbol, confirm_date] : confirmed_now) {
                 const auto& st = signal_roll_status_.at(symbol);
                 INFO("ROLL_CONFIRMED " + symbol + " date=" + confirm_date + " " + st.previous_held_id +

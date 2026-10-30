@@ -66,9 +66,10 @@ namespace trade_ngin::contract_rolls {
  *     rule) books the roll on its first consumed bar, the old contract's move up to it and both
  *     legs at its closes (HD 10-23). A consumer that consumed the roll bar reads nothing from it.
  *
- * The micros (MES, MNQ, MYM, M2K) stay on the vendor's `.v.0` bars and today's handling of the
- * 2026-02-22 change until ES, NQ, YM and RTY contract bars are loaded (waiting on data), with one
- * WARN per run (reads_vendor_series).
+ * The micros (MES, MNQ, MYM, M2K) read the rule like every other root (R6, plan 10b point 5):
+ * before the vendor's 2026-02-22 change their series is the full-size root's contracts (ES, NQ, YM,
+ * RTY), from it the micro's own, and the change is one roll (trigger ALIAS) between the two
+ * contracts of the same expiry (contract_roll_rule.hpp, MicroAlias).
  */
 /// Rolls step 4, ruling 19 (HD 2026-10-23): the bar the source hands out on an unconfirmed vendor
 /// switch bar (portfolio.json per_contract_switch_bar).
@@ -93,8 +94,6 @@ public:
     bool enabled() const;
     /// The calendar given to enable(); an empty calendar when off.
     FuturesCalendar calendar() const;
-    /// True on the first call after enable(): the micros' WARN is logged once per run.
-    bool first_micros_warning();
     /// Ruling 19's setting given to enable(); HELD when off.
     SwitchBar switch_bar() const;
     /// Rolls step 4 (R4a open question 4): the first bar date whose rule warnings (the fallbacks) a
@@ -110,7 +109,6 @@ private:
     PerContractSource() = default;
     mutable std::mutex mutex_;
     bool enabled_{false};
-    bool micros_warned_{false};
     std::optional<FuturesCalendar> calendar_;
     SwitchBar switch_bar_{SwitchBar::HELD};
     Day log_floor_{};
@@ -125,13 +123,6 @@ private:
  */
 Result<void> configure_per_contract_source(bool per_contract_rolls,
                                            const std::string& switch_bar = "held");
-
-/// The roots the source leaves on the vendor's series with the switch on: the four micros, whose
-/// history before 2026-02-22 is the full-size contracts', not loaded yet (waiting on data).
-bool reads_vendor_series(const std::string& root);
-
-/// The WARN the source logs once per run for the micros.
-std::string micros_warning_line();
 
 /// One bar the source hands out, before the loader's Arrow conversion.
 struct SourceBar {
@@ -170,15 +161,9 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                               Day log_from = Day{},
                                               const std::function<bool(const std::string&)>& log_once = {});
 
-/// The loader's split of the symbols asked for: the roots the rule serves and the micros' `.v.0`
-/// symbols, left on the vendor's series (reads_vendor_series), both in the order asked.
-struct SourceSymbols {
-    std::vector<std::string> vendor_symbols;
-    std::vector<std::string> roots;
-};
-
-/// An error for a symbol that is not a continuous futures symbol (`<root>.v.0`).
-Result<SourceSymbols> split_source_symbols(const std::vector<std::string>& symbols);
+/// The roots of the symbols asked for, in the order asked: the rule serves every one of them, the
+/// micros included. An error for a symbol that is not a continuous futures symbol (`<root>.v.0`).
+Result<std::vector<std::string>> source_roots(const std::vector<std::string>& symbols);
 
 /// Sorts the bars as the futures query sorts them: time, then symbol (stable).
 void sort_source_bars(std::vector<SourceBar>& bars);

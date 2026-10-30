@@ -59,7 +59,7 @@ namespace trade_ngin::roll_series {
  * nothing rolled and nothing is resolved. An AFTER_ROLL field acts only when the last consumed
  * contract is the one it names: the consumer withheld the roll bar (and the bars since), so this
  * bar is the roll, KNOWN, at this bar's two closes. With no field passed (the switch
- * off, the micros) every rule above is today's, bit for bit.
+ * off) every rule above is today's, bit for bit.
  *
  * Rolls step 4 (R3 audit A, the 6L 2013-09-11 case): an AFTER_ROLL field confirms an awaited vendor
  * switch only when it follows that switch, its date being the switch bar's. A field dated later
@@ -178,6 +178,10 @@ public:
         /// last_close_before_change. nullopt elsewhere, and on a roll of the vendor's series (no two
         /// closes on one bar: the switch bar books 0).
         std::optional<double> roll_bar_points;
+        /// R6 (HD 2026-10-26): the confirm is a change of a micro's price source (RollFromKind::
+        /// SOURCE_CHANGE or AFTER_SOURCE_CHANGE): the series reads it as a roll, but the account
+        /// trades nothing, so no caller books legs or a cost for it; it is logged with its gap.
+        bool price_source_change{false};
         /// LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): the symbol is HELD while its last consumed bar is
         /// a change bar (a pending roll, a third id, either bar of a flip) or an id-less bar inside a
         /// pending roll (code review D2: `change` alone missed that bar).

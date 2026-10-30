@@ -7,7 +7,6 @@
 #include <set>
 
 #include "trade_ngin/core/logger.hpp"
-#include "trade_ngin/data/per_contract_source.hpp"
 
 namespace trade_ngin::contract_rolls {
 
@@ -25,9 +24,32 @@ std::string trimmed(const std::string& s) {
     return s.substr(first, s.find_last_not_of(" \t") - first + 1);
 }
 
-// The contracts of `root` around `day` (a year before it, for the ids of a contract still held).
+// The contracts of `root` around `day` (a year before it, for the ids of a contract still held); for a
+// micro whose year reaches back before its change, the full-size root's too.
 Result<ContractBook> book_around(pqxx::transaction_base& txn, const std::string& root, Day day) {
-    return ContractBook::build(read_contract_bars(txn, {root}, day - std::chrono::days{400}, day));
+    const Day from = day - std::chrono::days{400};
+    std::vector<std::string> roots{root};
+    const auto alias = micro_alias(root);
+    if (alias && from < alias->change) roots.push_back(alias->full_root);
+    return ContractBook::build(read_contract_bars(txn, roots, from, day));
+}
+
+// The contract `id` names on `day` among `root`'s, or for a micro its full-size root's.
+const Contract* named(const ContractBook& book, const std::string& root, const std::string& id, Day day) {
+    if (const Contract* c = book.named_by_id(root, id, day)) return c;
+    const auto alias = micro_alias(root);
+    return alias ? book.named_by_id(alias->full_root, id, day) : nullptr;
+}
+
+// The root a contract code is written with: `root`, or a micro's full-size root for its contracts
+// before the change ("ESZ5" under MES), so the IB format prints the micro of that month ("MESZ5").
+std::string code_root(const std::string& root, const std::string& code) {
+    const auto alias = micro_alias(root);
+    if (alias && code.compare(0, root.size(), root) != 0 &&
+        code.compare(0, alias->full_root.size(), alias->full_root) == 0) {
+        return alias->full_root;
+    }
+    return root;
 }
 
 }  // namespace
@@ -48,7 +70,6 @@ Result<ReportRollOutlook> report_outlook_of(const ContractRollSeries& series, co
     out.held = o.held.raw_symbol;
     out.held_symbol = o.held.raw_symbol;
     out.cycle = cycle;
-    out.rule_rolls = true;
     out.in_window = date >= o.dates.window_first;
     out.roll_by = ymd(o.dates.last_actionable + std::chrono::days{1});
     out.deadline = ymd(o.dates.deadline);
@@ -99,56 +120,31 @@ ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSourc
                 auto built = sources.contracts_around(root, date);
                 if (built.is_ok()) {
                     book = std::move(built.value());
-                    book_held = book->named_by_id(root, id->second, date);
+                    book_held = named(*book, root, id->second, date);
                 }
             }
-            ReportRollOutlook o;
-            if (reads_vendor_series(root)) {
-                // The micros roll with the vendor's series: the contract held, its last trading day and
-                // the five CME trading days before it.
-                o.root = root;
-                o.cycle = cycle.value();
-                if (!book_held) {
-                    const auto grid = sources.vendor_grid(root, date - std::chrono::days{14}, date);
-                    if (!book) {
-                        auto built = sources.contracts_around(root, date);
-                        if (built.is_ok()) book = std::move(built.value());
-                    }
-                    if (!grid.empty() && book) book_held = book->named_by_id(root, grid.back().instrument_id, grid.back().date);
-                }
-                if (book_held) {
-                    o.held_symbol = book_held->raw_symbol;
-                    if (book_held->key) {
-                        auto cal = sources.calendar(root);
-                        const Day last_trade = book_held->key->expiration;
-                        o.deadline = ymd(last_trade);
-                        if (cal.is_ok()) {
-                            o.in_window = date >= cal.value().trading_day_before(last_trade, 5) && date <= last_trade;
-                        }
-                    }
-                }
-            } else {
-                auto series = sources.series(root, date);
-                if (series.is_error()) {
-                    WARN("report_roll_view " + root + ": " + series.error()->what() + "; no outlook");
-                    continue;
-                }
-                auto made = report_outlook_of(series.value(), root, cycle.value(), date);
-                if (made.is_error()) {
-                    WARN("report_roll_view " + root + ": " + made.error()->what() + "; no outlook");
-                    continue;
-                }
-                o = made.value();
-                if (book_held && book_held->raw_symbol != o.held_symbol) {
-                    // The rule has rolled on this bar and the legs are booked by the next run (a vendor
-                    // switch the next bar confirms): the book still holds the old contract; no line yet.
-                    o.held_symbol = book_held->raw_symbol;
-                    o.in_window = false;
-                }
+            auto series = sources.series(root, date);
+            if (series.is_error()) {
+                WARN("report_roll_view " + root + ": " + series.error()->what() + "; no outlook");
+                continue;
+            }
+            auto made = report_outlook_of(series.value(), root, cycle.value(), date);
+            if (made.is_error()) {
+                WARN("report_roll_view " + root + ": " + made.error()->what() + "; no outlook");
+                continue;
+            }
+            ReportRollOutlook o = made.value();
+            if (book_held && book_held->raw_symbol != o.held_symbol) {
+                // The rule has rolled on this bar and the legs are booked by the next run (a vendor
+                // switch the next bar confirms): the book still holds the old contract; no line yet.
+                o.held_symbol = book_held->raw_symbol;
+                o.in_window = false;
             }
             o.label = ib_of(root);
-            o.held = o.held_symbol.empty() ? std::string() : report_ib_contract(o.label, root, o.held_symbol);
-            if (!o.target.empty()) o.target = report_ib_contract(o.label, root, o.target);
+            o.held = o.held_symbol.empty()
+                         ? std::string()
+                         : report_ib_contract(o.label, code_root(root, o.held_symbol), o.held_symbol);
+            if (!o.target.empty()) o.target = report_ib_contract(o.label, code_root(root, o.target), o.target);
             out.outlook[root] = o;
         } catch (const std::exception& e) {
             WARN("report_roll_view " + root + ": " + e.what() + "; no outlook");
@@ -170,10 +166,10 @@ ReportRolls report_roll_view(const ReportRollQuery& query, const ReportRollSourc
                 if (built.is_ok()) contracts = std::make_shared<ContractBook>(built.value());
             }
             if (contracts) {
-                const auto* from = contracts->named_by_id(root, roll.outgoing_id, day);
-                const auto* to = contracts->named_by_id(root, roll.incoming_id, day);
-                if (from) n.from_month = report_month_name(report_contract_month(root, from->raw_symbol));
-                if (to) n.to_month = report_month_name(report_contract_month(root, to->raw_symbol));
+                const auto* from = named(*contracts, root, roll.outgoing_id, day);
+                const auto* to = named(*contracts, root, roll.incoming_id, day);
+                if (from) n.from_month = report_month_name(report_contract_month(from->root, from->raw_symbol));
+                if (to) n.to_month = report_month_name(report_contract_month(to->root, to->raw_symbol));
             }
         } catch (const std::exception& e) {
             WARN("report_roll_view " + roll.symbol + " " + roll.date + ": " + e.what() + "; the line names no months");
@@ -194,11 +190,7 @@ ReportRolls report_roll_view(pqxx::transaction_base& txn, const ReportRollQuery&
         }
         return build_held_series(txn, root, start.value(), date, calendars, date + std::chrono::days{1});
     };
-    sources.vendor_grid = [&](const std::string& root, Day from, Day to) {
-        return read_vendor_grid(txn, root + ".v.0", from, to);
-    };
     sources.contracts_around = [&](const std::string& root, Day day) { return book_around(txn, root, day); };
-    sources.calendar = [&](const std::string& root) { return calendars.for_root(root); };
     sources.names = [&]() {
         std::map<std::string, ReportContractName> names;
         for (const auto& row : txn.exec("SELECT \"Databento Symbol\", \"Name\", \"IB Symbol\" FROM metadata.contract_metadata")) {

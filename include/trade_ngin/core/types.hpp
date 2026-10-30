@@ -328,7 +328,27 @@ enum class RollFromKind {
     /// close. So the booked moves and the legs are AWAITS_NEXT's; only the levels read on the bar
     /// (sizing, marks, notional, the overlay) and the session classifier's reading of it differ.
     AWAITS_NEXT_VENDOR,
+    /// R6 (HD 2026-10-26): KNOWN, but the change of a micro's price source (the vendor's 2026-02-22
+    /// change: before it the micro's series is the full-size contract of the same expiry, from it
+    /// the micro's own; contract_roll_rule.hpp MicroAlias). Read by the series exactly as KNOWN (the
+    /// old contract's move booked to its close, the gap excluded, the held contract the new one),
+    /// but no trade: the account holds the micro contract throughout, so no legs, no cost.
+    SOURCE_CHANGE,
+    /// R6: AFTER_ROLL following a SOURCE_CHANGE: a consumer that withheld the change bar reads the
+    /// change on its first consumed bar, as SOURCE_CHANGE, at that bar's two closes.
+    AFTER_SOURCE_CHANGE,
 };
+
+/// R6: the kind as the series reads it (SOURCE_CHANGE as KNOWN, AFTER_SOURCE_CHANGE as AFTER_ROLL).
+inline RollFromKind series_kind(RollFromKind kind) {
+    if (kind == RollFromKind::SOURCE_CHANGE) return RollFromKind::KNOWN;
+    if (kind == RollFromKind::AFTER_SOURCE_CHANGE) return RollFromKind::AFTER_ROLL;
+    return kind;
+}
+/// R6: the field marks a change of price source, not a roll the account trades.
+inline bool is_price_source_change(RollFromKind kind) {
+    return kind == RollFromKind::SOURCE_CHANGE || kind == RollFromKind::AFTER_SOURCE_CHANGE;
+}
 
 /**
  * @brief The contract a per-contract roll bar left (rolls step 3, portfolio.json per_contract_rolls;
