@@ -145,9 +145,11 @@ def test_the_settled_table_lists_every_held_row_with_its_stored_pnl():
 def test_roll_legs_are_costs_never_trades_and_the_cost_is_after_netting():
     report = _report()
     assert [e.symbol for e in report.executions] == ["ES"]
-    assert report.executions[0].cost == 1.5  # 2.10 own cost less the 0.60 netting adjustment
+    assert report.executions[0].cost == 2.1  # the fill's own cost, as the row shows it
+    assert report.executions[0].net_cost == 1.5  # less the 0.60 netting adjustment
     assert [e.symbol for e in report.roll_legs] == ["CL"]
-    assert report.total_cost == 1.5 + 2.45
+    assert report.total_cost == 1.5 + 2.45  # what the account paid
+    assert report.netting_note.startswith("Netting between strategies: own costs $4.55")
 
 
 def test_an_ordinary_day_has_no_banner_whatever_its_weekday():
@@ -197,3 +199,122 @@ def test_cme_closure_applies_only_when_every_held_group_was_closed():
     assert holiday_name(good_friday, ["ES", "ZN"]) is None  # ZN settled
     assert holiday_name(good_friday) is None  # unknown book: a partial closure is not a closure
     assert holiday_name(date(2025, 12, 25), []) == "Christmas Day"  # every group closed
+
+
+# --- per-sleeve tables and migration 040's stored marks ---------------------------------------
+
+
+def _sleeves_rows(**over):
+    """Two sleeves, one symbol held by both, rows written by a binary of migration 040."""
+    return _rows(
+        positions=[
+            {"strategy_name": "TREND_FOLLOWING", "symbol": "ES.v.0", "quantity": 2,
+             "average_price": 5390.0, "mark_price": 5400.0},
+            {"strategy_name": "TREND_FOLLOWING_FAST", "symbol": "ES.v.0", "quantity": -1,
+             "average_price": 5390.0, "mark_price": 5400.0},
+            {"strategy_name": "TREND_FOLLOWING", "symbol": "HE.v.0", "quantity": 1,
+             "average_price": 91.3, "mark_price": None},
+        ],
+        yesterday_positions=[
+            {"strategy_name": "TREND_FOLLOWING", "symbol": "ES.v.0", "quantity": 2,
+             "average_price": 5390.0, "daily_realized_pnl": 500.0, "settle_from_price": 5380.0,
+             "settle_to_price": 5390.0, "settle_mark": None},
+            {"strategy_name": "TREND_FOLLOWING", "symbol": "HE.v.0", "quantity": 1,
+             "average_price": 91.3, "daily_realized_pnl": 0.0, "settle_from_price": 91.3,
+             "settle_to_price": None, "settle_mark": "NO_BAR"},
+            {"strategy_name": "TREND_FOLLOWING_FAST", "symbol": "MBT.v.0", "quantity": 1,
+             "average_price": 77740.0, "daily_realized_pnl": 0.0, "settle_from_price": 79070.0,
+             "settle_to_price": 77740.0, "settle_mark": "ROLL"},
+        ],
+        **over,
+    )
+
+
+def _sleeves_report(day=date(2026, 10, 21), flags=ReportFlags(), **over):
+    cfg = {"id": "qt", "name": "Trend Following", "description": "", "initial_equity": 500000.0,
+           "portfolio_id": "P", "strategy_type": "S"}
+    detail = build_strategy_detail(cfg, _sleeves_rows(**over))
+    return parse_daily_report(build_daily_payload(detail, "QT_C", "QT C", day, flags=flags))
+
+
+def test_two_sleeves_holding_one_symbol_are_two_rows():
+    report = _sleeves_report()
+    assert [(p.sleeve, p.symbol) for p in report.positions] == [
+        ("Trend Following", "ES"), ("Trend Following Fast", "ES"), ("Trend Following", "HE")]
+    assert report.sleeves[:2] == ("Trend Following", "Trend Following Fast")
+    # the weight is the row's share of its own sleeve's notional
+    fast = [p for p in report.positions if p.sleeve == "Trend Following Fast"]
+    assert fast[0].weight == 1.0
+    summary = {m.label: m.value for m in report.sleeve_summary}
+    assert summary["Sleeve positions"] == "3" and summary["Total notional"] == "$750,000.00"
+
+
+def test_a_row_is_valued_at_its_mark_and_a_row_with_no_bar_is_noted():
+    report = _sleeves_report()
+    es = report.positions[0]
+    assert es.price == 5400.0 and es.note == 0  # the mark, not the average price
+    he = report.positions[2]
+    assert he.price == 91.3 and he.note > 0  # no bar: the last known price, with its note
+    assert dict(report.notes)[he.note].startswith("No price bar for this contract that day")
+
+
+def test_the_settled_table_shows_the_settles_prices_and_its_marks():
+    report = _sleeves_report()
+    rows = {(r.sleeve, r.symbol): r for r in report.realized}
+    es = rows[("Trend Following", "ES")]
+    assert (es.entry_price, es.exit_price, es.note) == (5380.0, 5390.0, 0)
+    he = rows[("Trend Following", "HE")]
+    assert he.exit_price is None and dict(report.notes)[he.note].startswith("No price received")
+    mbt = rows[("Trend Following Fast", "MBT")]
+    assert dict(report.notes)[mbt.note] == "Contract rolled that day. PnL is not booked on the roll."
+    # numbered in the order they first appear: the positions' note first
+    assert [n for n, _ in report.notes] == [1, 2, 3]
+
+
+def test_rows_settled_before_migration_040_carry_no_notes():
+    report = _report()  # the rows of _rows() have no migration-040 columns
+    assert report.notes == ()
+    assert all(p.note == 0 for p in report.positions)
+
+
+def test_a_missing_settle_price_on_a_saturday_is_the_partial_banner():
+    saturday_after = date(2026, 10, 25)  # the settled day is Saturday 10-24
+    titles = [n.title for n in _sleeves_report(day=saturday_after).notices]
+    assert titles == ["Yesterday was Saturday"]
+    body = _sleeves_report(day=saturday_after).notices[0].body
+    assert body.startswith("Some futures settlement prices for 2026-10-24 are not available")
+    # a weekday with a row missing: footnote 1 only, no banner
+    assert _sleeves_report(day=date(2026, 10, 22)).notices == ()
+
+
+def test_the_closed_forms_follow_the_engine_word_for_word():
+    sat = day_notices(date(2026, 10, 25), ReportFlags(no_session=True))
+    assert [n["title"] for n in sat] == ["Yesterday was Saturday", "No Executions", "Note"]
+    assert sat[1]["body"].startswith("Futures markets were closed yesterday, so no executions")
+    sun = day_notices(date(2026, 10, 26), ReportFlags(no_session=True))
+    assert sun[0]["body"].startswith("Agricultural futures settlement prices for Sunday")
+    assert sun[2]["body"] == "Yesterday's PnL data is not available for agricultural contracts."
+
+
+def test_the_annualized_return_is_labelled_while_under_a_year_of_sessions():
+    labels = lambda r: [m.label for m in r.metrics]  # noqa: E731
+    young = _report(latest=_latest(total_days=120, statistics_sessions_per_year=311.0574))
+    assert "Annualized return (extrapolated: under one year of sessions)" in labels(young)
+    grown = _report(latest=_latest(total_days=400, statistics_sessions_per_year=311.0574))
+    assert "Annualized return" in labels(grown)
+    unknown = _report()  # a row written before migration 040: no K, no label
+    assert "Annualized return" in labels(unknown)
+
+
+def test_the_sizing_capital_is_the_days_stored_reading():
+    sized = _report(latest=_latest(risk_detail={"sizing_capital": 498765.4}))
+    values = {m.label: m.value for m in sized.metrics}
+    assert values["Sizing capital"] == "$498,765.40"
+    unsized = {m.label: m.value for m in _report().metrics}
+    assert unsized["Sizing capital"].startswith("no reading")
+
+
+def test_the_sleeved_report_renders_its_tables_and_notes():
+    email = HtmlReportRenderer().render_daily(_sleeves_report())
+    assert email.html.count("Trend Following Fast") >= 2  # positions and the settled table
+    assert "No price received that day" in email.html and "<sup" in email.html

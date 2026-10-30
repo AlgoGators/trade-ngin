@@ -748,6 +748,11 @@ public:
      */
     Result<std::string> get_corp_action_feed_last_date(const std::string& as_of_date = "");
 
+    /// Whether schema.table has the column (information_schema), for a column a migration adds
+    /// that a binary writes only once the database has it.
+    Result<bool> has_column(const std::string& schema, const std::string& table,
+                            const std::string& column);
+
     /**
      * @brief PRICE_RESTATING events sourced from the live per-bar columns.
      *
@@ -1114,6 +1119,9 @@ private:
                                       const std::string& strategy_id, const std::string& strategy_name,
                                       const std::string& portfolio_id, const std::string& table_name,
                                       const std::string& book);
+    /// Whether `table_name` has migration 040's columns (mark_price, settle_from_price,
+    /// settle_to_price, settle_mark); asked once per table and process.
+    static bool positions_have_report_columns(pqxx::work& txn, const std::string& table_name);
     Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
                                     const std::string& strategy_id,
                                     const std::string& strategy_name,

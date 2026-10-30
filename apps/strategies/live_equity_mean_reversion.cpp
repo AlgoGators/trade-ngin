@@ -5978,6 +5978,13 @@ int main(int argc, char* argv[]) {
             // The ratio and the cushion are named only when they have a value; without one the
             // cell stays NULL (live/margin_columns.hpp).
             set_margin_cells(double_metrics, equity_to_margin_ratio, margin_cushion);
+            // K of the statistics grid: the e-mail labels an annualized return taken on fewer
+            // sessions than K. Written once the database has the column (migration 040).
+            if (const auto k = db->has_column("trading", "live_results",
+                                              "statistics_sessions_per_year");
+                k.is_ok() && k.value()) {
+                double_metrics["statistics_sessions_per_year"] = app_config.statistics.equity_sessions_per_year;
+            }
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions}

@@ -62,19 +62,26 @@ SELECT timestamp, equity FROM trading.equity_curve
  ORDER BY timestamp ASC
 """
 
-# The book of one date, the latest row per symbol; a flatten (quantity 0) hides the symbol.
+# The book of one date, one row per sleeve and symbol (the latest written); a flatten (quantity 0)
+# hides the row. Migration 040's columns are read through to_jsonb, so a database without them
+# still answers (NULL).
 _POSITIONS_OF = """
 SELECT * FROM (
-    SELECT DISTINCT ON (symbol)
-           symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl
-      FROM trading.positions
+    SELECT DISTINCT ON (strategy_name, symbol)
+           strategy_name, symbol, quantity, average_price, daily_unrealized_pnl,
+           daily_realized_pnl,
+           (to_jsonb(p) ->> 'mark_price')::double precision AS mark_price,
+           (to_jsonb(p) ->> 'settle_from_price')::double precision AS settle_from_price,
+           (to_jsonb(p) ->> 'settle_to_price')::double precision AS settle_to_price,
+           to_jsonb(p) ->> 'settle_mark' AS settle_mark
+      FROM trading.positions p
      WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s
        AND date = {date}
-     ORDER BY symbol, updated_at DESC
+     ORDER BY strategy_name, symbol, updated_at DESC
 ) AS day_positions
 """
 POSITIONS_SQL = _POSITIONS_OF.format(date="%(d)s") + """WHERE quantity <> 0
-ORDER BY ABS(quantity * average_price) DESC
+ORDER BY strategy_name, ABS(quantity * average_price) DESC
 """
 # The settled day's book: the last stored date before the day, its rows as stored.
 YESTERDAY_POSITIONS_SQL = _POSITIONS_OF.format(
@@ -85,12 +92,13 @@ YESTERDAY_POSITIONS_SQL = _POSITIONS_OF.format(
 
 # The day's fills, strategy fills and roll legs, with the cost the account paid after netting.
 EXECUTIONS_SQL = """
-SELECT symbol, side, quantity, price, execution_time, commissions_fees,
+SELECT strategy_name, symbol, side, quantity, price, execution_time, commissions_fees,
+       (to_jsonb(e) ->> 'total_transaction_costs')::double precision AS total_transaction_costs,
        COALESCE(to_jsonb(e) ->> 'execution_type', 'STRATEGY') AS execution_type,
        COALESCE((to_jsonb(e) ->> 'netting_adjustment')::numeric, 0) AS netting_adjustment
   FROM trading.executions e
  WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s AND date = %(d)s
- ORDER BY execution_time, symbol
+ ORDER BY strategy_name, execution_time, symbol
 """
 
 CONTRACT_SIZES_SQL = """

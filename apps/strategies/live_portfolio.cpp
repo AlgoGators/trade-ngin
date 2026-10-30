@@ -2920,9 +2920,17 @@ int main(int argc, char* argv[]) {
                     // the contract held AFTER the T-1 bar, as the backtest's row of that date
                     // does: on the confirming bar's row, the incoming contract.
                     std::vector<Position> finalized_positions = result.finalized_positions;
+                    // Migration 040: the settle's two prices and why a row booked no move, for
+                    // the book e-mail's settled table.
+                    const SettledTablePrices settle_prices = settled_table_prices(
+                        t1_settlement.t2_close_prices, t1_settlement.t1_close_prices,
+                        t1_settlement.last_close_without_t1);
+                    const SettledZeroKinds settle_kinds{t1_settlement.roll_zero_symbols,
+                                                        t1_settlement.withheld_zero_symbols};
                     for (auto& finalized_pos : finalized_positions) {
                         const auto rs = roll_status.find(finalized_pos.symbol);
                         if (rs != roll_status.end()) finalized_pos.instrument_id = rs->second.held_id;
+                        stamp_settled_row(finalized_pos, settle_prices, settle_kinds);
                         if (t1_zero_pnl_symbols.count(finalized_pos.symbol) &&
                             finalized_pos.quantity.as_double() != 0.0) {
                             t1_zero_pnl_held = true;
@@ -3605,6 +3613,11 @@ int main(int argc, char* argv[]) {
                 if (!has_quantity && previous_day_close_prices.count(symbol) != 0) {
                     // Ruling 16: the close's row is priced at the latest known price.
                     validated_position.average_price = Decimal(previous_day_close_prices[symbol]);
+                }
+                // Migration 040: the row's Day T mark, unset when the symbol printed no bar.
+                if (const auto mark = day_t_mark_prices.find(symbol);
+                    mark != day_t_mark_prices.end()) {
+                    validated_position.mark_price = mark->second;
                 }
                 strategy_positions_vec.push_back(validated_position);
 
@@ -4485,6 +4498,12 @@ int main(int argc, char* argv[]) {
                     auto metric_updates = historical_metrics_update_columns(settled_statistics);
                     metric_updates["total_annualized_return"] =
                         settled_statistics.total_annualized_return;
+                    if (const auto k = db->has_column("trading", "live_results",
+                                                      "statistics_sessions_per_year");
+                        k.is_ok() && k.value()) {  // migration 040
+                        metric_updates["statistics_sessions_per_year"] =
+                            app_config.statistics.futures_sessions_per_year;
+                    }
 
                     auto t1_statistics_manager = std::make_unique<LiveResultsManager>(
                         db, true, combined_strategy_id, coordinator_config.portfolio_id);
@@ -4831,6 +4850,13 @@ int main(int argc, char* argv[]) {
             // The ratio and the cushion are named only when they have a value; without one the
             // cell stays NULL (live/margin_columns.hpp).
             set_margin_cells(double_metrics, equity_to_margin_ratio, margin_cushion);
+            // K of the statistics grid: the e-mail labels an annualized return taken on fewer
+            // sessions than K. Written once the database has the column (migration 040).
+            if (const auto k = db->has_column("trading", "live_results",
+                                              "statistics_sessions_per_year");
+                k.is_ok() && k.value()) {
+                double_metrics["statistics_sessions_per_year"] = app_config.statistics.futures_sessions_per_year;
+            }
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions}};

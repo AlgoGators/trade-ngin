@@ -178,3 +178,55 @@ TEST(ReportSettledMarks, APriceHasFourDecimalsOrItsTicksAndNoBarIsADash) {
     EXPECT_EQ(cells.latest, "\xE2\x80\x93");
     EXPECT_TRUE(cells.no_bar);
 }
+
+// Migration 040: the settled row carries the two prices and the mark the book e-mail shows.
+namespace {
+Position settled_row(const std::string& symbol, double quantity, double realized) {
+    Position row;
+    row.symbol = symbol;
+    row.quantity = Quantity(quantity);
+    row.realized_pnl = Decimal(realized);
+    return row;
+}
+}  // namespace
+
+TEST(StampSettledRow, AnOrdinaryRowCarriesTheSettlesTwoPricesAndNoMark) {
+    const SettledTablePrices prices{{{"ES.v.0", 5380.0}}, {{"ES.v.0", 5390.0}}};
+    Position row = settled_row("ES.v.0", 2, 1000.0);
+    stamp_settled_row(row, prices, SettledZeroKinds{});
+    EXPECT_EQ(row.settle_from_price, std::optional<double>(5380.0));
+    EXPECT_EQ(row.settle_to_price, std::optional<double>(5390.0));
+    EXPECT_EQ(row.settle_mark, "");
+}
+
+TEST(StampSettledRow, ARowWithNoBarThatDayIsMarkedNoBar) {
+    const SettledTablePrices prices{{{"HE.v.0", 91.3}}, {}};
+    Position row = settled_row("HE.v.0", 1, 0.0);
+    stamp_settled_row(row, prices, SettledZeroKinds{});
+    EXPECT_FALSE(row.settle_to_price.has_value());
+    EXPECT_EQ(row.settle_mark, "NO_BAR");
+}
+
+TEST(StampSettledRow, AZeroRowOnARollOrARejectedPriceIsMarkedByItsKind) {
+    const SettledTablePrices prices{{{"MBT.v.0", 79070.0}, {"ZN.v.0", 110.0}},
+                                    {{"MBT.v.0", 77740.0}, {"ZN.v.0", 110.5}}};
+    SettledZeroKinds kinds;
+    kinds.roll.insert("MBT.v.0");
+    kinds.withheld.insert("ZN.v.0");
+    Position roll = settled_row("MBT.v.0", 1, 0.0);
+    stamp_settled_row(roll, prices, kinds);
+    EXPECT_EQ(roll.settle_mark, "ROLL");
+    Position withheld = settled_row("ZN.v.0", -1, 0.0);
+    stamp_settled_row(withheld, prices, kinds);
+    EXPECT_EQ(withheld.settle_mark, "WITHHELD");
+    // a roll symbol that booked a move is not a zero row: no mark
+    Position moved = settled_row("MBT.v.0", 1, 25.0);
+    stamp_settled_row(moved, prices, kinds);
+    EXPECT_EQ(moved.settle_mark, "");
+}
+
+TEST(StampSettledRow, AFlatRowCarriesNoMark) {
+    Position flat = settled_row("CL.v.0", 0, 0.0);
+    stamp_settled_row(flat, SettledTablePrices{}, SettledZeroKinds{});
+    EXPECT_EQ(flat.settle_mark, "");
+}

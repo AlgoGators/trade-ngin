@@ -1,5 +1,8 @@
 {% set ns = namespace(n=0) %}
 {% macro section(title) %}{% set ns.n = ns.n + 1 %}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:40px 0 14px 0;border-bottom:1px solid #14141A;"><tr><td class="mono label" style="padding-bottom:8px;"><span style="color:#FF5C00;margin-right:12px;">0{{ ns.n }}</span>{{ title }}</td></tr></table>{% endmacro %}
+{% macro sleeve_heading(name) %}<div style="font-size:14px;font-weight:700;color:#14141A;margin:22px 0 8px 0;padding-left:10px;border-left:3px solid #FF5C00;">{{ name }}</div>{% endmacro %}
+{% macro note_mark(n) %}{% if n %}<sup style="font-size:9px;line-height:0;color:#FF5C00;font-weight:700;">{{ n }}</sup>{% endif %}{% endmacro %}
+{% macro note_lines(rows) %}{% set used = rows|map(attribute='note')|select|list %}{% for n, text in report.notes %}{% if n in used %}<div style="font-size:12px;color:#6C6A66;margin:4px 0;"><span style="color:#FF5C00;font-weight:700;">{{ n }}</span> {{ text }}</div>{% endif %}{% endfor %}{% endmacro %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -69,35 +72,47 @@
   </td></tr></table>
   {% endfor %}
 
-  <!-- positions -->
+  <!-- positions, per sleeve -->
   {% if report.positions %}
   {{ section("Today's positions") }}
+  {% for sleeve, rows in report.positions|groupby('sleeve') %}
+  {% if sleeve %}{{ sleeve_heading(sleeve) }}{% endif %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     <tr><td class="th mono">Symbol</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Notional</td><td class="th mono r">Weight</td></tr>
-    {% for p in report.positions %}
+    {% for p in rows %}
     <tr>
       <td class="td"><span style="font-weight:600;color:#14141A;">{{ p.symbol }}</span>{% if p.name %}<span class="muted" style="font-size:12px;"> &nbsp;{{ p.name }}</span>{% endif %}</td>
       <td class="td num r">{{ fmt.quantity(p.quantity) }}</td>
-      <td class="td num r">{{ fmt.price(p.price) }}</td>
+      <td class="td num r">{{ fmt.price(p.price) }}{{ note_mark(p.note) }}</td>
       <td class="td num r">{{ fmt.money(p.notional) }}</td>
       <td class="td num r muted">{{ fmt.percent(p.weight) if p.weight is not none else '' }}</td>
     </tr>
     {% endfor %}
   </table>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;">
-    <tr><td class="mono label" style="padding:3px 0;">Positions</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.positions|length }}</td></tr>
-    <tr><td class="mono label" style="padding:3px 0;">Total notional</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_notional, 2) }}</td></tr>
-    {% if report.margin_posted is not none %}<tr><td class="mono label" style="padding:3px 0;">Total margin posted</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.margin_posted, 2) }}</td></tr>{% endif %}
+  <div class="mono muted" style="font-size:11px;margin:8px 0 18px 0;">{{ rows|length }} position{{ '' if rows|length == 1 else 's' }} &middot; notional {{ fmt.money(rows|map(attribute='notional')|map('abs')|sum, 2) }}</div>
+  {% endfor %}
+  {{ note_lines(report.positions) }}
+  {% if report.sleeve_summary %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;border-top:2px solid #14141A;">
+    {% for m in report.sleeve_summary %}
+    <tr><td class="mono label" style="padding:6px 0 3px 0;">{{ m.label }}</td><td class="num r" style="font-weight:600;color:#14141A;">{{ m.value }}</td></tr>
+    {% endfor %}
   </table>
   {% endif %}
+  {% endif %}
 
-  <!-- executions -->
+  <!-- executions, per sleeve -->
   {% if report.executions or report.roll_legs %}
   {{ section("Daily executions") }}
-  {% if report.executions %}
+  {% for sleeve in report.sleeves %}
+  {% set fills = report.executions|selectattr('sleeve', 'equalto', sleeve)|list %}
+  {% set legs = report.roll_legs|selectattr('sleeve', 'equalto', sleeve)|list %}
+  {% if fills or legs %}
+  {% if sleeve %}{{ sleeve_heading(sleeve) }}{% endif %}
+  {% if fills %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     <tr><td class="th mono">Symbol</td><td class="th mono">Side</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Notional</td><td class="th mono r">Cost</td></tr>
-    {% for e in report.executions %}
+    {% for e in fills %}
     <tr>
       <td class="td" style="font-weight:600;color:#14141A;">{{ e.symbol }}</td>
       <td class="td mono" style="font-size:11px;letter-spacing:0.1em;color:{{ '#14141A' if e.side == 'BUY' else '#D94A00' }};font-weight:600;">{{ e.side }}</td>
@@ -108,12 +123,14 @@
     </tr>
     {% endfor %}
   </table>
+  {% else %}
+  <div class="muted" style="font-size:13px;margin:4px 0 8px 0;">No strategy trades.</div>
   {% endif %}
-  {% if report.roll_legs %}
-  <div class="mono label" style="margin:22px 0 8px 0;">Roll legs &middot; costs only, not trades</div>
+  {% if legs %}
+  <div class="mono label" style="margin:16px 0 8px 0;">Roll legs &middot; costs only, not trades</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     <tr><td class="th mono">Symbol</td><td class="th mono">Side</td><td class="th mono r">Quantity</td><td class="th mono r">Price</td><td class="th mono r">Cost</td></tr>
-    {% for e in report.roll_legs %}
+    {% for e in legs %}
     <tr>
       <td class="td" style="font-weight:600;color:#14141A;">{{ e.symbol }}</td>
       <td class="td mono" style="font-size:11px;letter-spacing:0.1em;font-weight:600;">{{ e.side }}</td>
@@ -124,30 +141,38 @@
     {% endfor %}
   </table>
   {% endif %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;">
-    <tr><td class="mono label" style="padding:3px 0;">Total trades</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.executions|length }}</td></tr>
+  {% endif %}
+  {% endfor %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;border-top:2px solid #14141A;">
+    <tr><td class="mono label" style="padding:6px 0 3px 0;">Total trades</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.executions|length }}</td></tr>
     <tr><td class="mono label" style="padding:3px 0;">Total notional traded</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_traded, 2) }}</td></tr>
     <tr><td class="mono label" style="padding:3px 0;">Today's transaction costs</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_cost, 2) }}</td></tr>
   </table>
+  {% if report.netting_note %}<div class="muted" style="font-size:12px;margin-top:6px;">{{ report.netting_note }}</div>{% endif %}
   {% endif %}
 
-  <!-- realized -->
+  <!-- realized, per sleeve -->
   {% if report.realized %}
   {{ section("Yesterday's finalized position results" ~ (" · " ~ report.realized_label if report.realized_label else "")) }}
+  {% for sleeve, rows in report.realized|groupby('sleeve') %}
+  {% if sleeve %}{{ sleeve_heading(sleeve) }}{% endif %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     <tr><td class="th mono">Symbol</td><td class="th mono r">Quantity</td><td class="th mono r">Previous price</td><td class="th mono r">Latest price</td><td class="th mono r">Realized PnL</td></tr>
-    {% for r in report.realized %}
+    {% for r in rows %}
     <tr>
       <td class="td" style="font-weight:600;color:#14141A;">{{ r.symbol }}</td>
       <td class="td num r">{{ fmt.quantity(r.quantity) }}</td>
-      <td class="td num r">{{ fmt.price(r.entry_price) }}</td>
-      <td class="td num r">{{ fmt.price(r.exit_price) }}</td>
-      <td class="td num r {{ 'up' if r.pnl >= 0 else 'down' }}">{{ fmt.signed_money(r.pnl) }}</td>
+      <td class="td num r">{{ fmt.price(r.entry_price) if r.entry_price is not none else 'n/a' }}</td>
+      <td class="td num r">{{ fmt.price(r.exit_price) if r.exit_price is not none else '&ndash;'|safe }}{{ note_mark(r.note) if r.exit_price is none }}</td>
+      <td class="td num r {{ 'up' if r.pnl >= 0 else 'down' }}">{{ fmt.signed_money(r.pnl) }}{{ note_mark(r.note) if r.exit_price is not none }}</td>
     </tr>
     {% endfor %}
     <tr><td class="td" colspan="4" style="border-bottom:0;border-top:2px solid #14141A;font-weight:600;color:#14141A;">Total</td>
-        <td class="td num r {{ 'up' if report.total_realized_pnl >= 0 else 'down' }}" style="border-bottom:0;border-top:2px solid #14141A;">{{ fmt.signed_money(report.total_realized_pnl) }}</td></tr>
+        {% set sleeve_pnl = rows|sum(attribute='pnl') %}
+        <td class="td num r {{ 'up' if sleeve_pnl >= 0 else 'down' }}" style="border-bottom:0;border-top:2px solid #14141A;">{{ fmt.signed_money(sleeve_pnl) }}</td></tr>
   </table>
+  {% endfor %}
+  {{ note_lines(report.realized) }}
   {% endif %}
 
   <!-- previous trading day -->

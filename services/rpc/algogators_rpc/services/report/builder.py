@@ -80,31 +80,72 @@ def _notice(kind: str, title: str, body: str, footnote: str = "") -> dict[str, s
 
 
 def day_notices(
-    report_date: date, flags: ReportFlags = ReportFlags(), roots: Sequence[str] = ()
+    report_date: date,
+    flags: ReportFlags = ReportFlags(),
+    roots: Sequence[str] = (),
+    some_missing: bool = False,
 ) -> list[dict[str, str]]:
-    """The banners about the day, from the run's own flags. A day the run found a session for has
-    no banner whatever its weekday; the weekday and the CME calendar only name a closed day."""
+    """The banners about the day before (the C++ e-mail's day_before_banner, word for word).
+
+    The data picks the form: no session at all (the run's --no-session) is the closed form; a
+    held row with no price or a rejected one (`some_missing`, from the stored settle marks) is
+    the partial form. The weekday and the CME calendar only pick the title; a day with nothing
+    missing has no banner whatever its weekday. A held book's alert comes first."""
     notices = []
     if flags.alert:
         notices.append(_notice("alert", "Risk module failed - book held", flags.alert))
-    if not flags.no_session:
+    if not flags.no_session and not some_missing:
         return notices
     day = report_date - timedelta(days=1)
     label = day.isoformat()
     holiday = holiday_name(day, roots)
-    name = holiday or {5: "Saturday", 6: "Sunday"}.get(day.weekday())
-    if name:
-        why = "due to a federal holiday" if holiday else f"due to it being a {name}"
-        body = (
-            f"The latest futures settlement prices are not available, as futures markets were "
-            f"closed yesterday ({label}) {why}. {_SETTLEMENT_PENDING}"
-        )
-        kind = "holiday" if holiday else "weekend"
-        notices.append(_notice(kind, f"Yesterday was {name}", body, _MONITOR_CLOSED))
-    notices += [
-        _notice("alert", "No Executions", _no_session(label)),
-        _notice("info", "Note", "Yesterday's PnL data is not available."),
-    ]
+    saturday = not holiday and day.weekday() == 5
+    sunday = not holiday and day.weekday() == 6
+    sunday_body = (
+        f"Agricultural futures settlement prices for Sunday ({label}) are not yet available, as "
+        f"these contracts begin trading Sunday evening. {_SETTLEMENT_PENDING}"
+    )
+    if flags.no_session:
+        note = "Yesterday's PnL data is not available."
+        if holiday or saturday:
+            name = holiday or "Saturday"
+            why = "due to a federal holiday" if holiday else "due to it being a Saturday"
+            notices.append(
+                _notice(
+                    "holiday" if holiday else "weekend",
+                    f"Yesterday was {name}",
+                    f"The latest futures settlement prices are not available, as futures markets "
+                    f"were closed yesterday ({label}) {why}. {_SETTLEMENT_PENDING}",
+                    _MONITOR_CLOSED,
+                )
+            )
+            red = (
+                f"Since yesterday ({label}) was a market holiday, no new market data is "
+                "available. Positions remain unchanged from the previous trading day, and no "
+                "executions were generated."
+                if holiday
+                else "Futures markets were closed yesterday, so no executions were generated "
+                "and portfolio holdings are unchanged. Updates will resume with the next "
+                "trading session\u2019s data."
+            )
+        else:
+            if sunday:
+                notices.append(_notice("weekend", "Yesterday was Sunday", sunday_body, _MONITOR))
+                note = "Yesterday's PnL data is not available for agricultural contracts."
+            red = _no_session(label)
+        notices += [_notice("alert", "No Executions", red), _notice("info", "Note", note)]
+        return notices
+    partial = (
+        f"Some futures settlement prices for {label} are not available, as these contracts did "
+        f"not trade. {_SETTLEMENT_PENDING}"
+    )
+    if holiday:
+        notices.append(_notice("holiday", f"Yesterday was {holiday}", partial, _MONITOR))
+    elif saturday:
+        notices.append(_notice("weekend", "Yesterday was Saturday", partial, _MONITOR))
+    elif sunday:
+        notices.append(_notice("weekend", "Yesterday was Sunday", sunday_body, _MONITOR))
+    # a weekday with a few rows missing: the settled table's footnote 1 only
     return notices
 
 
@@ -129,10 +170,31 @@ def _signed(quantity: float, notional: float) -> float:
     return -abs(notional) if quantity < 0 else abs(notional)
 
 
+# The footnotes of the rows (the C++ e-mail's kinds): numbered in the order they first appear.
+NOTE_TEXT = {
+    1: "No price received that day. PnL is logged as 0 and updates on later days.",
+    2: "Contract rolled that day. PnL is not booked on the roll.",
+    3: "Price rejected: too little trading volume that day. PnL is booked with the next "
+    "accepted price.",
+    4: "No price bar for this contract that day. Its last known price is shown.",
+}
+_MARK_NOTE = {"NO_BAR": 1, "ROLL": 2, "WITHHELD": 3}
+
+
+def sleeve_name(strategy_name: str) -> str:
+    """'TREND_FOLLOWING_FAST' -> 'Trend Following Fast'."""
+    return " ".join(w.capitalize() for w in str(strategy_name or "").split("_") if w)
+
+
 def _positions(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Today's rows per sleeve; the weight is the row's share of its sleeve's notional."""
+    sleeve_total: dict[str, float] = {}
+    for p in detail["positions"]:
+        sleeve_total[p["sleeve"]] = sleeve_total.get(p["sleeve"], 0.0) + abs(float(p["notional"]))
     out = []
     for p in detail["positions"]:
         quantity = float(p["quantity"])
+        total = sleeve_total.get(p["sleeve"], 0.0)
         out.append(
             {
                 "symbol": _symbol(p["symbol"]),
@@ -140,7 +202,9 @@ def _positions(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "quantity": quantity,
                 "price": float(p["marketPrice"]),
                 "notional": _signed(quantity, float(p["notional"])),
-                "weight": float(p["percentOfTotal"]) / 100.0,
+                "weight": abs(float(p["notional"])) / total if total > 0 else 0.0,
+                "sleeve": sleeve_name(p["sleeve"]),
+                "note": 4 if p.get("noBar") else 0,
             }
         )
     return out
@@ -156,10 +220,25 @@ def _executions(detail: Mapping[str, Any], roll: bool = False) -> list[dict[str,
             "price": float(e["price"]),
             "notional": float(e["notional"]),
             "cost": float(e["commission"]),
+            "net_cost": float(e.get("netCost", e["commission"])),
+            "sleeve": sleeve_name(e.get("sleeve", "")),
         }
         for e in detail["executions"]
         if (e.get("type", "STRATEGY") == "ROLL") == roll
     ]
+
+
+def netting_note(detail: Mapping[str, Any]) -> str:
+    """The day's netting between sleeves, as the C++ e-mail stated it; empty when nothing netted."""
+    rows = detail["executions"]
+    if not any(abs(float(e.get("nettingAdjustment", 0.0))) > 1e-12 for e in rows):
+        return ""
+    own = sum(float(e["commission"]) for e in rows)
+    paid = sum(float(e.get("netCost", e["commission"])) for e in rows)
+    return (
+        f"Netting between strategies: own costs {money(own, 2)}, adjustment "
+        f"{signed_money(paid - own, 2)}, transaction costs {money(paid, 2)}."
+    )
 
 
 def _realized(detail: Mapping[str, Any], report_date: date) -> dict[str, Any]:
@@ -172,13 +251,32 @@ def _realized(detail: Mapping[str, Any], report_date: date) -> dict[str, Any]:
             {
                 "symbol": r["symbol"],
                 "quantity": float(r["quantity"]),
-                "entry_price": float(r["entryPrice"]),
-                "exit_price": float(r["exitPrice"]),
+                "entry_price": r["entryPrice"],
+                "exit_price": r["exitPrice"],
                 "pnl": float(r["realizedPnL"]),
+                "sleeve": sleeve_name(r.get("sleeve", "")),
+                "note": _MARK_NOTE.get(r.get("mark", ""), 0),
             }
             for r in rows
         ],
     }
+
+
+def number_notes(payload: dict[str, Any]) -> None:
+    """Turn the rows' note kinds into numbers in the order the notes first appear (positions,
+    then the settled table), and list the notes under `notes`."""
+    numbers: dict[int, int] = {}
+    rows = [*payload["positions"], *(payload["realized"] or {}).get("positions", [])]
+    for row in rows:
+        kind = row.get("note", 0)
+        if kind:
+            row["note"] = numbers.setdefault(kind, len(numbers) + 1)
+    payload["notes"] = [{"number": n, "text": NOTE_TEXT[k]} for k, n in numbers.items()]
+
+
+def some_settle_price_missing(detail: Mapping[str, Any]) -> bool:
+    """A held row of the settled table has no price that day or a rejected one."""
+    return any(r.get("mark") in ("NO_BAR", "WITHHELD") for r in detail["finalizedPositions"])
 
 
 def _day(label: str) -> str:
@@ -220,6 +318,27 @@ def _tone(value: float) -> str:
     return "up" if value > 0 else "down"
 
 
+def annualized_label(m: Mapping[str, Any]) -> str:
+    """The annualized return's label: an extrapolation while the statistics are taken on fewer
+    sessions than a year of the grid (n < K, both stored on the row)."""
+    n, k = m.get("statisticsSessions"), m.get("sessionsPerYear")
+    if n and k and n < k:
+        return "Annualized return (extrapolated: under one year of sessions)"
+    return "Annualized return"
+
+
+def _sleeve_summary(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The book under the per-sleeve tables: its rows, and the account's stored notional and margin
+    (which net sleeves holding one symbol on opposite sides)."""
+    m = detail["metrics"]
+    rows = [
+        ("Sleeve positions", f"{len(detail['positions'])}"),
+        ("Total notional", money(m["totalNotional"], 2)),
+        ("Total margin posted", money(m["marginPosted"], 2)),
+    ]
+    return [{"label": label, "value": value, "group": 0, "tone": ""} for label, value in rows]
+
+
 def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The four Performance Metrics groups, in the engine's order; every figure is the stored one."""
     m = detail["metrics"]
@@ -242,7 +361,11 @@ def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
                 f"{m['cumulativeReturn']:.2f}%",
                 _tone(m["cumulativeReturn"]),
             ),
-            ("Annualized return", f"{m['annualizedReturn']:.2f}%", _tone(m["annualizedReturn"])),
+            (
+                annualized_label(m),
+                f"{m['annualizedReturn']:.2f}%",
+                _tone(m["annualizedReturn"]),
+            ),
             ("Sharpe ratio", f"{m['sharpeRatio']:.2f}", ""),
             ("Sortino ratio", f"{m['sortinoRatio']:.2f}", ""),
             ("Volatility", f"{m['volatility']:.2f}%", ""),
@@ -251,6 +374,13 @@ def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
         [
             ("Cash available", money(m["cashAvailable"], 2), ""),
             ("Margin posted", money(m["marginPosted"], 2), ""),
+            (
+                "Sizing capital",
+                money(m["sizingCapital"], 2)
+                if m.get("sizingCapital") is not None
+                else "no reading (no sized rebalance this run)",
+                "",
+            ),
             ("Equity-to-margin ratio", f"{m['equityToMarginRatio']:.2f}x", ""),
             ("Margin cushion", f"{m['marginCushion']:.2f}%", ""),
         ],
@@ -321,12 +451,15 @@ def build_daily_payload(
     flags: ReportFlags = ReportFlags(),
 ) -> dict[str, Any]:
     """The queue payload for one portfolio's report on report_date."""
-    return {
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "report_date": report_date.isoformat(),
         "portfolio_id": portfolio_id,
         "portfolio_name": portfolio_name,
-        "notices": day_notices(report_date, flags, roots=_roots(detail)),
+        "notices": day_notices(
+            report_date, flags, roots=_roots(detail),
+            some_missing=not flags.no_session and some_settle_price_missing(detail),
+        ),
         "positions": _positions(detail),
         "executions": _executions(detail),
         "roll_legs": _executions(detail, roll=True),
@@ -339,7 +472,12 @@ def build_daily_payload(
         "symbols": dict(symbols or {}),
         "rollovers": [dict(r) for r in rollovers],
         "footnotes": footnotes(detail.get("startDate")),
+        "netting_note": netting_note(detail),
+        "sleeve_summary": _sleeve_summary(detail),
     }
+    number_notes(payload)
+    return payload
 
 
-__all__ = ["ReportFlags", "build_daily_payload", "day_notices", "footnotes", "holiday_name"]
+__all__ = ["ReportFlags", "build_daily_payload", "day_notices", "footnotes", "holiday_name",
+           "sleeve_name"]

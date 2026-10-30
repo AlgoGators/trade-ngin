@@ -32,6 +32,8 @@ class Position:
     price: float
     notional: float
     weight: float | None = None
+    sleeve: str = ""  # the strategy (sleeve) the row belongs to
+    note: int = 0  # the number of its footnote, 0 for none
 
 
 @dataclass(frozen=True)
@@ -41,16 +43,20 @@ class Execution:
     quantity: float
     price: float
     notional: float
-    cost: float
+    cost: float  # the fill's own cost
+    sleeve: str = ""
+    net_cost: float | None = None  # what the account paid after netting between sleeves
 
 
 @dataclass(frozen=True)
 class RealizedPosition:
     symbol: str
     quantity: float
-    entry_price: float
-    exit_price: float
+    entry_price: float | None  # the price the settle was taken from; None: not known
+    exit_price: float | None  # the price it was taken to; None: no bar that day
     pnl: float
+    sleeve: str = ""
+    note: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,9 @@ class DailyReport:
     previous_day: tuple = ()  # Metrics for the settled day's box
     symbols: tuple = ()  # SymbolRefs
     symbols_missing: tuple = ()  # held contracts with no metadata row
+    notes: tuple = ()  # ((number, text), ...): the footnotes the rows' numbers refer to
+    netting_note: str = ""  # the netting between sleeves of the day's costs, when there was any
+    sleeve_summary: tuple = ()  # Metrics for the whole book under the per-sleeve positions
 
     @property
     def total_notional(self):
@@ -117,11 +126,37 @@ class DailyReport:
 
     @property
     def total_cost(self):
-        return sum(e.cost for e in (*self.executions, *self.roll_legs))
+        """What the account paid for the day's fills: each row's cost after netting."""
+        return sum(
+            e.cost if e.net_cost is None else e.net_cost for e in (*self.executions, *self.roll_legs)
+        )
+
+    @property
+    def sleeves(self):
+        """The sleeves the day's rows belong to, in order of appearance."""
+        seen = []
+        for row in (*self.positions, *self.executions, *self.roll_legs, *self.realized):
+            if row.sleeve not in seen:
+                seen.append(row.sleeve)
+        return tuple(seen)
 
     @property
     def total_traded(self):
         return sum(abs(e.notional) for e in self.executions)
+
+
+def _opt_num(row, key, where):
+    """A number, or None when the field is absent or null."""
+    if row.get(key) is None:
+        return None
+    return _num(row, key, where)
+
+
+def _note(row, where):
+    note = row.get("note", 0)
+    if isinstance(note, bool) or not isinstance(note, int):
+        raise ReportPayloadError(f"{where}.note must be an integer")
+    return note
 
 
 def _num(row, key, where):
@@ -198,6 +233,8 @@ def parse_daily_report(payload):
                 _num(r, "price", where),
                 _num(r, "notional", where),
                 float(weight) if isinstance(weight, (int, float)) else None,
+                _text(r, "sleeve", where, default=""),
+                _note(r, where),
             )
         )
 
@@ -213,6 +250,8 @@ def parse_daily_report(payload):
                     _num(r, "price", where),
                     _num(r, "notional", where),
                     _num(r, "cost", where),
+                    _text(r, "sleeve", where, default=""),
+                    _opt_num(r, "net_cost", where),
                 )
             )
         return out
@@ -228,9 +267,11 @@ def parse_daily_report(payload):
             RealizedPosition(
                 _text(r, "symbol", where),
                 _num(r, "quantity", where),
-                _num(r, "entry_price", where),
-                _num(r, "exit_price", where),
+                _opt_num(r, "entry_price", where),
+                _opt_num(r, "exit_price", where),
                 _num(r, "pnl", where),
+                _text(r, "sleeve", where, default=""),
+                _note(r, where),
             )
         )
 
@@ -306,6 +347,14 @@ def parse_daily_report(payload):
         previous_day=previous_day,
         symbols=symbols,
         symbols_missing=tuple(missing),
+        notes=tuple(
+            (int(n["number"]), _text(n, "text", f"notes[{i}]"))
+            for i, n in enumerate(_rows(payload, "notes"))
+        ),
+        netting_note=str(payload.get("netting_note") or ""),
+        sleeve_summary=tuple(
+            _metric(r, i, "sleeve_summary") for i, r in enumerate(_rows(payload, "sleeve_summary"))
+        ),
     )
 
 
