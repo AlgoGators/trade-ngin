@@ -22,6 +22,10 @@
 #   over. To remove a set's rows: delete from each backtest table where split_part(run_id, '|', 1) = <run id> (the ids
 #   are in the set's runs.tsv). Not needed for a re-run: a new run adds a new id.
 #
+# BEFORE ANY RUN: the data to 2026-10-23 must equal sql/expected_fingerprint.txt (lib.zsh, check_fingerprints), or the run
+# refuses (exit 3). The windows themselves end at the last bar and start later than the reference runs: no number of an
+# unpinned run has a reference (README, "Dates after 2026-10-23").
+#
 # A set is the UTC day it runs on: before each window the script checks that the UTC date and the last stored bar are
 # still the set's, so the four windows end on the same bar; if either moved it stops and the set is run again.
 set -u
@@ -38,7 +42,7 @@ elif [ "$TARGET" = production ]; then END="${END:-$(date -u +%F)}"; RES="$RUN_DI
 else END="${END:-$(date -u +%F)}"; RES="$RUN_DIR/${TAG}/backtests"; fi
 SET="$RES/conservative_end_$END"; [ -n "$PIN" ] && SET="$RES/conservative_pinned_$END"
 OUT="$SET"; mkdir -p "$OUT"; LOG="$OUT/script.log"
-trap 'unlock_run; exit 130' INT TERM HUP
+trap '/bin/rm -f "$WT/config/defaults.json"; unlock_run; exit 130' INT TERM HUP
 
 export_run() {   # <run id> <folder>: every backtest table's rows of the run, plain CSV, ordered by every column
   local id="$1" F="$2" t cols
@@ -63,6 +67,7 @@ run)
   [ -x "$BIN" ] || die "run prepare first"
   [ "$(git -C "$WT" rev-parse HEAD)" = "$REF" ] || die "$WT is not at $REF"
   check_db
+  check_fingerprints
   labels=("$@"); (( ${#labels} )) || labels=($ORDER)
   for L in $labels; do [ -n "${LOOKBACK[$L]:-}" ] || die "a window is one of $ORDER, not $L" 2; done
   [ -n "$PIN" ] && [ ${#labels} -ne 1 ] && die "PIN_END runs one window per clone" 2
@@ -132,5 +137,5 @@ report)
   python3 "$PROD/report/backtest_report.py" "$SET" "$PROD/report/backtest_report_knobs.md" || die "report failed"
   ;;
 
-*) sed -n 2,30p "$0"; exit 2 ;;
+*) sed -n '2,/^set -u/p' "$0" | sed '$d'; exit 2 ;;
 esac

@@ -5,7 +5,7 @@
 -- can fail runs before COMMIT and raises, which rolls everything back.
 \set ON_ERROR_STOP on
 
--- Holes after the tested range are inserted only with include_new (FILL_INCLUDE_NEW=1 in the script).
+-- Holes after the tested range are inserted only with include_new (the scripts always set it).
 delete from pg_temp.fill_fill where d > :'tested_end'::date and not :include_new;
 
 -- 1. The rows under the lock must be exactly the dry run's, key by key: symbol, date, contract, branch and raw id.

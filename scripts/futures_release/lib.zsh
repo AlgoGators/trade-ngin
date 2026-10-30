@@ -6,6 +6,9 @@
 #                                     never printed or written anywhere.
 #   TARGET=scratch SCRATCH_DB=<db>    a test copy whose name contains "scratch". PGHOST, PGPORT, PGUSER and PGPASSWORD come
 #                                     from the environment.
+# A script that takes the target as its first word reads that word first: the argument beats TARGET, so a scratch command
+# stays on scratch whatever an earlier step exported. A scratch target also stops if PGHOST and PGPORT are the server of
+# config/defaults.json (scratch_guard.zsh).
 # Every script refuses any other target. Nothing here sends e-mail: no script passes --send-email, and the live and
 # backtest logs are checked for an e-mail line after every run.
 #
@@ -17,9 +20,10 @@ RUN_DIR="${RUN_DIR:-$REPO/futures_release_run}"
 REFCFG="$PROD/config_reference"          # the frozen run config (portfolio.json, risk.json, defaults.json)
 LOCKS="$RUN_DIR/locks"
 mkdir -p "$RUN_DIR" "$LOCKS"
-PGBIN="${PGBIN:-${$(command -v psql):h}}"
+PGBIN="${PGBIN:-${$(command -v psql):h}}"; export PGBIN   # the report scripts read it too
 AWAKE=(); command -v caffeinate > /dev/null && AWAKE=(caffeinate -i)
 PID=CONSERVATIVE_PORTFOLIO
+. "$PROD/scratch_guard.zsh"
 export PGTZ=UTC PGCONNECT_TIMEOUT=20
 
 say() { print -r -- "$*" | tee -a "${LOG:-/dev/null}" }
@@ -46,6 +50,7 @@ PY
       DBNAME="${SCRATCH_DB:-}"
       [[ "$DBNAME" == *scratch* ]] || die "TARGET=scratch needs SCRATCH_DB=<a database whose name contains scratch>" 2
       [ -n "${PGHOST:-}" ] && [ -n "${PGPORT:-}" ] && [ -n "${PGUSER:-}" ] || die "TARGET=scratch needs PGHOST, PGPORT, PGUSER in the environment" 2
+      scratch_guard
       export PGDATABASE="$DBNAME"
       TAG="scratch_${DBNAME##*_}" ;;
     *) die "set TARGET=production, or TARGET=scratch SCRATCH_DB=<scratch database>" 2 ;;
@@ -65,13 +70,18 @@ check_db() {   # the session must reach the target database in UTC
 
 lock_run() {   # <what>: the run lock, waited for, never broken
   RUNLOCK="${RUNLOCK:-$LOCKS/RUN_LOCK}"
-  until ( setopt noclobber; print -r -- "RELEASE $1 $(date -u +%FT%TZ) pid=$$" > "$RUNLOCK" ) 2>/dev/null; do sleep 15; done
+  local told=""
+  until ( setopt noclobber; print -r -- "RELEASE $1 $(date -u +%FT%TZ) pid=$$" > "$RUNLOCK" ) 2>/dev/null; do
+    [ -n "$told" ] || { say "waiting for the run lock $RUNLOCK ($(cat "$RUNLOCK" 2>/dev/null)); if no run is going (a reboot leaves it), remove it"; told=1 }
+    sleep 15
+  done
 }
 unlock_run() { [[ "$(cat "$RUNLOCK" 2>/dev/null)" == "RELEASE "*" pid=$$" ]] && /bin/rm -f "$RUNLOCK" }
 
 # The worktree that runs the seed: a linked worktree at the release commit, never the main checkout.
 resolve_worktree() {
   WT="${WT:-$REPO/.worktrees/futures_release}"
+  [ "${WT:A}" != "${REPO:A}" ] || die "WT is the repository itself: write_config would replace its config/; use a linked worktree" 2
   REF="${REF:-}"
   [ -n "$REF" ] || die "set REF=<the merged release commit>" 2
   REF=$(git -C "$REPO" rev-parse -q --verify "$REF^{commit}") || die "no commit $REF" 2
@@ -150,6 +160,37 @@ for f, sub in (("portfolio.json", "portfolios/conservative"), ("risk.json", "por
     print("template diff %s: %s" % (f, "none" if not out else "%d keys" % len(out)))
     for line in out: print("  " + line)
 PY
+}
+
+# The seed reads only the data every reference run read: the fingerprint to the cut 2026-10-23 must equal
+# sql/expected_fingerprint.txt line by line (EXPECTED.md, "After the data steps"), or 09 and 11 stop before any run. The
+# contract table's and the micros' contract lines hold loaded_at, the insert clock, so they are not compared; the contract
+# table is compared by its line without loaded_at. ACCEPT_METADATA_MD5=<md5> accepts one other metadata md5, after reading
+# what changed (a display column). A changed fee is not such a change (README, "Before the seed").
+check_fingerprints() {
+  local got; got=$(PGOPTIONS='-c default_transaction_read_only=on' $PGBIN/psql -X -At -v ON_ERROR_STOP=1 -v cut=2026-10-23 -f "$PROD/sql/data_fingerprint.sql") || die "fingerprint failed"
+  print -r -- "$got" | python3 -c '
+import sys
+exp = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+got = [l.strip() for l in sys.stdin]
+accept = sys.argv[2]
+bad = 0
+for l in exp:
+    name = l.split()[0] + (" " + l.split()[1] if l.split()[0] in ("micros", "v0") else "")
+    if l in got:
+        print("fingerprint %s: equal" % name)
+    elif name.startswith("metadata.") and accept and any(g.startswith("metadata.") and g.endswith(" " + accept) for g in got):
+        print("fingerprint %s: differs, accepted by ACCEPT_METADATA_MD5" % name)
+    else:
+        bad += 1
+        print("fingerprint %s: DIFFERS. expected: %s" % (name, l[:110]))
+        print("  read: %s" % next((g[:110] for g in got if g.startswith(name + " ")), "no such line"))
+sys.exit(1 if bad else 0)' "$PROD/sql/expected_fingerprint.txt" "${ACCEPT_METADATA_MD5:-}" | tee -a "${LOG:-/dev/null}"
+  [ ${pipestatus[2]} -eq 0 ] || die "the data to 2026-10-23 is not the data the reference runs read (EXPECTED.md): nothing was run" 3
+}
+
+need_report_modules() {   # the live report's Python modules, before any work
+  python3 -c "import numpy, pandas" 2> /dev/null || die "$(command -v python3) has no numpy or no pandas: the live report needs both (README, Prerequisites)" 2
 }
 
 no_email_in_log() {   # <log (plain or .gz)>: the run must not have sent or built a send

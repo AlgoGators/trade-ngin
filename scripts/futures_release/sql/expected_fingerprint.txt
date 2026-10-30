@@ -1,0 +1,7 @@
+futures_data.ohlcv_1d 176199 2026-10-23 dc462978180f96821ecf01a8a6a82953
+futures_data.ohlcv_1d_raw 176199 2026-10-23 17bd9bc870c2cf03df935c1eb42224d1
+metadata.contract_metadata 42 37211534a7c7f9d5e5428406f674783e
+micros ohlcv_1d 9112 3a6e41d348e7aa2c076a54161b0268c2
+micros ohlcv_1d_raw 9112 5874a752339469177e5c1e9c9039b143
+v0 symbols 38 6A.v.0 6B.v.0 6C.v.0 6E.v.0 6J.v.0 6L.v.0 6M.v.0 6N.v.0 6S.v.0 CL.v.0 GC.v.0 GF.v.0 HE.v.0 HG.v.0 HO.v.0 KE.v.0 LE.v.0 M2K.v.0 MBT.v.0 MES.v.0 MGC.v.0 MNQ.v.0 MYM.v.0 NG.v.0 PL.v.0 RB.v.0 SI.v.0 SIL.v.0 UB.v.0 ZC.v.0 ZF.v.0 ZL.v.0 ZM.v.0 ZN.v.0 ZR.v.0 ZS.v.0 ZT.v.0 ZW.v.0
+contract_ohlcv_1d_less_loaded_at 1280034 6104c856dcb47ec71e30a63d43b3dd66

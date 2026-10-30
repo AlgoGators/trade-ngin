@@ -1,10 +1,12 @@
 #!/bin/zsh
 # 12_package.sh: the hand-back package from the stored rows, in the 2026-10-14 layout (read only on the database).
 #
-#   TARGET=production REF=<sha> zsh 12_package.sh backtests [END]   $RUN_DIR/$RUN_DIR/backtest_results/conservative_end_<END>/: SUMMARY.md,
-#                                                                   every RUN_REPORT.md, and ../CONFIG_AND_KNOBS.md
-#   TARGET=production REF=<sha> zsh 12_package.sh live <END>        live_results/conservative_live_2025-10-05_to_<END>/:
-#                                                                   the live_*.csv exports, analysis/, RUN_REPORT.md
+#   TARGET=production REF=<sha> zsh 12_package.sh backtests [END]   $RUN_DIR/backtest_results/conservative_end_<END>/: SUMMARY.md,
+#                                                                   every RUN_REPORT.md, and ../CONFIG_AND_KNOBS.md. With no
+#                                                                   END, the newest set that has a runs.tsv
+#   TARGET=production REF=<sha> zsh 12_package.sh live [END]        $RUN_DIR/live_results/conservative_live_2025-10-05_to_<END>/:
+#                                                                   the live_*.csv exports, analysis/, RUN_REPORT.md. With no
+#                                                                   END, the chain's own (11_live_chain.sh keeps it)
 #   Rehearsal: TARGET=scratch SCRATCH_DB=<clone> REF=<sha> WT=<worktree> END=2026-10-24 zsh 12_package.sh live
 #
 # CHANGES: no database row. Writes the report files and analysis CSVs in the package folders, and its inputs under
@@ -20,10 +22,19 @@ case "$WHAT" in
 backtests)
   REF="${REF:-x}"; resolve_worktree
   [ -n "${2:-}" ] && export END="$2"
+  if [ -z "${END:-}" ] && [ -z "${PIN_END:-}" ]; then   # a set can end a UTC day before this step: never take today's date
+    if [ "$TARGET" = production ]; then base="$RUN_DIR/backtest_results"; else base="$RUN_DIR/${TAG}/backtests"; fi
+    sets=("$base"/conservative_end_*/runs.tsv(N.om))
+    (( ${#sets} )) || die "no finished set under $base: run 09_backtests.sh first" 2
+    s="${sets[1]:h:t}"; export END="${s#conservative_end_}"; print -r -- "the newest set: $s"
+  fi
   zsh "$PROD/09_backtests.sh" report ;;
 
 live)
-  END="${2:-${END:-}}"; [ -n "$END" ] || die "give END" 2
+  need_report_modules
+  ENDFILE="$RUN_DIR/chain_end_${TAG}.txt"
+  END="${2:-${END:-}}"; [ -n "$END" ] || { [ -s "$ENDFILE" ] && END=$(cat "$ENDFILE"); }
+  [ -n "$END" ] || die "give END, or run 11_live_chain.sh first" 2
   if [ "$TARGET" = production ]; then OUT="$RUN_DIR/live_results/conservative_live_${START}_to_${END}"; else OUT="$RUN_DIR/${TAG}/live"; fi
   [ -d "$OUT/snap" ] || die "run 11_live_chain.sh export first"
   check_db
@@ -44,5 +55,5 @@ live)
   for n in ${(v)NAMES}; do [ "$(wc -c < "$OUT/$n.csv")" -gt 500000 ] && gzip -nf "$OUT/$n.csv"; done
   say "package: $OUT" ;;
 
-*) sed -n 2,16p "$0"; exit 2 ;;
+*) sed -n '2,/^set -u/p' "$0" | sed '$d'; exit 2 ;;
 esac

@@ -18,6 +18,7 @@
 # READS: the trading schema; the login from config/defaults.json (production).
 # TAKES: about a minute, most of it the schema dump.
 # UNDO: restore <archive dir> (the CSVs, one transaction, counts checked); or pg_restore of trading_schema_full.dump.
+#   restore replaces whatever the chain has written, with no copy of it: run 11_live_chain.sh export first to keep it.
 set -u
 . "${0:A:h}/lib.zsh"
 resolve_target

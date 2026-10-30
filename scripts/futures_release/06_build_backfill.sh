@@ -12,9 +12,9 @@
 # TAKES: seconds. UNDO: remove the folder it wrote.
 set -u
 . "${0:A:h}/lib.zsh"
-TARGET="${TARGET:-${1:-}}"; PULL="${2:-}"
+TARGET="${1:-${TARGET:-}}"; PULL="${2:-}"
 resolve_target
-[ -d "$PULL" ] || die "give the pull folder (the pull's folder)" 2
+[ -d "$PULL" ] || die "give the folder the pull printed" 2
 PULL="${PULL:A}"
 for r in MGC SIL; do for f in ${r}_contracts_ohlcv-1d ${r}_v0_ohlcv-1d; do [ -s "$PULL/$f.csv.zst" ] || die "missing $PULL/$f.csv.zst" 2; done; done
 OUTB="$RUN_DIR/backfill/${PULL:t}_${TAG}"; [ -e "$OUTB" ] && die "$OUTB exists; move it aside to rebuild" 2

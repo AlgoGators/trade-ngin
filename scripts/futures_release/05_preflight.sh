@@ -8,7 +8,7 @@
 # CHANGES: nothing (every session read only). READS: the catalog and the MGC/SIL counts. TAKES: seconds.
 set -u
 . "${0:A:h}/lib.zsh"
-TARGET="${TARGET:-${1:-}}"
+TARGET="${1:-${TARGET:-}}"
 resolve_target
 export PGOPTIONS='-c default_transaction_read_only=on'
 mkdir -p "$RUN_DIR/data"; R="$RUN_DIR/data/05_preflight_${TAG}_$(date -u +%Y%m%dT%H%M%SZ).txt"

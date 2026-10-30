@@ -4,7 +4,7 @@
 --   psql -X -v ON_ERROR_STOP=1 -v rows="<folder>" -v part=A -f load_micro_metals.sql
 --   psql -X -v ON_ERROR_STOP=1 -v rows="<backfill folder>" -v part=A2 -f load_micro_metals.sql
 --   psql -X -v ON_ERROR_STOP=1 -v rows="<folder>" [-v backfill="<backfill folder>"] -v part=B -f load_micro_metals.sql
--- The wrapper apply_micro_metals_on_production.sh runs it (README.md: the order, which cannot be changed).
+-- The wrapper apply_micro_metals_on_production.sh runs it (README.md: the order).
 --
 -- Part A (inert: no runner reads a root that is not in futures_data.ohlcv_1d): the per-contract bars of both roots
 --   into futures_data.contract_ohlcv_1d and one metadata.contract_metadata row each.
@@ -198,7 +198,7 @@ DO $$ DECLARE n int; BEGIN
   SELECT count(*) INTO n FROM micro_v0 v FULL JOIN micro_raw r ON r.ts_event = v.time AND r.symbol = v.symbol
     WHERE v.symbol IS NULL OR r.symbol IS NULL OR r.close <> v.close OR r.volume <> v.volume;
   IF n <> 0 THEN RAISE EXCEPTION 'continuous and raw rows differ: %', n; END IF;
-  -- every vendor bar names a stored contract bar of its root, same date, same close (R6's check)
+  -- every vendor bar names a stored contract bar of its root, same date, same close
   SELECT count(*) INTO n FROM micro_raw r LEFT JOIN futures_data.contract_ohlcv_1d c
     ON c.instrument_id = r.instrument_id AND c.date = (r.ts_event AT TIME ZONE 'UTC')::date
    AND c.root = replace(r.symbol, '.v.0', '') AND c.close = r.close

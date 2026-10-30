@@ -13,7 +13,7 @@
 # UNDO: nothing to undo.
 set -u
 . "${0:A:h}/lib.zsh"
-TARGET="${TARGET:-${1:-}}"; LABEL="${2:-check}"
+TARGET="${1:-${TARGET:-}}"; LABEL="${2:-check}"
 resolve_target
 export PGOPTIONS='-c default_transaction_read_only=on'
 mkdir -p "$RUN_DIR/checks"; R="$RUN_DIR/checks/${TAG}_${LABEL}_$(date -u +%Y%m%dT%H%M%SZ).txt"
