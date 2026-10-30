@@ -1,4 +1,4 @@
-// Carry in the trend strategy (trade-ngin #185): the hand-over from portfolio.json to the first
+// Carry in the trend strategy: the hand-over from portfolio.json to the first
 // sleeve, the runners' calls, the sleeve's own checks of its carry settings, and the blended
 // forecast the sleeve trades: carry off is today's to the last digit, an instrument with no quote
 // trades its trend alone, the blend is table 51 and 52's, and the equity slow rule acts on the
@@ -248,7 +248,7 @@ TEST(CarryStrategy, CarryOffIsTodaysStrategyToTheLastDigit) {
 }
 
 // Carry on and no quote anywhere in the window: the instrument trades its trend forecast alone
-// (HD's Q3, per bar), the same value as carry off.
+// (per bar), the same value as carry off.
 TEST(CarryStrategy, NoQuoteInTheWindowTradesTheTrendAlone) {
     StateManager::reset_instance();
     const auto bars = without_quotes(path(700, 400, 0.0012, 0.0006, 0.004));
@@ -301,7 +301,7 @@ TEST(CarryStrategy, ARemovalLeavesSevenRulesAtOnePointTwoNine) {
     EXPECT_NEAR(f, std::clamp(1.29 * (0.6 * d.estimate.mean_scaled + 0.4 * d.carry.mean_scaled), -20.0, 20.0), 1e-12);
 }
 
-// The equity slow rule acts on the trend part only (HD's Q1): a rise then a sharp fall makes the
+// The equity slow rule acts on the trend part only: a rise then a sharp fall makes the
 // trend average negative with the slowest speed still positive, so the trend part is 0; positive
 // carry then makes the forecast long, negative carry short (a carry-driven short, counted).
 TEST(CarryStrategy, TheEquitySlowRuleActsOnTheTrendPartOnly) {
@@ -357,7 +357,7 @@ TEST(CarryStrategy, TheSeededHistoryKeepsItsQuotes) {
     EXPECT_EQ(whole.data().carry.mean_scaled, seeded.data().carry.mean_scaled);
 }
 
-// The run's one line for carry-driven equity shorts (HD's Q1): printed only with carry on, counting the
+// The run's one line for carry-driven equity shorts: printed only with carry on, counting the
 // shorts the sleeve made; every futures runner prints it beside the short-window line.
 TEST(CarryStrategy, TheRunReportsItsCarryDrivenEquityShorts) {
     StateManager::reset_instance();
@@ -393,7 +393,7 @@ TEST(CarryStrategy, TheRunReportsItsCarryDrivenEquityShorts) {
     }
 }
 
-// Only tradeable bars count (fix round 1, audits B and C): a contract outside its tradeable window
+// Only tradeable bars count: a contract outside its tradeable window
 // (listed after these bars) computes its forecast on every bar but none of its shorts is counted.
 TEST(CarryStrategy, OnlyTradeableBarsCountAsCarryDrivenShorts) {
     StateManager::reset_instance();
@@ -413,7 +413,7 @@ TEST(CarryStrategy, OnlyTradeableBarsCountAsCarryDrivenShorts) {
     EXPECT_EQ(listed.strategy->carry_driven_shorts().at(kSym), 1u);
 }
 
-// Provenance (fix round 1, audit A S3): a carry-on backtest stores the carry it ran in its run metadata,
+// Provenance: a carry-on backtest stores the carry it ran in its run metadata,
 // a carry-off one stores nothing new; both backtest runners write it the same way.
 TEST(CarryConfig, ABacktestStoresItsCarryOnlyWhenCarryIsOn) {
     CarryConfig carry;
@@ -446,7 +446,7 @@ TEST(CarryConfig, ABacktestStoresItsCarryOnlyWhenCarryIsOn) {
     }
 }
 
-// The speed limit as a check (fix round 1, audit A S5; #185, tables 35 and 40): a carry span may run
+// The speed limit as a check (tables 35 and 40): a carry span may run
 // only where a trend speed the contract keeps turns over at least as fast, so the span's cost is
 // bounded by a cost that passed 0.15. The committed list keeps EWMAC16 everywhere (13.2 >= 5.75).
 TEST(CarryConfig, TheSpeedLimitBoundsEveryCarrySpanOrCarryIsRefused) {

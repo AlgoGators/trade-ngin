@@ -1,6 +1,6 @@
 // tests/live/test_settled_stamp.cpp
 //
-// trading.live_results.settled_at (migration 035; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2).
+// trading.live_results.settled_at (migration 035).
 //
 // The run that finalizes a row stamps it: one UPDATE, after STEP 4 and the statistics refresh
 // finished without error, on every earlier row of the key that carries no stamp. The no-prices
@@ -178,7 +178,7 @@ TEST(SettledStampRunners, TheNoPricesSkipAndEveryFinalizeWarningWithholdTheStamp
         ASSERT_NE(stamp, std::string::npos) << runner << ": no stamp block";
         const std::string finalize = src.substr(step4, stamp - step4);
 
-        // The no-prices skip: the sizing read's own tests (LOOP_SPEC section 3.1).
+        // The no-prices skip: the sizing read's own tests.
         EXPECT_NE(finalize.find("if (previous_day_close_prices.empty() && !is_first_trading_day) {\n"
                                 "            settled_stamp.withhold(\"no T-1 closes\");"),
                   std::string::npos)
@@ -303,7 +303,7 @@ TEST(SettledStampSizingRead, ARowCountsWhenItsStampIsSetOrTheNoBarDayRuleSettles
     EXPECT_EQ(count_of(read, "if (!sizing_history_row_settled(row, calendar)) {"), 1u);
     EXPECT_EQ(count_of(read, "sizing_history_day_unsettled(row, calendar)"), 1u);
     // The calendar clause is one marked predicate in one place, under the comment that says what
-    // it is for (the lead and HD, 2026-10-10), and no ruling on it is open in the source.
+    // it is for, and nothing in the source leaves it open.
     EXPECT_EQ(count_of(read, "THE CALENDAR CLAUSE"), 1u);
     const auto mark = body.find("// THE CALENDAR CLAUSE");
     ASSERT_NE(mark, std::string::npos) << "the calendar clause is not marked where it is asked";

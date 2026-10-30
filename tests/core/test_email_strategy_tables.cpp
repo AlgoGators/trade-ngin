@@ -1,27 +1,25 @@
 // tests/core/test_email_strategy_tables.cpp
 //
-// FUT-email-zero-basis (C-5 B5): one unpriceable row must not suppress the whole
-// futures daily report.
+// One unpriceable row must not suppress the whole futures daily report.
 //
-// 9348920d fixed this for the SINGLE-table overload, format_positions_table,
-// which is what the equity runner's simple path uses. It did not touch the
-// PER-STRATEGY overload, format_strategy_positions_tables ->
-// format_single_strategy_table, which is what generate_trading_report_body calls
-// for every runner that has more than one strategy -- the futures runners.
+// The PER-STRATEGY overload, format_strategy_positions_tables ->
+// format_single_strategy_table, is what generate_trading_report_body calls for
+// every runner that has more than one strategy -- the futures runners -- and it
+// follows the same rule as the SINGLE-table overload, format_positions_table,
+// which is what the equity runner's simple path uses.
 //
-// There, margin was computed from Position::average_price alone and a
-// non-positive result threw std::runtime_error, and the catch re-threw it. The
-// throw escapes format_single_strategy_table, escapes
-// format_strategy_positions_tables and escapes generate_trading_report_body, so
-// the whole email is lost. The portfolio-total loop lower down prices margin the
-// same way inside a catch(...) that swallows it, so the "Total Margin Posted"
-// line understated with nothing said.
+// A margin computed from Position::average_price alone that threw
+// std::runtime_error on a non-positive result, re-thrown by the catch, would escape
+// format_single_strategy_table, format_strategy_positions_tables and
+// generate_trading_report_body, and the whole email would be lost. The
+// portfolio-total loop lower down prices margin inside a catch(...) that swallows
+// it, so the "Total Margin Posted" line would understate with nothing said.
 //
 // Two different rows reach the non-positive margin, and both are covered:
 //
 //   * an EQUITY row with no basis and no close. EquityInstrument's margin is a
 //     fraction of notional, so price 0 gives margin 0. This is the equity-shaped
-//     defect on the multi-strategy path 9348920d missed.
+//     defect on the multi-strategy path.
 //   * a FUTURES row whose instrument carries initial_margin 0.
 //     FuturesInstrument::get_margin_requirement(price, qty) ignores price and
 //     returns |qty| * initial_margin, so the basis cannot make it zero but a
@@ -263,7 +261,7 @@ TEST_F(EmailStrategyTablesTest, ANormalFuturesBookIsUnaffected) {
     EXPECT_NE(html.find("24,000.00"), std::string::npos);
 }
 
-// HD 10-13: the portfolio summary has neither the expected risk nor the VaR (both are in the
+// The portfolio summary has neither the expected risk nor the VaR (both are in the
 // account detail file), and never a portfolio VaR.
 TEST_F(EmailStrategyTablesTest, TheSummaryCarriesNoExpectedRiskAndNoVar) {
     const StrategyPositionsMap book{{"TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 4200.0)}}}};
@@ -315,11 +313,10 @@ TEST_F(EmailStrategyTablesTest, AnExecutionWhoseContractIsNotInTheRegistryShowsN
         << per_strategy;
 }
 
-// T-8D-2 R62: the book's executions footer follows the sleeve table's rule. A fill whose contract
-// is not in the registry is a trade with no notional: it used to be added to "Total Notional
-// Traded" at a multiplier of 1 (110.50 here) under a sleeve table that printed n/a. And the
-// footer's cost line says "Today's": "Total Transaction Costs" names the cumulative figure of the
-// snapshot.
+// The book's executions footer follows the sleeve table's rule. A fill whose contract is not in
+// the registry is a trade with no notional: it is not added to "Total Notional Traded" at a
+// multiplier of 1 (110.50 here) under a sleeve table that prints n/a. And the footer's cost line
+// says "Today's": "Total Transaction Costs" names the cumulative figure of the snapshot.
 TEST_F(EmailStrategyTablesTest,
        TheBookExecutionsFooterLeavesAnUnregisteredContractOutAndSaysTodays) {
     ASSERT_FALSE(InstrumentRegistry::instance().has_instrument("ZN"));
@@ -335,7 +332,7 @@ TEST_F(EmailStrategyTablesTest,
     EXPECT_EQ(all.find("Total Transaction Costs"), std::string::npos) << all;
 }
 
-// T-8D-2 R60: one price per row. A sleeve's row is its quantity at the price it prints (the Day
+// One price per row. A sleeve's row is its quantity at the price it prints (the Day
 // T-1 close), and so are the sleeve's notional and the share of it; the book block counts sleeve
 // rows and prints the ACCOUNT's notional and margin when the runner hands them. Two sleeves hold
 // ZFGOOD on opposite sides (2 and -1, close 110, multiplier 50, margin 12,000 a contract): the
@@ -405,7 +402,7 @@ TEST(EmailBookBlockTwinSourceGuard, BothFuturesRunnersHandTheAccountsGrossNotion
     }
 }
 
-// T-8D D1: the margin figure has one label on every book; the rule behind it is named in the
+// The margin figure has one label on every book; the rule behind it is named in the
 // sleeve's sub-header, as the kind of instrument the sleeve holds and the equity account mode.
 TEST_F(EmailStrategyTablesTest, ASleeveSubHeaderNamesItsInstrumentKindAndAccountMode) {
     const std::string futures = sender_.format_single_strategy_table(
@@ -439,7 +436,7 @@ TEST_F(EmailStrategyTablesTest, AnExecutionOfARegisteredContractKeepsItsNotional
     EXPECT_NE(per_strategy.find("$10,000.00"), std::string::npos) << per_strategy;  // 2 x 100 x 50
 }
 
-// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the email's trade counts and traded notional are STRATEGY
+// The email's trade counts and traded notional are STRATEGY
 // rows only; the ROLL legs are their own block with the two contract ids; every cost total keeps
 // both. (ZFGOOD is a registered future with multiplier 50.)
 namespace {
@@ -487,7 +484,7 @@ TEST_F(EmailStrategyTablesTest, RollLegsAreTheirOwnBlockNotTradesAndTheirCostIsI
     EXPECT_EQ(all.find("Roll Costs (upper bound):"), std::string::npos) << all;
 }
 
-// The cost after netting (HD 2026-10-09): every cost TOTAL of the email is what the account was
+// The cost after netting: every cost TOTAL of the email is what the account was
 // charged, each row's own cost minus its signed adjustment; a row's own cost stays in its cell.
 //   FAST SELL 1 and TREND SELL 1, own 4.50 each, adjustment -0.91 each (same side: 5.41 each)
 //   and a second pair of rows, FAST SELL 1 and TREND BUY 1, own 1.62 each, adjustment 1.62 each (a full cross: 0)
@@ -514,7 +511,7 @@ TEST_F(EmailStrategyTablesTest, TheCostTotalsAreTheCostAfterNetting) {
         << all;
 }
 
-// T-NETTING fix round (HD 2026-10-10): the email reconciles at a glance. On a book of more than
+// The email reconciles at a glance. On a book of more than
 // one sleeve every fill row shows, beside its own cost, its netting adjustment AS IT ACTS ON THE
 // COST (a saving is a reduction, "-$1.62"; an extra cost an addition, "+$0.91") and its cost after
 // netting; and wherever a row was netted the footer reads own costs, netting adjustment, cost
@@ -578,17 +575,17 @@ TEST_F(EmailStrategyTablesTest, ASameSidePairShowsTheExtraCostAsAnAddition) {
     EXPECT_EQ(all.find("-$"), std::string::npos) << "nothing on a same-side day is a reduction: " << all;
 }
 
-// T-NETTING fix round 2 (audit A of the fix round, N1): ONE rounding for the three figures of a
-// line. On an exact half cent the stream prints 10.82 for 10.825 while llround(10.825 * 100) is
-// 1083, so the adjustment printed from llround could sit a cent off the two figures beside it.
-// Now it is the difference of the printed cents of those two figures, whatever they are.
+// ONE rounding for the three figures of a line. On an exact half cent the stream prints 10.82
+// for 10.825 while llround(10.825 * 100) is 1083, so an adjustment printed from llround could sit
+// a cent off the two figures beside it. The adjustment printed is the difference of the printed
+// cents of those two figures, whatever they are.
 //
 //   | own (stored) | adjustment | after netting | printed own | printed adjustment | printed after |
 //   | 10.825       | 0.005      | 10.82         | $10.82      | $0.00              | $10.82        |
 //   | 10.825       | -1.00      | 11.825        | $10.82      | +$1.00             | $11.82        |
 //   | 0.125        | 0.12       | 0.005         | $0.12       | -$0.12             | $0.00 or 0.01 |
 //
-// RED on 4398b2c6 for the first row (it printed -$0.01 between two equal figures).
+// An adjustment printed from llround prints -$0.01 between two equal figures on the first row.
 TEST_F(EmailStrategyTablesTest, TheThreePrintedFiguresAddUpOnAnExactHalfCent) {
     using email_netting::netting_effect_text;
     using email_netting::printed_cents;
@@ -634,7 +631,7 @@ TEST(EmailNettingText, MoneyGroupsThousandsAndKeepsANegativeSign) {
     EXPECT_EQ(email_netting::netting_effect_text(2500.00, 1000.00), "-$1,500.00");
 }
 
-// HD 10-13: the cent-rounding note is gone; what a reader needs is footnote 5's arithmetic.
+// No cent-rounding note is printed; what a reader needs is footnote 5's arithmetic.
 TEST_F(EmailStrategyTablesTest, NoRoundingNoteIsPrintedOnAnyDay) {
     const Sleeves day{{"TREND_FOLLOWING_FAST", {netted_row(Side::SELL, 1, 2.4464, 2.4464)}},
                       {"TREND_FOLLOWING", {netted_row(Side::BUY, 1, 2.4464, 2.4464)}}};

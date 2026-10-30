@@ -1,13 +1,13 @@
 // tests/live/test_margin_columns_runners.cpp
 //
-// T-8D R21 and section 3.14 -- the margin and leverage cells of trading.live_results, as the
+// The margin and leverage cells of trading.live_results, as the
 // three live runners write them.
 //
-// The Day T-1 finalize settles current_portfolio_value and rewrites cash_available on it. It
-// used to leave portfolio_leverage and equity_to_margin_ratio as the day's own run wrote them
-// ("only update if NULL or 0") and never touched net_leverage or margin_cushion, so a settled
-// row stood on two values of the account. And a day with no posted margin stored a cushion of
-// -1 and a ratio of 0, which the "below 20%" warning then fired on.
+// The Day T-1 finalize settles current_portfolio_value and rewrites cash_available on it, and
+// rewrites portfolio_leverage, equity_to_margin_ratio, net_leverage and margin_cushion on the
+// same value, so a settled row stands on one value of the account (not on the day's own run's
+// figures "only updated if NULL or 0"). A day with no posted margin stores no cushion and no
+// ratio, not -1 and 0, which the "below 20%" warning would fire on.
 //
 // The runners are `main()`s and cannot be linked into this binary, so what is tested is the
 // structure in the source, the approach tests/live/test_day_t_write_ordering.cpp takes for the
@@ -154,9 +154,8 @@ TEST(MarginColumnsRunners, TheFuturesRunnersFinalizeTheFourCellsIdentically) {
     EXPECT_EQ(a.substr(a0, a1 - a0), b.substr(b0, b1 - b0));
 }
 
-// T-8D R21 (HD 2026-09-10): the equity runner's ratio is the current portfolio value over the
-// posted margin, at the level of the book. It was gross notional over margin, 1.0 by
-// construction in a cash account, with two warnings written for that figure.
+// The equity runner's ratio is the current portfolio value over the posted margin, at the
+// level of the book, not gross notional over margin (1.0 by construction in a cash account).
 TEST(MarginColumnsRunners, TheEquityRatioIsThePortfolioValueOverThePostedMargin) {
     const std::string src = read_source(kEquity);
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
@@ -188,7 +187,7 @@ TEST(MarginColumnsRunners, TheEquityRunnersTwoRatioWarningsAreRetired) {
     EXPECT_EQ(count_of(src, "Posted margin exceeds current portfolio value"), 1u);
 }
 
-// T-8D D4 (a): a cash account has no maintenance requirement, so the finalize recomputes the
+// A cash account has no maintenance requirement, so the finalize recomputes the
 // cushion of an equity row against none.
 TEST(MarginColumnsRunners, TheEquityFinalizeRecomputesTheCushionAgainstNoMaintenance) {
     const std::string finalize = finalize_step(read_source(kEquity));
@@ -198,9 +197,9 @@ TEST(MarginColumnsRunners, TheEquityFinalizeRecomputesTheCushionAgainstNoMainten
     EXPECT_EQ(count_of(finalize, "yesterday_maintenance_sql = \"COALESCE(margin_posted"), 0u);
 }
 
-// T-8D R22: on the equity book gross_leverage and net_leverage are the row's notional over its
-// portfolio value, at the day's write and in the finalize. They were the risk report's figures
-// (positions at cost basis over the configured capital), which the finalize never revisited.
+// On the equity book gross_leverage and net_leverage are the row's notional over its
+// portfolio value, at the day's write and in the finalize, not the risk report's figures
+// (positions at cost basis over the configured capital).
 TEST(MarginColumnsRunners, TheEquityLeverageColumnsAreNotionalOverThePortfolioValue) {
     const std::string src = read_source(kEquity);
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";

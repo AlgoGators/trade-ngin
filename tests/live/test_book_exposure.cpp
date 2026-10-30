@@ -1,14 +1,14 @@
-// T-7b-2 8b commit 3: the account's notional and posted margin on the NET per symbol.
+// The account's notional and posted margin on the NET per symbol.
 //
 // Both futures runners store gross_notional, net_notional and margin_posted (and from them
 // equity_to_margin_ratio and the leverage columns) summed over the sleeves' rows, |q| per sleeve.
 // On a symbol the sleeves hold on the same side that sum is the account's (|a| + |b| = |a + b|).
 // On a symbol they hold on OPPOSITE sides it is not: TF +1 / FAST -1 posts margin on two contracts
-// the broker never holds. HD 2026-09-19 / 2026-09-25 item 23: opposite sleeves are kept gross per
+// the broker never holds. Opposite sleeves are kept gross per
 // sleeve for attribution while the ACCOUNT holds the net (no dollars tied up at the broker). So
 // an opposed symbol's notional and margin are taken once, on the net; every other symbol keeps
 // the per-sleeve accumulation, in the same order, bit for bit. active_positions still counts the
-// sleeves' rows (unchanged).
+// sleeves' rows.
 
 #include <gtest/gtest.h>
 
@@ -60,7 +60,7 @@ ExposureMarginFn margin_fn() {
     };
 }
 
-// The parent's loop, verbatim in its arithmetic and order (live_portfolio.cpp before 8b).
+// The per-sleeve accumulation, verbatim in its arithmetic and order.
 BookExposure parent_loop(const Books& books) {
     BookExposure out;
     for (const auto& [sid, pm] : books) {
@@ -96,7 +96,7 @@ std::string read_source(const std::string& relative) {
 
 }  // namespace
 
-// Same-side sleeves (every BASE day in the gate windows): identical to the parent, bit for bit.
+// Same-side sleeves (every BASE day in the gate windows): identical to the per-sleeve accumulation, bit for bit.
 TEST(BookExposure, SameSideSleevesAreSummedExactlyAsBefore) {
     Books b{{"TREND_FOLLOWING", {{"ZT.v.0", pos("ZT.v.0", 2, 103.65234375)},
                                  {"MES.v.0", pos("MES.v.0", 1, 7192.5)}}},
@@ -114,8 +114,8 @@ TEST(BookExposure, SameSideSleevesAreSummedExactlyAsBefore) {
 }
 
 // The stored BASE rows of ZT.v.0 on 2025-11-08: TF +1, FAST -1. The broker holds nothing.
-//   parent: gross 2 x 103.65234375 x 2,000 = 414,609.38, margin 2 x 1,000 = 2,000.
-//   fixed:  net 0: gross 0, margin 0; the two rows still count as active positions.
+//   per sleeve: gross 2 x 103.65234375 x 2,000 = 414,609.38, margin 2 x 1,000 = 2,000.
+//   on the net: net 0: gross 0, margin 0; the two rows still count as active positions.
 TEST(BookExposure, OpposedSleevesThatCancelPostNoMargin) {
     Books b{{"TREND_FOLLOWING", {{"ZT.v.0", pos("ZT.v.0", 1, 103.65234375)}}},
             {"TREND_FOLLOWING_FAST", {{"ZT.v.0", pos("ZT.v.0", -1, 103.65234375)}}}};
@@ -133,7 +133,7 @@ TEST(BookExposure, OpposedSleevesThatCancelPostNoMargin) {
 
 // A partial offset: TF +3, FAST -1 on ZT and a same-side MES pair. ZT is taken on its net of 2;
 // MES as before.
-//   parent: ZT gross 4 x 207,304.6875 = 829,218.75, margin 4,000.
+//   per sleeve: ZT gross 4 x 207,304.6875 = 829,218.75, margin 4,000.
 //   fixed:  ZT gross 2 x 207,304.6875 = 414,609.375, margin 2,000; MES unchanged.
 TEST(BookExposure, APartialOffsetIsTakenOnTheNet) {
     Books b{{"TREND_FOLLOWING", {{"ZT.v.0", pos("ZT.v.0", 3, 103.65234375)},
@@ -150,8 +150,8 @@ TEST(BookExposure, APartialOffsetIsTakenOnTheNet) {
     EXPECT_EQ(got.active_positions, 4);
 }
 
-// A symbol the margin manager cannot price: the caller falls back to the combined figures, as
-// the parent did, with the symbol and sleeve named and the rows counted up to the failure.
+// A symbol the margin manager cannot price: the caller falls back to the combined figures,
+// with the symbol and sleeve named and the rows counted up to the failure.
 TEST(BookExposure, AFailureIsReportedForTheCallersFallback) {
     Books b{{"TREND_FOLLOWING", {{"XX.v.0", pos("XX.v.0", 1, 10.0)}}}};
     const auto got = account_book_exposure(

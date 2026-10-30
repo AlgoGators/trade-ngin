@@ -257,7 +257,7 @@ TEST_F(BaseStrategyTest, OnExecution_UpdatesPositionAndMetrics) {
     EXPECT_DOUBLE_EQ(positions.at("AAPL").average_price.as_double(), 150.0);
 }
 
-// The cost after netting (HD 2026-10-09): the strategy's own running P&L charges a fill's NET
+// The cost after netting: the strategy's own running P&L charges a fill's NET
 // cost, own cost minus the signed adjustment. RED on the own cost, and on a dropped or clamped
 // negative adjustment.
 TEST_F(BaseStrategyTest, OnExecution_ChargesTheCostAfterNetting) {
@@ -290,8 +290,8 @@ TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
 }
 
-// T-6 commit 11 (HD's ruling): a drawdown breach WARNS and does not fail the strategy. It used to
-// return RISK_LIMIT_EXCEEDED, which failed on_data and stopped the strategy's targets updating.
+// A drawdown breach WARNS and does not fail the strategy: returning RISK_LIMIT_EXCEEDED would
+// fail on_data and stop the strategy's targets updating.
 TEST_F(BaseStrategyTest, CheckRiskLimits_WarnsOnMaxDrawdownAndDoesNotFail) {
     StrategyConfig config;
     config.capital_allocation = 100000;
@@ -484,7 +484,7 @@ using namespace trade_ngin::testing;
 // tests were written against trade_ngin::testing's. Pin that resolution.
 using MockPostgresDatabase = trade_ngin::testing::MockPostgresDatabase;
 
-// Phase 4 audit test T4.6 — §1.14 backtest coordinator P&L semantics.
+// Backtest coordinator P&L semantics.
 //
 // Contract test: the coordinator's branch reads strategy->get_pnl_accounting().method
 // and only stamps realized_pnl when REALIZED_ONLY (futures: settled daily).
@@ -586,7 +586,7 @@ TEST_F(PnLAccountingBranchTest, AccessorIsStableAcrossCalls) {
 }  // namespace pnl_accounting_branch_detail
 
 // ============================================================================
-// E2-F27 / T-OR.4: a fill that crosses zero realizes on the CLOSED quantity only.
+// A fill that crosses zero realizes on the CLOSED quantity only.
 //
 // Long 100 @ 150, SELL 150 @ 170: 100 shares close (realized 100 x 20 = 2000)
 // and the remaining 50 open a new short at the fill price. Realizing on the
@@ -646,19 +646,12 @@ TEST_F(BaseStrategyTest, OnExecution_ExactAndPartialCloseRealizeOnTheFill) {
 }
 
 // ---------------------------------------------------------------------------
-// C-5 §9-A2 -- the §1.14 branch itself, not just the accessor it reads.
+// The coordinator's P&L branch itself, not just the accessor it reads.
 //
-// THE TEST DEFECT: the three tests above assert what get_pnl_accounting() returns for a
-// mean-reversion and a trend-following config. That contract predates 7e3d07c2. Executed
-// revert (C-5 L-CLOSURE): with src/backtest/backtest_coordinator.cpp reverted to 7e3d07c2^
-// -- the file whose branch the commit's own header names -- all three still PASS:
-//
-//     [==========] 3 tests from 1 test suite ran.
-//     [  PASSED  ] 3 tests.
-//
-// The coordinator's branch was never entered, so nothing pinned the behaviour the commit
-// shipped. These add it: the two methods must produce DIFFERENT realized figures from the
-// same bar, because they are different quantities.
+// The three tests above assert what get_pnl_accounting() returns for a mean-reversion and a
+// trend-following config; they hold whether or not the coordinator's branch is entered. These
+// pin the branch: the two methods must produce DIFFERENT realized figures from the same bar,
+// because they are different quantities.
 // ---------------------------------------------------------------------------
 
 TEST(PnLAccountingBranchRule, TheTwoMethodsBookDifferentRealizedFromTheSameBar) {

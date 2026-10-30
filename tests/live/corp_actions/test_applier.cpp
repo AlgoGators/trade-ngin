@@ -2,11 +2,6 @@
 // event to a held position: splits scale share count, dividends rescale cost
 // basis, and neither may touch realized PnL.
 //
-// Consolidated from test_corp_actions_applier.cpp, test_corp_actions_frame_consistency.cpp,
-// test_corp_actions_long_hold_total_return.cpp and the applier half of
-// test_corp_actions_ultrareview_fixes.cpp -- files that were named after the
-// review or incident that produced them rather than the component they cover.
-//
 // Contracts worth keeping in view: the dividend denominator is the EX-DATE
 // close, which is what makes the basis rescale the exact inverse of the price
 // series' adjustment factor (a prior-day close silently drifts from it); and
@@ -32,7 +27,6 @@
 // SUBJECT: core applier arithmetic -- a split multiplies quantity and divides
 // basis so position VALUE is unchanged; a dividend rescales basis only. Also
 // the skip paths: unknown symbol, zero quantity, malformed factors.
-// from test_corp_actions_applier.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -40,7 +34,7 @@ namespace applier_core {
 
 using namespace trade_ngin;
 
-// Phase 4 audit tests T4.1, T4.2, T4.5 (applier unit semantics).
+// Applier unit semantics.
 
 namespace {
 
@@ -74,7 +68,7 @@ CorpActionEvent dividend_event(const std::string& symbol, const std::string& dat
 
 }  // namespace
 
-// T4.1: 4-for-1 split moves 100 AAPL @ $400 -> 400 @ $100. Notional preserved.
+// A 4-for-1 split moves 100 AAPL @ $400 -> 400 @ $100. Notional preserved.
 TEST(CorpActionsApplierTest, SplitFourForOne) {
     std::unordered_map<std::string, Position> positions;
     positions["AAPL"] = make_position("AAPL", 100.0, 400.0);
@@ -94,7 +88,7 @@ TEST(CorpActionsApplierTest, SplitFourForOne) {
     EXPECT_DOUBLE_EQ(notional_after, notional_before);
 }
 
-// T4.2: dividend rescales avg_price into the post-rescale closeadj frame.
+// A dividend rescales avg_price into the post-rescale closeadj frame.
 // Position 100 AAPL bought at $100. $0.25 dividend, close[T-1]=$100.
 // Expected ratio = 1 + 0.25/100 = 1.0025. Expected new avg_price = 100/1.0025 ≈ 99.751.
 TEST(CorpActionsApplierTest, DividendRescaleAvgPrice) {
@@ -222,7 +216,6 @@ TEST(CorpActionsApplierTest, TypeFromActionString) {
 // SUBJECT: the applier's dividend denominator must match the price series.
 // Both use the ex-date close, so basis adjustment and mark move together --
 // a mismatch here silently biases every dividend.
-// from test_corp_actions_frame_consistency.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -243,8 +236,8 @@ using namespace trade_ngin;
 // because no later event repairs a basis. These tests pin the two to the same
 // denominator: the close ON the ex-date.
 //
-// This is a different axis from the raw-dollar / adjusted-close frame mix that
-// 05-22 §B6 documents as deliberate and load-bearing. That mix is preserved.
+// This is a different axis from the raw-dollar / adjusted-close frame mix, which is
+// deliberate and load-bearing and stays as it is.
 namespace {
 
 Position make_position(const std::string& symbol, double qty, double avg_price) {
@@ -284,11 +277,10 @@ TEST(CorpActionFrameConsistency, DividendBasisRescaleMatchesPriceSeriesFactor) {
     ev.ex_date = "2026-08-10";
     ev.type = CorpActionType::DIVIDEND;
     ev.value = dividend;
-    // BA-5 / C-1 D1: the ex-date close is SELECTED here from the same bar series the
-    // price-adjustment factors were computed from, rather than being assigned the
-    // already-correct literal. Handing the applier `close_on_ex` by name made the
-    // fixture supply the fix, so the test could not distinguish the corrected frame
-    // from the old one -- it asserted an equality it had itself arranged.
+    // The ex-date close is SELECTED here from the same bar series the price-adjustment
+    // factors were computed from, not assigned as a literal: a fixture that handed the
+    // applier `close_on_ex` by name would supply the answer itself, and the test could
+    // not tell the right frame from a wrong one.
     ev.close_at_ex_date = bars[1].close;  // the bar the dividend goes ex on
     ASSERT_DOUBLE_EQ(ev.close_at_ex_date, close_on_ex) << "sanity: bars[1] IS the ex-date bar";
 
@@ -314,11 +306,9 @@ TEST(CorpActionFrameConsistency, DividendBasisRescaleMatchesPriceSeriesFactor) {
 }
 
 TEST(CorpActionFrameConsistency, UsingThePriorDaysCloseWouldDriftFromThePriceSeries) {
-    // BA-5 / C-1 D1: this used to compute `wrong_factor` and `price_series_factor`
-    // from two local expressions and assert they differed. Both were arithmetic on
-    // literals declared three lines above -- no repository code was involved, so it
-    // could not fail however the applier changed. It now drives the APPLIER with each
-    // denominator and asserts which one lands in the price series' frame.
+    // Drives the APPLIER with each denominator and asserts which one lands in the price
+    // series' frame. Arithmetic on local literals alone would involve no repository code
+    // and could not fail however the applier changed.
     const double close_before_ex = 101.00;
     const double close_on_ex = 100.00;
     const double dividend = 0.50;
@@ -363,11 +353,9 @@ TEST(CorpActionFrameConsistency, UsingThePriorDaysCloseWouldDriftFromThePriceSer
 // PREVIOUS day, which shifted every corp-action key and the trading date the
 // run writes under. This pins UTC rendering regardless of the host's zone.
 TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
-    // BA-5 / C-1 D1: this used to declare its OWN gmtime_r+strftime lambda and assert
-    // that the lambda was timezone-independent. That tests libc, not this repository:
-    // every date-key site could have been reverted to localtime and the test would
-    // still pass. It now exercises format_ymd_utc, the primitive the corp-action
-    // window and the runner's date keys actually go through.
+    // Exercises format_ymd_utc, the primitive the corp-action window and the runner's
+    // date keys go through. A local gmtime_r+strftime lambda would test libc, not this
+    // repository: every date-key site could move to localtime and it would still pass.
     //
     // 2026-08-10 00:00:00 UTC.
     std::tm utc{};
@@ -404,7 +392,6 @@ TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
 // ---------------------------------------------------------------------------
 // SUBJECT: a position held across many events accumulates them correctly,
 // i.e. repeated application composes rather than drifting.
-// from test_corp_actions_long_hold_total_return.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -412,21 +399,21 @@ namespace applier_long_hold {
 
 using namespace trade_ngin;
 
-// Phase 4 audit test T4.3 — long-hold total-return regression guard for §1.15.
+// Long-hold total-return guard.
 //
 // Scenario: held 100 shares of a 4%-annual-yield equity for 1 year with no
 // net price change. Provider uses backward (retroactive) closeadj
-// adjustment, so each dividend rescales the closeadj curve. Pre-fix, the
-// stored avg_price never updated, accumulating ~4% understatement of return.
-// Post-fix, the avg_price /= (1 + d/close_at_ex_date) rescaling per
+// adjustment, so each dividend rescales the closeadj curve. A stored avg_price
+// that never updated would understate return by ~4%. The
+// avg_price /= (1 + d/close_at_ex_date) rescaling per
 // dividend keeps the avg_price in the same closeadj frame as bar.close,
 // so MTM correctly reflects total return.
 //
 // We simulate 4 quarterly dividends of $1 (total $4) on a $100 stock held
 // at 100 shares for the year. End-of-year closeadj = $100 (provider has
 // retroactively rescaled the original purchase price down by the same
-// cumulative factor). Pre-fix: avg_price still $100, MTM = (100-100)*100 = $0
-// (silently dropping the $400 of return). Post-fix: avg_price /= each
+// cumulative factor). Without the rescale: avg_price stays $100, MTM = (100-100)*100 = $0
+// (silently dropping the $400 of return). With it: avg_price /= each
 // quarter's ratio, ends ≈ $96.117, MTM = (100-96.117)*100 ≈ $388 ≈ 4%.
 
 TEST(CorpActionsLongHoldTotalReturnTest, FourQuarterlyDividendsCaptureTotalReturn) {
@@ -479,7 +466,6 @@ TEST(CorpActionsLongHoldTotalReturnTest, FourQuarterlyDividendsCaptureTotalRetur
 // ---------------------------------------------------------------------------
 // SUBJECT: quantity as of the ex-date -- the applier must size the dividend
 // on shares actually held that day, not on today's (possibly changed) size.
-// from ur_applier.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -487,14 +473,10 @@ namespace applier_ex_date_qty {
 
 using namespace trade_ngin;
 
-// Ultrareview PR #38 fix verification.
-// Pins the three behaviors that ultrareview flagged as real correctness or
-// durability gaps and we resolved in this PR:
-//   - bug_021 (cash-basis qty): the audit log records ex_date qty, not today's.
-//   - bug_003 (atomic save):    the on-disk state file is written via tmp+rename.
-// bug_007, merged_bug_001, bug_013, bug_037, bug_002 are wire-up concerns in
-// the live equity app's main() and are exercised via integration / manual
-// verification (the unit-test surface here is just the pure-logic layer).
+// Pins the quantity a dividend is recorded on: the audit log records ex_date qty,
+// not today's. The wire-up in the live equity app's main() is exercised via
+// integration / manual verification (the unit-test surface here is just the
+// pure-logic layer).
 
 namespace {
 
@@ -523,7 +505,7 @@ CorpActionEvent dividend_event(const std::string& symbol,
 
 }  // namespace
 
-// bug_021: cash-flow figure uses ex_date qty (not today's), so a catch-up
+// The cash-flow figure uses ex_date qty (not today's), so a catch-up
 // run days after the ex_date still records the correct dividend cash.
 //
 // Setup: position is 100 today, but on ex_date the operator was holding 200.
@@ -547,10 +529,10 @@ TEST(CorpActionsUltrareviewFixes, DividendUsesQtyAtExDateForCashBasis) {
     EXPECT_DOUBLE_EQ(positions["AAPL"].quantity.as_double(), 100.0);
 }
 
-// bug_021 regression guard: when the live app couldn't reconstruct ex_date qty
-// (first-week catch-up, missing historical row, etc.) and leaves qty_at_ex_date
-// at 0.0, the applier falls back to the live position quantity -- preserving
-// pre-fix behavior so no audit log diff for the common same-day path.
+// When the live app cannot reconstruct ex_date qty (first-week catch-up, missing
+// historical row, etc.) and leaves qty_at_ex_date at 0.0, the applier falls back
+// to the live position quantity, which is the right one on the common same-day
+// path.
 
 TEST(CorpActionsUltrareviewFixes, DividendFallsBackToCurrentQtyWhenExDateQtyUnset) {
     std::unordered_map<std::string, Position> positions;
@@ -565,7 +547,7 @@ TEST(CorpActionsUltrareviewFixes, DividendFallsBackToCurrentQtyWhenExDateQtyUnse
     EXPECT_DOUBLE_EQ(log[0].quantity_after, 100.0);
 }
 
-// bug_021 cash-flow round-trip: the audit log uses the applier's recorded
+// Cash-flow round-trip: the audit log uses the applier's recorded
 // quantity_after as the dividend basis when computing total_cash for
 // total_cumulative_dividend_income(). With qty_at_ex_date=200 and
 // $0.50/share, total_cash should be $100, not $50.
@@ -578,13 +560,13 @@ using namespace applier_core;
 // A dividend whose ex-date close could not be established must be SKIPPED, and
 // the skip must leave NO PositionAdjustment behind.
 //
-// This is load-bearing, not cosmetic. The runner used to fall back to today's
-// T-1 close when no historical close was available, which sails past the
-// applier's positive-close guard and applies the dividend against the wrong
-// denominator: DD's 2025-11-03 dividend of $47.50 against its ex-date close of
-// $34.69 is a ratio of 2.3693, but against a later close of $136.98 it is
-// 1.3468 -- a true basis of $100 persisted as $175.92. The fix removes that
-// fallback so the close arrives here as 0.0 and the event is skipped.
+// This is load-bearing, not cosmetic. A fallback to today's T-1 close when no
+// historical close is available would sail past the applier's positive-close
+// guard and apply the dividend against the wrong denominator: DD's 2025-11-03
+// dividend of $47.50 against its ex-date close of $34.69 is a ratio of 2.3693,
+// but against a later close of $136.98 it is 1.3468 -- a true basis of $100
+// persisted as $175.92. The runner has no such fallback, so the close arrives here
+// as 0.0 and the event is skipped.
 //
 // The skip is only recoverable because CorporateActionsAuditLog::record() takes
 // a PositionAdjustment: no adjustment means no trading.corp_action_applied row,

@@ -1,6 +1,6 @@
 // tests/live/test_session_book_gate.cpp
 //
-// T-7a commit 4, the live futures runners' half of the per-symbol session rule
+// The live futures runners' half of the per-symbol session rule
 // (include/trade_ngin/live/session_book_gate.hpp):
 //   * a symbol whose T-1 verdict is not SESSION is HELD at its stored T-1 quantity on every
 //     per-strategy book, the key being the verdict and never membership of the T-1 price map (a
@@ -11,12 +11,12 @@
 //     feed on every run, and an unconfirmed id change the classifier holds is consumed;
 //   * a HELD symbol's feed hole older than the tolerance refuses a true-live run (the run date is
 //     the host's date) and only warns on a replay;
-//   * in the runners: the abort arm is gone, the Monday agricultural block is gone, the gate and
+//   * in the runners: there is no abort arm and no Monday agricultural block, the gate and
 //     STRICT sit where they must, and the twins carry the same blocks byte for byte.
 //
-// The worked case is MYM.v.0 on 2026-04-24 (T-4c J1): the strategy wanted 2, the book held 1, and
-// MYM had no bar after Mon 04-20 while its siblings printed. Today's runner filled BUY 1 at the
-// four-day-old 49,707 through MARK_FALLBACK; the gate holds it at 1 with no order.
+// The worked case is MYM.v.0 on 2026-04-24: the strategy wanted 2, the book held 1, and
+// MYM had no bar after Mon 04-20 while its siblings printed. Through MARK_FALLBACK a runner would
+// fill BUY 1 at the four-day-old 49,707; the gate holds it at 1 with no order.
 
 #include <gtest/gtest.h>
 
@@ -191,7 +191,7 @@ TEST(SessionBookGate, AFeedHoleSymbolIsHeldAndNotFilledAtItsStaleMark) {
 }
 
 TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
-    // The whole point of keying on the verdict (T-CLASSIFIER_ADVERSARIAL D1): 6L's junk print IS
+    // The whole point of keying on the verdict: 6L's junk print IS
     // in the T-1 price map, so a gate keyed on the map would trade it at the junk close.
     const auto t1 = april_t1();
     const std::unordered_map<std::string, double> t1_prices{
@@ -209,11 +209,11 @@ TEST(SessionBookGate, AJunkSymbolIsHeldAlthoughItHasAT1Price) {
     EXPECT_TRUE(r.value().executions.empty()) << "no order at the junk print";
 }
 
-// D-A (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 section 6.1, D37): the change-bar hold on EVERY
+// The change-bar hold on EVERY
 // rebalance. ZC's T-1 bar (Thu 04-23) is a full-volume contract switch: its verdict is SESSION and
 // its last consumed bar is a pending change. On a day the risk gate does not cut, nothing but this
 // hold stands between the strategy's new target and an order at the change bar's close. The runner
-// passes the D37 set (roll_status holds()) to the book gate: ZC is held at its stored quantity on
+// passes the change-bar hold set (roll_status holds()) to the book gate: ZC is held at its stored quantity on
 // both sleeves, opened from flat on neither, re-inserted where the target dropped it, and no order
 // is generated; MES, a SESSION symbol with no pending change, trades.
 TEST(SessionBookGate, ASessionChangeBarIsHeldOnADayWithoutACut) {
@@ -292,8 +292,8 @@ TEST(SessionBookGate, AHeldSymbolAbsentFromTodaysTargetIsReinsertedNotClosedOut)
 }
 
 TEST(SessionBookGate, APositionOpenedFromFlatWithoutASessionStaysFlat) {
-    // L1/L2 of T-4c: ZC and ZM on Mon 2026-03-02 were opened from flat at Friday's close; the
-    // Monday agricultural block only reverted a symbol with a stored row.
+    // ZC and ZM opened from flat at Friday's close on Mon 2026-03-02 must stay flat; a Monday
+    // agricultural block that reverts only a symbol with a stored row would miss them.
     SessionClassifier c;
     weekday_history(c, "ZC.v.0", "2026-03-02", 448.25, 150000);
     const auto t1 = classify_t1(c, {"ZC.v.0"}, ymd_day("2026-03-01"), kNoHolidays);
@@ -353,7 +353,7 @@ TEST(SessionBookGate, StrictRollsAnUnpricedChangeBackToTheStoredRow) {
         << "after the rollback no book change is left without a price";
 }
 
-// LOOP_SPEC section 5.2: a forecast-sign close is its OWN fill to flat, stored ahead of the symbol's
+// A forecast-sign close is its OWN fill to flat, stored ahead of the symbol's
 // move to today's quantity (exec_id and order_id suffixed _SC); every other symbol trades once.
 TEST(SessionBookGate, AForecastSignCloseIsBookedAsItsOwnFillAheadOfTheMove) {
     StrategyBooks prev{{"TREND_FOLLOWING", {{"MBT.v.0", pos("MBT.v.0", 1, 76000)},
@@ -424,10 +424,10 @@ TEST(SessionBookGate, AForecastSignCloseIsBookedAsItsOwnFillAheadOfTheMove) {
 // The JUNK feed and the feed-hole refusal
 // =============================================================================================
 
-// LOOP_SPEC v6.1 section 2.1 (K-01): the runners feed the window's CONSUMED bars. A JUNK bar is
-// withheld on whatever date of the window it sits (the parent withheld only the T-1 bar and fed an
-// older one as history), a thin first print likewise, and an unconfirmed id change the classifier
-// holds is consumed (the change bar, held under D37).
+// The runners feed the window's CONSUMED bars (K-01). A JUNK bar is withheld on whatever date
+// of the window it sits (not only on T-1, with an older one fed as history), a thin first print
+// likewise, and an unconfirmed id change the classifier holds is consumed (the change bar, held
+// by the change-bar hold).
 TEST(SessionBookGate, EveryWithheldBarOfTheWindowIsKeptOutOfTheFeed) {
     SessionClassifier c;
     weekday_history(c, "6L.v.0", "2026-04-15", 0.199, 17000);
@@ -584,7 +584,7 @@ TEST(SessionBookGateSource, TheTwinsCarryTheSameClassifierGateAndStrictBlocks) {
     }
 }
 
-// ---- DATE-frame option (a): the frame of an explicit run date (E2-F42 / M-08) -------------------
+// ---- DATE-frame option (a): the frame of an explicit run date -----------------------------------
 //
 // The futures twins stamp the date they are given through run_date_at_local_midnight, which is
 // their own parse (std::get_time "%Y-%m-%d", then std::mktime). The tests below EXECUTE it with

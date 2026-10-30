@@ -1,4 +1,4 @@
-// The two price columns of the settled day's table (core/report_settled_marks.hpp; HD 2026-10-12):
+// The two price columns of the settled day's table (core/report_settled_marks.hpp):
 // "Previous price" is the price the day was settled FROM and "Latest price" the price it was
 // settled AT, the pair the settle's own P&L arithmetic used, so on a row with a bar
 //   quantity x (latest - previous) x contract size = the row's stored P&L of the day.
@@ -150,7 +150,7 @@ TEST(ReportSettledMarks, TheFilesTwoCellsCarryTheSamePrices) {
     EXPECT_EQ(settled_price_cells(0.0062995, 0.0062925, 7).previous, "$0.0062995");
 }
 
-// T-EMAIL (HD 10-13): a futures row the settle booked at zero carries a footnote number for its kind.
+// A futures row the settle booked at zero carries a footnote number for its kind.
 TEST(ReportSettledMarks, AZeroRowCarriesTheNumberOfItsKindAndNoOtherRowIsNumbered) {
     SettledZeroKinds kinds;
     kinds.roll.insert("MBT.v.0");
@@ -166,7 +166,7 @@ TEST(ReportSettledMarks, AZeroRowCarriesTheNumberOfItsKindAndNoOtherRowIsNumbere
     EXPECT_EQ(settled_zero_note(false, "6L.v.0", 1.0, 0.2, 0.19, 0.0, kinds), 3);
 }
 
-// A price prints four decimals, or its tick's decimals when four cannot show a tick (HD 10-13).
+// A price prints four decimals, or its tick's decimals when four cannot show a tick.
 TEST(ReportSettledMarks, APriceHasFourDecimalsOrItsTicksAndNoBarIsADash) {
     EXPECT_EQ(report_price_places(0.25), 4);
     EXPECT_EQ(report_price_places(0.0000005), 7);

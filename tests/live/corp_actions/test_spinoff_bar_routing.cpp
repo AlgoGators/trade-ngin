@@ -1,11 +1,11 @@
 // tests/live/corp_actions/test_spinoff_bar_routing.cpp
 //
-// E2-F47 / BA-20 -- a spinoff ex-date bar carrying BOTH class-1 columns is ONE event.
+// A spinoff ex-date bar carrying BOTH class-1 columns is ONE event.
 //
 // PostgresDatabase::get_per_bar_corporate_actions emits a bar's `split_factor` and its
-// `div_cash` as two separate CorpActionRows sharing a (ticker, ex_date). The spinoff routing
-// matched each row against the terms key on its own, so a bar with both produced TWO
-// SpinoffEvents: the child was delivered twice and its realized P&L booked twice. Seven real
+// `div_cash` as two separate CorpActionRows sharing a (ticker, ex_date). If the spinoff routing
+// matched each row against the terms key on its own, a bar with both would produce TWO
+// SpinoffEvents: the child delivered twice and its realized P&L booked twice. Seven real
 // bars in this database carry both, and every one of them is a spinoff ex-date:
 //
 //   HLT  2017-01-04   split 0.3333333333   div 24.48          close 58.00
@@ -50,7 +50,7 @@ SpinoffBarColumns bar(double split, double div, double close) {
 }  // namespace
 
 TEST(SpinoffBarRouting, BothColumnsMultiplyIntoOneFactorRatherThanRoutingTwice) {
-    // HLT 2017-01-04, the bar that hits every one of E2-F47, E2-F48 and E2-F49 at once.
+    // HLT 2017-01-04, the bar that exercises every rule of this file at once.
     const auto hlt = bar(0.3333333333, 24.48, 58.0);
     ASSERT_TRUE(hlt.carries_both_columns());
 
@@ -67,7 +67,7 @@ TEST(SpinoffBarRouting, BothColumnsMultiplyIntoOneFactorRatherThanRoutingTwice) 
 
 TEST(SpinoffBarRouting, TheProductIsTheStepTheAdjustedSeriesActuallyTook) {
     // measured = (adjusted_close/close) on the ex-date bar divided by the same ratio on the
-    // bar before it -- read out of equities_data.ohlcv_1d on 2026-09-03. Tolerance 2e-4
+    // bar before it -- read out of equities_data.ohlcv_1d. Tolerance 2e-4
     // relative: adjusted_close is stored rounded to 10 significant digits and the raw closes
     // to the cent, so the two sides cannot agree closer than that.
     struct Case {
@@ -97,9 +97,9 @@ TEST(SpinoffBarRouting, TheProductIsTheStepTheAdjustedSeriesActuallyTook) {
 }
 
 TEST(SpinoffBarRouting, ASingleColumnBarIsUnchangedByTheProductRule) {
-    // FTV 2025-06-30 (split-encoded) and MMM 2024-04-01 (dividend-encoded) are the two shapes
-    // B-4 replayed. Neither carries both columns, and the product must reproduce exactly what
-    // the single-column path computed, or E2-F47's fix would have moved them.
+    // FTV 2025-06-30 (split-encoded) and MMM 2024-04-01 (dividend-encoded) are the two
+    // single-column shapes. Neither carries both columns, and the product must reproduce
+    // exactly what the single-column path computes.
     const auto ftv = bar(1.327, 0.0, 71.60);
     EXPECT_FALSE(ftv.carries_both_columns());
     EXPECT_DOUBLE_EQ(ftv.total_factor(), 1.327);
@@ -107,7 +107,7 @@ TEST(SpinoffBarRouting, ASingleColumnBarIsUnchangedByTheProductRule) {
     const auto mmm = bar(1.0, 17.3875, 94.02);
     EXPECT_FALSE(mmm.carries_both_columns());
     EXPECT_DOUBLE_EQ(mmm.total_factor(), 1.0 + 17.3875 / 94.02);
-    // The number B-4's MMM replay produced and hand-checked, to the digit it logged.
+    // The hand-checked MMM figure, to the digit.
     EXPECT_NEAR(mmm.total_factor(), 1.1849340565837057, 1e-12);
 }
 

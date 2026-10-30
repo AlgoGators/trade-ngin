@@ -1,5 +1,5 @@
 // Coverage for live_price_manager.cpp. Nothing here touches the database,
-// because after C-04 the class does not have one: every price it serves arrives
+// because the class does not have one: every price it serves arrives
 // through update_from_bars and is read back through get_*_price / clear_caches.
 
 #include <gtest/gtest.h>
@@ -34,19 +34,17 @@ Bar make_bar(const std::string& symbol, Timestamp t, double close) {
 
 class LivePriceManagerTest : public ::testing::Test {};
 
-// ===== C-04: the placeholder API is gone, and must stay gone =====
+// ===== The placeholder price API must not exist =====
 //
-// Four methods were removed here, all unreachable from any runner:
-//   load_close_prices        -- returned an empty map, forever
-//   get_settlement_price     -- returned DATA_NOT_FOUND, forever
-//   load_previous_day_prices -- wrapped the first, so it OVERWROTE the T-1 cache
+// Four methods are pinned absent:
+//   load_close_prices        -- would return an empty map, forever
+//   get_settlement_price     -- would return DATA_NOT_FOUND, forever
+//   load_previous_day_prices -- would wrap the first, so it OVERWRITES the T-1 cache
 //   load_two_days_ago_prices -- likewise for T-2
 //
-// The last two are why this was worth removing rather than leaving alone. They
-// look like the way to load T-1 and T-2 prices. Calling either would have wiped
-// the cache update_from_bars had just filled, and the runner would then have
-// priced a live book off an empty price map. Nothing called them, which is the
-// only reason that never happened.
+// The last two are the dangerous ones. They look like the way to load T-1 and T-2
+// prices; calling either would wipe the cache update_from_bars had just filled, and
+// the runner would then price a live book off an empty price map.
 //
 // The pins below are compile-time on purpose: the failure being prevented is one
 // of these names existing again. If any comes back, this file stops compiling
@@ -117,22 +115,20 @@ TEST_F(LivePriceManagerTest, UpdateFromBarsLastBarNotFromYesterdaySkipsT1) {
     EXPECT_TRUE(mgr.get_latest_price("ZC").is_ok());
 }
 
-// ===== E2-F14: caller-resolved T-1 date =====
+// ===== Caller-resolved T-1 date =====
 //
 // Omitted, T-1 is `reference_date - 24h` matched against the LAST bar only. That suits
 // FUTURES, whose runners resolve the book they are finalizing with the same arithmetic
-// (live_portfolio.cpp:1047, live_portfolio_conservative.cpp:1061) -- book and prices name
+// (the same `now - 24h` in both futures runners) -- book and prices name
 // the same day by construction.
 //
 // EQUITIES resolve the book with find_previous_trading_day(), which is calendar-aware. On a
 // Sunday or Monday run that returns FRIDAY while `now - 24h` asks for Sat/Sun, and
-// equities_data.ohlcv_1d has no weekend rows. The already-finalized Friday was then
+// equities_data.ohlcv_1d has no weekend rows. The already-finalized Friday would then be
 // re-finalized against an empty price map and its position rows overwritten with 0/0 by a
-// store_positions that runs outside the gate protecting live_results.
-//
-// Measured on the 2026-07-24..08-04 weekend-inclusive replay: Sat 08-01 finalized Friday at
-// $864.759444; Sun 08-02 and Mon 08-03 each re-zeroed it. L5 residual -864.7594 on 07-31,
-// -14.6574 on 07-24, 0.0000 on every other finalized day.
+// store_positions that runs outside the gate protecting live_results: on a weekend-inclusive
+// replay (2026-07-24..08-04) Sat 08-01 finalized Friday at $864.759444 and Sun 08-02 and
+// Mon 08-03 would each re-zero it.
 
 namespace {
 // Exact UTC midnights, so floor<days> boundaries are unambiguous.

@@ -1,11 +1,11 @@
 // tests/core/test_report_over_limit.cpp
 //
-// T-8D R20 as LOOP_SPEC v6.2 restates it: a futures book's daily report prints the stored book's
+// A futures book's daily report prints the stored book's
 // gross and net leverage on the sizing capital beside the limits the overlay ran with (the gross
 // and net leverage limits) and the per-name cap, and the day's marks from risk_detail
 // (over_limit_after_rounding, over_limit_by_hold, CAP). A day with no mark says so; a day whose
 // row carries no risk_detail says it has no reading and prints no figure. The two leverage lines
-// the report already had are on the account value and now say so. The equity report is as it was.
+// on the account value say so. The equity report runs no overlay and prints none of this.
 
 #include <gtest/gtest.h>
 
@@ -222,7 +222,7 @@ TEST(ReportOverLimit, ARowWithNoRiskDetailSaysItHasNoReadingAndPrintsNoFigure) {
     EXPECT_EQ(expected.find("risk_detail"), npos) << "a column name in a line a reader sees";
 }
 
-// The lead, 2026-10-12: the text a reader of the report sees is plain words. No line of the
+// The text a reader of the report sees is plain words. No line of the
 // over-limit block, in any of its forms, carries a symbol of the specification.
 TEST(ReportOverLimit, NoLineCarriesASymbolOfTheSpecification) {
     OnePassDay marked = sized_day();
@@ -264,7 +264,7 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
         StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, metrics,
         StrategyExecutionsMap{}, "2026-04-24", "CONSERVATIVE_PORTFOLIO", true, {}, nullptr,
         StrategyPositionsMap{}, {}, {}, {}, "LIVE_TREND_FOLLOWING", report);
-    // HD 10-13: the email shows leverage on the account value only, with no denominator text, no
+    // The email shows leverage on the account value only, with no denominator text, no
     // limits and no over-limit line; those are in the account detail file.
     EXPECT_NE(body.find("<div class=\"metric\"><strong>Gross Leverage:</strong> <span>1.60x</span></div>\n"
                         "<div class=\"metric\"><strong>Net Leverage:</strong> <span>0.41x</span></div>\n"),
@@ -285,7 +285,7 @@ TEST(ReportOverLimit, TheFuturesReportNamesBothDenominatorsAndCarriesTheLines) {
     EXPECT_EQ(by_name.at("current portfolio value"), "497239.3978");
 }
 
-// The equity report (the other overload) runs no overlay: its leverage section is as it was.
+// The equity report (the other overload) runs no overlay: its leverage section has no over-limit lines.
 TEST(ReportOverLimit, TheEquityReportIsUnchanged) {
     const std::map<std::string, double> metrics = {{"Gross Leverage", 0.8123},
                                                    {"Net Leverage", 0.1042}};

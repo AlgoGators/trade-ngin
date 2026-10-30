@@ -1,25 +1,21 @@
 // tests/live/test_live_historical_metrics_columns.cpp
 //
-// E2-F33 -- the equity runner never wrote the since-inception block.
+// The equity runner writes the since-inception block.
 //
-// Fifteen columns on trading.live_results were NULL on 22/22 rows of this book and on
-// 126/126 of the drift audit's, because live_equity_mean_reversion.cpp never called
-// LiveHistoricalMetricsCalculator at all while both futures runners have written the block
-// for Day T-1 and for day T since they were written.
+// Fifteen columns on trading.live_results come from LiveHistoricalMetricsCalculator, for
+// Day T-1 and for day T, on both futures runners and on live_equity_mean_reversion.cpp (a
+// runner that does not call it leaves them NULL on every row).
 //
-// The wiring itself is only provable by a replay (protocol §7). What IS unit-provable, and
+// The wiring itself is only provable by a replay. What IS unit-provable, and
 // what these tests pin, is the CONTRACT the two write sites share: exactly which columns
 // constitute the block, and that both sites take them from one definition rather than from
 // two hand-written maps that can drift.
 //
-// D3 (2026-09-03) -- `volatility` joined the block. It was held out when E2-F33 landed
-// because the equity runner wrote `portfolio_var x 100` there, the ex-ante instrument-mix
-// sigma, and filling in NULLs must not move a compared column. The lead then ruled that one
-// column may not mean two things on two books: both futures runners store the REALISED
-// annualised return volatility in `volatility` and keep the ex-ante sigma in `portfolio_var`,
-// so equities do the same. The tests below now pin the OPPOSITE of what they pinned before --
-// that the figure reaching the column is the calculator's, not the risk engine's -- and the
-// last one does it on the real 2026-04-20 series.
+// `volatility` is part of the block. One column may not mean two things on two books: both
+// futures runners store the REALISED annualised return volatility in `volatility` and keep the
+// ex-ante sigma in `portfolio_var`, so equities do the same (not `portfolio_var x 100`, the
+// ex-ante instrument-mix sigma). The tests below pin that the figure reaching the column is the
+// calculator's, not the risk engine's, and the last one does it on the real 2026-04-20 series.
 
 #include <gtest/gtest.h>
 
@@ -138,10 +134,8 @@ TEST(HistoricalMetricsColumns, VolatilityIsTheCalculatorsFigureAndNotTheRiskEngi
     EXPECT_EQ(historical_metrics_int_columns(m).count("flat_days"), 0u);
 }
 
-// The real 2026-04-20 row of EQUITY_MR_PORTFOLIO, from
-// reports/LEAD_B5A_METRICS_DECISIONS.md: 20 stored daily returns in percent, five of them the
-// zeros of the pre-trading carry rows. This is the fixture the decision was taken on, so it is
-// the fixture the column is pinned against.
+// The real 2026-04-20 row of EQUITY_MR_PORTFOLIO: 20 stored daily returns in percent, five of
+// them the zeros of the pre-trading carry rows. This is the fixture the column is pinned against.
 TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotTwentyTwo) {
     const std::vector<double> returns_pct = {
         0.0,       0.0,       0.0,       0.0,       0.0,       -0.092948, 0.063900,
@@ -149,7 +143,7 @@ TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotT
         -0.001935, 0.0,       0.075430,  0.0,       0.0,       -0.044904};
     ASSERT_EQ(returns_pct.size(), 20u);
 
-    // The ex-ante sigma the column used to hold.
+    // The ex-ante sigma the risk engine reports (portfolio_var x 100).
     const double ex_ante_portfolio_var_x100 = 21.8934;
 
     LiveHistoricalMetricsCalculator calc;
@@ -205,7 +199,7 @@ TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours
     EXPECT_EQ(i.at("total_days"), 9);
 }
 
-// The series behind the block, hand-computed end to end (B-6's "unit on the metrics from a
+// The series behind the block, hand-computed end to end (a unit test on the metrics from a
 // known series"). Every number below is derived on paper from the inputs, not read off the
 // implementation, so a change to the definitions has to be argued rather than absorbed.
 TEST(HistoricalMetricsColumns, KnownSeriesProducesHandComputedColumns) {

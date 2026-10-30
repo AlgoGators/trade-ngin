@@ -28,7 +28,6 @@ using namespace trade_ngin;
 // an uncovered date reads identically to "the market was open", so a replay
 // of an uncovered year silently treats every closure as a trading day. These
 // pin the distinction, and the generator rules behind the shipped file.
-// (was: test_holiday_calendar_coverage.cpp)
 // ──────────────────────────────────────────────────────────────────────────
 
 // The calendar answers for a finite set of years. Before this was modelled,
@@ -41,7 +40,7 @@ using namespace trade_ngin;
 
 namespace {
 
-// Writes a throwaway calendar so coverage assertions do not depend on how many
+// Writes a temporary calendar so coverage assertions do not depend on how many
 // years the shipped file happens to span.
 class TempCalendar {
 public:
@@ -113,15 +112,13 @@ TEST(HolidayCalendarCoverage, MalformedDatesDoNotClaimCoverage) {
     EXPECT_FALSE(checker.covers_date("not-a-date"));
 }
 
-// BA-1 / C-2 D1: a load that throws PART WAY THROUGH must publish nothing.
+// A load that throws PART WAY THROUGH must publish nothing.
 //
-// The year key was inserted before that year's entries parsed, and the outer
-// catch returned false without clearing, so a calendar that failed halfway was
-// left marked "covered" with its closures missing. That is worse than an empty
-// calendar: covers_date returns TRUE, the runner's fail-closed guard passes,
-// is_holiday returns false with no warning (the year IS covered), and
-// find_previous_trading_day walks onto a closed day. The guard only ever fired
-// when the load failed TOTALLY.
+// A calendar that failed halfway and stayed marked "covered" with its closures
+// missing would be worse than an empty calendar: covers_date would return TRUE, the
+// runner's fail-closed guard would pass, is_holiday would return false with no
+// warning (the year IS covered), and find_previous_trading_day would walk onto a
+// closed day.
 TEST(HolidayCalendarCoverage, PartialLoadPublishesNothingRatherThanClaimingCoverage) {
     // 2025 parses cleanly; 2026's first entry has no "type", so the parse throws
     // after 2026 has already been inserted into the covered set -- the shape a
@@ -228,14 +225,7 @@ TEST(HolidayCalendarCoverage, ShippedCalendarCarriesAdHocClosures) {
 // Bounded at 14 days: enough for Christmas-week stacks and 9/11-style
 // multi-day exchange closures, and it fails closed when the bound is
 // exhausted rather than returning a closed day as if it traded.
-// (was: test_holiday_lookback.cpp)
 // ──────────────────────────────────────────────────────────────────────────
-
-// Regression test for audit finding §1.9: holiday lookback was bounded at 5
-// days, which is borderline for Christmas-week stacks and outright wrong for
-// 9/11-style multi-day exchange closures. Refactored into
-// HolidayChecker::find_previous_trading_day with a 14-day bound and explicit
-// fail-closed signaling when the bound is exhausted.
 
 namespace {
 
@@ -321,9 +311,9 @@ TEST_F(HolidayLookbackTest, WeekendSkippedToFriday) {
     EXPECT_EQ(date_string(*prev), "2024-03-01");  // Friday
 }
 
-// 6 consecutive holidays before a Tuesday — pre-fix this would have silently
-// returned a stale date because the 5-bound exhausted; post-fix the 14-bound
-// walks past and returns the day before the stack.
+// 6 consecutive holidays before a Tuesday: a 5-day bound would exhaust and
+// silently return a stale date; the 14-day bound walks past and returns the day
+// before the stack.
 TEST_F(HolidayLookbackTest, SixConsecutiveClosuresWalkBackCorrectly) {
     write_holidays_json(holidays_path_,
                         {"2024-03-04", "2024-03-05", "2024-03-06",
@@ -374,8 +364,8 @@ TEST_F(HolidayLookbackTest, OldBoundOfFiveExhaustsOnSixDayStack) {
 
     // Start Tuesday 2024-03-12. With bound 5 we walk back 5 days
     // (03-11, 03-10, 03-09, 03-08, 03-07) -- all non-trading -- and exhaust
-    // before finding 03-01. The old code silently used 03-07; the new API
-    // surfaces this via nullopt.
+    // before finding 03-01, so the bound surfaces as nullopt rather than a closed
+    // day (03-07) handed back as if it traded.
     auto start = parse_date("2024-03-12");
     auto prev = checker.find_previous_trading_day(start, /*max_lookback_days=*/5);
     EXPECT_FALSE(prev.has_value())
@@ -387,10 +377,9 @@ TEST_F(HolidayLookbackTest, OldBoundOfFiveExhaustsOnSixDayStack) {
 // Fallback chain: TRADE_NGIN_HOLIDAYS_JSON env var, then the dev/source
 // layout, then a deploy bundle beside the binary, then /etc. If none exist
 // it returns the source-layout path so the load error names the likely spot.
-// (was: test_holiday_path_resolution.cpp)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Phase 6 §6a -- pins the holidays.json path-resolution fallback chain:
+// Pins the holidays.json path-resolution fallback chain:
 //   1. TRADE_NGIN_HOLIDAYS_JSON env var (returned as-is, even if missing)
 //   2. ./include/trade_ngin/core/holidays.json (dev/source layout)
 //   3. ./holidays.json (deploy bundle next to the binary)
@@ -471,21 +460,19 @@ TEST_F(HolidayPathResolutionTest, ConstructorAcceptsResolvedPath) {
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time frame -- the candidate must be tested in the frame it is returned in.
-// (E2-F45, 2026-09-03.)
 //
-// find_previous_trading_day used to test each candidate with safe_localtime and
-// return the raw candidate, which every caller then formatted with gmtime. The
-// two frames only agree when the candidate's local and UTC calendar dates are
-// the same day. Since 95679ea2 the equity runner's run date is UTC MIDNIGHT, so
-// on any negative-offset host the candidate's local date is the day BEFORE its
-// UTC date: the walk validated day D-1 and handed back day D. Measured on the
-// 2026-06-15 replay (America/New_York): Monday resolved its previous trading day
-// to Saturday 2026-06-13, so no T-1 close existed, the Day T-1 finalization was
-// refused, and every day-T row was marked from the widened fallback instead.
+// Every caller formats the returned candidate with gmtime, so the candidate is
+// tested in UTC as well. Tested in local time (safe_localtime), the two frames
+// agree only when the candidate's local and UTC calendar dates are the same day.
+// The equity runner's run date is UTC MIDNIGHT, so on any negative-offset host the
+// candidate's local date is the day BEFORE its UTC date: the walk would validate
+// day D-1 and hand back day D. On a 2026-06-15 run (America/New_York) Monday would
+// resolve its previous trading day to Saturday 2026-06-13, with no T-1 close to
+// finalize.
 //
 // These pin BOTH frames on purpose. UTC midnight is what the equity runner
-// passes; local midnight is what live_portfolio.cpp:60 and
-// live_portfolio_conservative.cpp:61 still pass (std::mktime, E2-F42). Both must
+// passes; local midnight (std::mktime) is what the two futures runners,
+// live_portfolio.cpp and live_portfolio_conservative.cpp, pass. Both must
 // resolve to the same calendar date, or fixing the equity path would move the
 // futures path.
 // ──────────────────────────────────────────────────────────────────────────
@@ -566,8 +553,8 @@ TEST_F(PreviousTradingDayFrameTest, CalendarCoversTheDatesTheseTestsRestOn) {
     EXPECT_TRUE(checker.is_holiday("2026-04-03")) << "Good Friday 2026";
 }
 
-// The regression. A UTC-midnight run date -- what the equity runner has passed
-// since 95679ea2 -- must resolve to the real previous trading day, not to the
+// The regression. A UTC-midnight run date -- what the equity runner passes --
+// must resolve to the real previous trading day, not to the
 // weekend or holiday one calendar day later.
 TEST_F(PreviousTradingDayFrameTest, UtcMidnightRunDateResolvesTheTrueTradingDay) {
     HolidayChecker checker(path_);
@@ -590,8 +577,8 @@ TEST_F(PreviousTradingDayFrameTest, UtcMidnightRunDateResolvesTheTrueTradingDay)
     }
 }
 
-// Futures preservation. The two futures runners still parse their CLI date with
-// std::mktime, i.e. local midnight (E2-F42). Testing the candidate in UTC must
+// Futures preservation. The two futures runners parse their CLI date with
+// std::mktime, i.e. local midnight. Testing the candidate in UTC must
 // not move their answer: on this zone a local-midnight date lands at 04:00/05:00Z
 // on the SAME calendar day, so the walk sees the same days either way.
 TEST_F(PreviousTradingDayFrameTest, LocalMidnightRunDateResolvesTheSameCalendarDate) {

@@ -1,11 +1,11 @@
 // tests/core/test_report_rolls.cpp
 //
-// Rolls step 4 (R4b; rulings 10 and 18): the report's roll pieces with per_contract_rolls on
+// The report's roll pieces with per_contract_rolls on
 // (core/report_rolls.hpp), and the outlook the runner reads for a held root (report_roll_view.hpp):
 //   * the roll line reproduces the worked example's (silver, December to March, 2025-11-25) to the
 //     character, and words a short, a backwardated gap and a roll whose names were not found;
-//   * the Rollover Warning box is the 2026-10-13 design (the red box, "Currently holding X -> Switch to
-//     Y") with the latest run date and the deadline, lists only held contracts the rule rolls whose
+//   * the Rollover Warning box (the red box, "Currently holding X -> Switch to Y") carries the
+//     latest run date and the deadline, lists only held contracts the rule rolls whose
 //     window is open, and is absent otherwise;
 //   * the outlook of a built series gives the held contract, the window, the last actionable bar's run
 //     date, the deadline and the cycle front (the GC fixture of test_contract_rolls_api.cpp);
@@ -68,7 +68,7 @@ TEST(ReportRolls, TheRollLineIsTheWorkedExamples) {
 
 TEST(ReportRolls, TheRollLineWordsAShortABackwardatedGapAndUnknownNames) {
     // Short 2 contracts of a Treasury, the new contract cheaper by 0.5: the difference prints without a
-    // sign (lead, R4b fix round 1: it is not profit or loss); the stored values keep theirs.
+    // sign (it is not profit or loss); the stored values keep theirs.
     const auto leg = closing_leg(2343.75, -0.5, 1000.0, 5.0);
     const ReportRollNames names{"10-Year-T-Note", "June", "September", report_tick_places(0.015625)};
     EXPECT_EQ(report_roll_line(names, "ZN.v.0", leg, 10.0),
@@ -82,8 +82,8 @@ TEST(ReportRolls, TheRollLineWordsAShortABackwardatedGapAndUnknownNames) {
     EXPECT_EQ(report_roll_line(ReportRollNames{"Natural Gas Futures", "October", "November", 3}, "NG.v.0", ng, 31.69),
               "Natural Gas Futures, October to November: market move booked -$2,040; contract price difference "
               "0.142 ($1,420, not profit or loss); roll cost $31.69.");
-    // R6: a leg with no split gets no line (no root is on the vendor's series any more: the cost-only
-    // line is gone); a micro's roll is worded like any other.
+    // A leg with no split gets no line (no root is on the vendor's series, so there is no
+    // cost-only line); a micro's roll is worded like any other.
     ExecutionReport no_split = leg;
     no_split.roll_bar_move.reset();
     no_split.roll_gap_points.reset();
@@ -103,7 +103,7 @@ TEST(ReportRolls, TheRolloverWarningIsTheOldBoxWithTheRunDateAndTheDeadline) {
     rolls.per_contract_rolls = true;
     rolls.outlook["SI"] = outlook("SI", "SIZ5", true);
     rolls.outlook["GC"] = outlook("GC", "GCZ5", false);           // window not open
-    auto micro = outlook("MES", "MESZ5", true);  // R6: a micro's line is every root's
+    auto micro = outlook("MES", "MESZ5", true);  // a micro's line is every root's
     micro.roll_by = "2025-12-18";
     micro.deadline = "2025-12-19";
     micro.first_notice = false;
@@ -295,7 +295,7 @@ TEST(ReportRolls, TheViewIsBuiltFromItsSources) {
     EXPECT_TRUE(empty.names.empty());
 }
 
-// S6 (R4B audit A): the cells print the IB symbol, the month code and the year's last digit.
+// The cells print the IB symbol, the month code and the year's last digit.
 TEST(ReportRolls, TheContractsPrintInTheIbFormat) {
     EXPECT_EQ(report_ib_contract("JPY", "6J", "6JZ5"), "JPYZ5");
     EXPECT_EQ(report_ib_contract("NG", "NG", "NGV26"), "NGV6");
@@ -304,10 +304,10 @@ TEST(ReportRolls, TheContractsPrintInTheIbFormat) {
     EXPECT_EQ(report_ib_contract("MES", "ES", "ESZ5"), "MESZ5") << "a micro's full-size contract, the micro's month";
 }
 
-// R6 (plan 10b point 5, ruling 22): the micros' outlook is the rule's, as every root's. Before the vendor's
+// The micros' outlook is the rule's, as every root's. Before the vendor's
 // 2026-02-22 change MES's series holds the ES contract; the cell and the box print it as the micro of that
-// month ("MESZ5"), with the run date and the deadline like every root (the no-date line is gone). The book's
-// id names a full-size contract too (M-1: the old one until its legs are booked). The window opens on the
+// month ("MESZ5"), with the run date and the deadline like every root. The book's
+// id names a full-size contract too (the old one until its legs are booked). The window opens on the
 // fifth CME trading day before the last trading day and closes after the last actionable bar's roll. Each
 // roll's months come from its two contracts, the alias roll's (ESH6 to MESH6) March to March.
 TEST(ReportRolls, TheMicrosOutlookIsTheRulesAndPrintsTheFullSizeContractAsTheMicros) {
@@ -393,7 +393,7 @@ TEST(ReportRolls, TheMicrosOutlookIsTheRulesAndPrintsTheFullSizeContractAsTheMic
     EXPECT_EQ(rolled.names.at("EXEC_MES.v.0_20260223_RC").name, "Micro E-mini S&P500 Index");
 }
 
-// M-1, a ruled root: the rule has rolled GC on the settled bar (a vendor switch the next bar confirms) and
+// A ruled root: the rule has rolled GC on the settled bar (a vendor switch the next bar confirms) and
 // the book still holds the old contract: the cell names the old one and the box has no line for it yet.
 TEST(ReportRolls, ARuledRootPendingItsLegsShowsTheOldContractAndNoLine) {
     std::vector<ContractBar> rows;
@@ -437,7 +437,7 @@ TEST(ReportRolls, ARuledRootPendingItsLegsShowsTheOldContractAndNoLine) {
     EXPECT_FALSE(o.in_window) << "no line while the book and the rule differ";
 }
 
-// S7 (R4B audit A): m06, "first notice" only when the notice day is the deadline; m10, no roll footnote
+// "First notice" is printed only when the notice day is the deadline; no roll footnote
 // on a row with no quantity (nor on an equity row, nor on a symbol whose bar was no roll bar).
 TEST(ReportRolls, FirstNoticeOnlyWhenTheNoticeDayIsTheDeadlineAndNoFootnoteOnAnEmptyRow) {
     ContractDates dates;

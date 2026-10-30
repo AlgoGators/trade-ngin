@@ -1,8 +1,8 @@
 // tests/live/corp_actions/test_spinoff_receipt.cpp
 //
-// E2-F31 -- a spinoff must deliver the CHILD, not mangle the parent.
+// A spinoff must deliver the CHILD, not mangle the parent.
 //
-// Today the parent is silently wrong in three different ways depending on how the vendor
+// Without the spinoff path the parent is silently wrong in three different ways depending on how the vendor
 // encoded the distribution:
 //
 //   split_factor   FTV 2025-06-30 = 1.327   -> the applier reads a SPLIT and 100 FTV becomes
@@ -11,11 +11,11 @@
 //                                              $1,738.75 of income that never arrived, and
 //                                              cuts the basis by the same ratio.
 //   nothing        LEN 2025-02-07           -> the bar carries split_factor 1 and div_cash 0,
-//                                              so nothing at all happens (V4-1 / E2-F41).
+//                                              so nothing at all happens.
 //
 // In every one of the three the CHILD -- the entire point of the event -- is never created.
 //
-// The ratio is NOT inferred from the magnitude of the step (E2-F9's provenance rule). It is
+// The ratio is NOT inferred from the magnitude of the step (the provenance rule). It is
 // the `value` on the `spinoff` row in equities_data.corporate_action, verified 5/5 against
 // the real distributions: GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5,
 // MMM/SOLV 0.25.
@@ -44,9 +44,9 @@ Position held(const std::string& symbol, double qty, double avg, double realized
     return p;
 }
 
-// E2-F49: children are a VECTOR now. This helper keeps the single-child shape the E4 audit
-// specified, so every number below is still the one B-4 hand-checked -- the relative-FMV
-// allocation reduces to B(1-1/F)/r exactly when there is one child.
+// Children are a VECTOR. This helper keeps the single-child shape, so every number below is
+// the hand-checked one -- the relative-FMV allocation reduces to B(1-1/F)/r exactly when
+// there is one child.
 SpinoffEvent ftv_ral(double ratio = 0.33333, double first_close = 53.0) {
     SpinoffEvent ev;
     ev.parent = "FTV";
@@ -59,7 +59,7 @@ SpinoffEvent ftv_ral(double ratio = 0.33333, double first_close = 53.0) {
 }  // namespace
 
 TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChange) {
-    // The shape the E4 audit specified: 100 FTV @ 70, F = 1.327, r = 0.33333, child's first
+    // The single-child shape: 100 FTV @ 70, F = 1.327, r = 0.33333, child's first
     // close 53. Hand-computed, and every number below is checked against the arithmetic
     // rather than against whatever the implementation happens to produce.
     const double B = 70.0, q = 100.0, F = 1.327, r = 0.33333, c_child = 53.0;
@@ -79,7 +79,7 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
     // to 1e-9.
     constexpr double kDecimalQuantum = 1e-7;
 
-    // HOLD -- the child is kept, which is what the audit's example describes.
+    // HOLD -- the child is kept.
     {
         std::unordered_map<std::string, Position> positions;
         positions["FTV"] = held("FTV", q, B);
@@ -118,7 +118,7 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
     }
 
     // LIQUIDATE_AT_FIRST_CLOSE -- the DEFAULT, because RAL is not in the strategy universe
-    // and a held child with no bars is an F-4 orphan: "Missing T-1 price for symbol with a
+    // and a held child with no bars is an orphan: "Missing T-1 price for symbol with a
     // non-zero position", rolled back forever.
     {
         std::unordered_map<std::string, Position> positions;

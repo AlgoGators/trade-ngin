@@ -1,22 +1,11 @@
-// C-5 §9-A1 -- the E2-F41 announcement must be asserted, not assumed.
+// The class-1 cross-check's announcement must be asserted, not assumed.
 //
-// THE TEST DEFECT: 19d44c45 added the class-1 cross-check WARN to the runner and claimed
-// test_corp_action_query_bounds_db.cpp as its pin. Executed revert (C-5 L-EVIDENCE Tier C):
-// with apps/strategies/live_equity_mean_reversion.cpp reverted to 19d44c45^, all NINE tests
-// in that suite still PASS:
+// test_corp_action_query_bounds_db.cpp measures the DATABASE -- that the silent-row class
+// exists and is bounded. That is a real and useful tripwire, but it is not a pin on the
+// runner's announcement: it holds whether or not the runner says anything.
 //
-//     [==========] 9 tests from CorpActionQueryBoundsDbTest ran. (79 s)
-//     [  PASSED  ] 9 tests.
-//
-// The suite measures the DATABASE -- that the silent-row class exists and is bounded. That
-// is a real and useful tripwire, but it is not a pin on the runner's announcement: it holds
-// whether or not the runner says anything. B-5b's claimed red was a TEST-side revert (the
-// old two-symbol allowlist against the widened scan), which proves the tripwire's reach over
-// the universe, not the fix.
-//
-// The announcement itself was a WARN emitted inside a runner loop, which no unit test can
-// observe. It is now a returned value -- class1_rows_the_bars_do_not_carry() -- so what the
-// run announces is a function of its inputs and can be asserted.
+// The announcement is a returned value -- class1_rows_the_bars_do_not_carry() -- so what
+// the run announces is a function of its inputs and can be asserted.
 
 #include <gtest/gtest.h>
 

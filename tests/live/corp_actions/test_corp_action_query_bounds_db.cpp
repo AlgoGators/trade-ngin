@@ -1,19 +1,19 @@
 // tests/live/corp_actions/test_corp_action_query_bounds_db.cpp
 //
-// E3 G6-4 / G6-5 / V4-1 -- the three things that can go wrong at the BOUNDARY of
+// The three things that can go wrong at the BOUNDARY of
 // equities_data.corporate_action, all of which need the real table to show anything:
 //
-//   G6-4  `date` is TEXT. The reader used `date::date BETWEEN $3::date AND $4::date`,
-//         which casts every row in the scan and dies on the first value that is not a
-//         parseable date. ISO-8601 strings sort lexicographically, so a plain text
-//         comparison selects exactly the same rows with no cast at all -- and it is
-//         index-native on (ticker, date).
-//   G6-5  Future-dated rows exist (SBDS 2027-07-18). The upper bound is what keeps them
-//         out of a 2026 run; nothing pinned that it was actually applied.
-//   V4-1  A class-1 row can exist in this table with NO corresponding move on the bar.
-//         Class-1 effects are sourced PER BAR, so the applier is a silent no-op on such
-//         a row: LEN's 2025-02-07 Millrose spinoff is in corporate_action with ratio 0.5
-//         while the LEN bar that day carries split_factor 1 and div_cash 0.
+//   * `date` is TEXT. A reader that cast it (`date::date BETWEEN $3::date AND $4::date`)
+//     would cast every row in the scan and die on the first value that is not a
+//     parseable date. ISO-8601 strings sort lexicographically, so a plain text
+//     comparison selects exactly the same rows with no cast at all -- and it is
+//     index-native on (ticker, date).
+//   * Future-dated rows exist (SBDS 2027-07-18). The upper bound is what keeps them
+//     out of a 2026 run.
+//   * A class-1 row can exist in this table with NO corresponding move on the bar.
+//     Class-1 effects are sourced PER BAR, so the applier is a silent no-op on such
+//     a row: LEN's 2025-02-07 Millrose spinoff is in corporate_action with ratio 0.5
+//     while the LEN bar that day carries split_factor 1 and div_cash 0.
 //
 // Read-only. Nothing here writes.
 //
@@ -91,7 +91,7 @@ protected:
 };
 
 // ──────────────────────────────────────────────────────────────────────────
-// G6-4
+// The text comparison on `date`.
 // ──────────────────────────────────────────────────────────────────────────
 
 // The precondition the text comparison rests on. Every value in the column is a
@@ -176,12 +176,12 @@ TEST_F(CorpActionQueryBoundsDbTest, TextComparisonSelectsTheSameSetACastWould) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// G6-5 -- the UPPER bound is what keeps future-dated rows out of a run.
+// The UPPER bound is what keeps future-dated rows out of a run.
 //
 // equities_data.corporate_action carries rows dated in the future: SBDS has a
 // tickerchangeto/from pair on 2027-07-18 (contra DTCB), placeholders the vendor
 // emits ahead of an announced change. Every reader passes the run's as-of date
-// as the end bound, so they are invisible today. Nothing pinned that. If the
+// as the end bound, so a run never sees them. If the
 // end bound is ever widened -- a "load everything, filter later" refactor, a
 // bulk backfill -- a 2026 run would act on a 2027 rename.
 // ──────────────────────────────────────────────────────────────────────────
@@ -246,7 +246,7 @@ TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// V4-1 -- the LEN/Millrose hole.
+// The LEN/Millrose hole.
 //
 // Class-1 (price-restating) effects are sourced PER BAR: the applier reads
 // ohlcv_1d.split_factor and ohlcv_1d.div_cash via get_per_bar_corporate_actions,
@@ -261,7 +261,7 @@ TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
 //
 // Two distinct shapes come out of the same join and must not be conflated:
 //
-//   (a) a bar EXISTS on the ex-date and is flat  -- V4-1. Nothing downstream can
+//   (a) a bar EXISTS on the ex-date and is flat. Nothing downstream can
 //       ever notice, because the applier only sees bars and this bar says
 //       "nothing happened". This is the failing assertion below.
 //   (b) NO bar exists on the ex-date -- the applier has no input and the runner
@@ -284,11 +284,10 @@ constexpr const char* kBarEraFloor = "2020-01-01";
 // is the point of the test: a corporate action nothing applies is tolerable only
 // once somebody has looked at it and written down why.
 //
-// B-5b widened the scan from the configured book to EVERY symbol with bars since
-// 2020-01-01 (see tripwire_universe()), which is what E2-F41 asked for: the
-// ten-symbol book hid the whole class. Measured 2026-09-04, universe-wide, with a
-// bar present on the ex-date: 87 dividends, 5 `spinoff` + 5 `spinoffdividend`,
-// 1 adrratiosplit, 1 split.
+// The scan covers EVERY symbol with bars since 2020-01-01 (see tripwire_universe()),
+// not the configured book: the ten-symbol book hides the whole class. Universe-wide,
+// with a bar present on the ex-date, the reference copy holds 87 dividends,
+// 5 `spinoff` + 5 `spinoffdividend`, 1 adrratiosplit, 1 split.
 //
 // The QUANTITY-CHANGING and DISTRIBUTION-BEARING shapes are enumerated here, one
 // row each, because those are the ones a silent no-op cannot be recovered from --
@@ -300,7 +299,7 @@ const std::set<std::vector<std::string>>& allowlisted_silent_class1() {
     static const std::set<std::vector<std::string>> a = {
         // The Millrose (MRP) spin-off. Tiingo encoded it in neither split_factor
         // nor div_cash on the LEN bar, so the class-1 applier cannot see it at
-        // all. E2-F31 receives spinoff children now, but it is driven by the
+        // all. The spinoff routing receives children, but it is driven by the
         // PER-BAR row: a bar with no move produces no row, so the routing never
         // fires and this stays silent. LEN is not in the traded universe.
         // Both vendor labels for the one event are listed -- corporate_action
@@ -310,8 +309,8 @@ const std::set<std::vector<std::string>>& allowlisted_silent_class1() {
         {"LEN", "2025-02-07", "spinoffdividend"},
 
         // The four other spinoffs of the same shape, none in any equity config.
-        // Each is a real distribution the bar does not carry, so E2-F31 cannot
-        // see them either; each is now announced at run time by the E2-F41
+        // Each is a real distribution the bar does not carry, so the spinoff routing
+        // cannot see them either; each is announced at run time by the class-1
         // cross-check if the symbol is ever held.
         {"TT", "2020-03-02", "spinoff"},           // Trane -> Ingersoll Rand, 0.8824
         {"TT", "2020-03-02", "spinoffdividend"},   // ... 29.8162 the same day
@@ -341,15 +340,15 @@ const std::set<std::vector<std::string>>& allowlisted_silent_class1() {
 // them universe-wide since 2020. They are still unapplied basis restatements, so
 // the count is pinned -- it may not grow without somebody looking -- but they are
 // not enumerated. A dividend cannot change a share count, and the equity book's
-// own dividends are all visible to the per-bar applier (the E2-F41 run-time
+// own dividends are all visible to the per-bar applier (the run-time class-1
 // cross-check reports zero for the configured universe on both gate windows).
 constexpr size_t kMaxSilentDividends = 95;
 
 // EVERY symbol with bars in the era a live book can reach -- not the configured
-// ten (E2-F41, widened in B-5b).
+// ten.
 //
-// Scanning the configured universe was the flaw the finding names: the book holds
-// ten symbols and the whole silent class lives outside them, so the tripwire was
+// Scanning only the configured universe would miss the class: the book holds ten
+// symbols and the whole silent class lives outside them, so the tripwire would be
 // green while ~99 rows sat unapplied one config edit away. `equities_data.ohlcv_1d`
 // since 2020-01-01 is roughly 850 symbols, which is the set any equity config on
 // this branch can name, and the join is indexed on (symbol, time).
@@ -412,7 +411,7 @@ std::vector<SilentClass1Row> scan_silent_class1(const std::string& conn,
 // happened.
 TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUniverse) {
     const auto universe = tripwire_universe(conn_string_);
-    // R6: the scan set is every symbol of the table's bar era, whatever the copy holds (the reference
+    // The scan set is every symbol of the table's bar era, whatever the copy holds (the reference
     // clone's ~850; the tuning copy's equity table holds 30), and never only the configured names.
     size_t in_table = 0;
     {
@@ -466,8 +465,8 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
            "grow unnoticed -- if the feed has degraded, raise it deliberately and say why; if "
            "a configured symbol is now among them, the run-time E2-F41 cross-check will name "
            "it every session.";
-    // R6: the scan reaches the table. E2-F41 measured 87 silent dividends on 2026-09-04 on the reference
-    // clone; the tuning copy's 30 symbols have none. So the scan's count must equal the tables' own count
+    // The scan reaches the table. The reference clone holds 87 silent dividends; the tuning
+    // copy's 30 symbols have none. So the scan's count must equal the tables' own count
     // (a direct query of every dividend with a flat bar on its ex-date in the bar era), and the scan must
     // find at least one silent class-1 row on a bar (LEN's allowlisted spin-off on every copy that holds
     // LEN's bars).
@@ -486,7 +485,7 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
     size_t on_a_bar = 0;
     for (const auto& s : silent) on_a_bar += s.has_bar;
     EXPECT_GT(on_a_bar, 0u) << "no silent class-1 row on a bar at all means the scan is not reaching the table";
-    // R6 fix round 1 (audit A S3): with no silent dividend in the table the count check compares 0 with
+    // With no silent dividend in the table the count check compares 0 with
     // 0 and proves nothing: it is skipped, visibly, after every other check of the test has run.
     if (direct_dividends == 0) {
         GTEST_SKIP() << "the silent-dividend check is not judged: the table holds no dividend with a flat bar on "
@@ -508,8 +507,8 @@ TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsSti
     for (const auto& s : silent) {
         if (s.has_bar) observed.insert({s.ticker, s.date, s.action});
     }
-    // R6: an entry whose ticker has a bar on its date in this copy must be a silent class-1 row there,
-    // as before. An entry whose ticker has no bar that day (the tuning copy's equity table holds 30
+    // An entry whose ticker has a bar on its date in this copy must be a silent class-1 row there.
+    // An entry whose ticker has no bar that day (the tuning copy's equity table holds 30
     // symbols: TT, MTCH, OXY, AMC, BIDU are not among them) exempts nothing in this copy; it must
     // still name a corporate_action row that is really there. At least one entry is judged on its bar.
     pqxx::connection c(conn_string_);
@@ -540,7 +539,7 @@ TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsSti
 }
 
 // (b) The other shape: no bar at all on the ex-date. The runner is loud about
-// this one and retries it, so it is not V4-1 -- but it must stay confined to
+// this one and retries it, so it is not the silent shape -- but it must stay confined to
 // dividends. A split or spinoff whose ex-date has no bar means a share count
 // that never adjusts, which no later run can repair.
 TEST_F(CorpActionQueryBoundsDbTest, AMissingBarOnAClass1DateIsOnlyEverADividend) {
@@ -570,7 +569,7 @@ TEST_F(CorpActionQueryBoundsDbTest, AMissingBarOnAClass1DateIsOnlyEverADividend)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// E4 item 3 -- against the real table.
+// The measured feed date, against the real table.
 //
 // The pure tests in test_effect_classes.cpp pin what the status says for a given
 // measurement. This one pins that a measurement HAPPENS: the reported date has
@@ -600,7 +599,7 @@ TEST_F(CorpActionQueryBoundsDbTest, FrozenAfterDateIsMeasuredNotHardcoded) {
         << "the reported last-row date is not what the table holds -- a literal cannot "
            "track a revived feed";
 
-    // The audit's assertion: it is at least as new as the compiled-in date, and
+    // The measured date is at least as new as the compiled-in date, and
     // the accessor is the thing that would move if the feed were backfilled.
     EXPECT_GE(measured.value(), std::string(kCorpActionTableFrozenAfter))
         << "the feed appears to have LOST rows since " << kCorpActionTableFrozenAfter

@@ -1,24 +1,23 @@
 // tests/core/test_logger_retention.cpp
 //
-// drift-F -- log retention defeated the reconciliation it exists to support.
+// Log retention must keep the evidence a log-vs-database reconciliation reads.
 //
-// Two separate mechanisms, both fixed here:
+// Three rules:
 //
-//  1. Rotation deleted the oldest regular file of ANY name in `log_directory`. Four runners
-//     share `logs/`, so a futures session's retention budget evicted the equity session's
-//     evidence and vice versa. The budget was global where the retention question is per
+//  1. Rotation counts and deletes only the runner's own files in `log_directory`. Four
+//     runners share `logs/`, so a global budget would let a futures session's retention
+//     evict the equity session's evidence and vice versa; the retention question is per
 //     runner.
-//  2. Ten files per directory over a 126-day replay leaves eight. The drift audit found
-//     exactly that: the dividend-applying runs and the holiday case -- the days E2's
-//     log-vs-DB reconciliation most needs to read afterwards -- were gone before anyone
-//     looked. A replay now writes into `logs/<YYYY-MM-DD>/`, so each date has its own budget.
+//  2. A replay writes into `logs/<YYYY-MM-DD>/`, so each date has its own budget. Ten
+//     files per directory over a 126-day replay would keep eight, and lose the
+//     dividend-applying runs and the holiday case, the days a log-vs-database
+//     reconciliation most needs to read afterwards.
+//  3. The prefixes NEST (`live_trend` begins `live_trend_conservative`), so a runner owns
+//     the files of its whole filename shape, not every file that begins with its prefix.
 //
-// Both changes are default-preserving: an empty `log_subdirectory` reproduces the old path,
-// and a directory containing one prefix behaves exactly as it did.
-//
-// B-5d adds the third mechanism, which B-5b's fix left open: the prefixes NEST, so scoping
-// retention to "begins with the prefix" still had `live_trend` counting and deleting
-// `live_trend_conservative`'s files. Ownership is now the whole filename shape.
+// The first two are default-preserving: an empty `log_subdirectory` writes to
+// `log_directory` itself, and a directory containing one prefix behaves as under a
+// single budget.
 
 #include <gtest/gtest.h>
 
@@ -33,7 +32,7 @@ using namespace trade_ngin;
 
 namespace {
 
-// A scratch directory that cleans itself up.
+// A temporary directory that cleans itself up.
 class TempLogDir {
 public:
     TempLogDir() {
@@ -109,11 +108,11 @@ TEST(LoggerRetention, RotationNeverDeletesAnotherRunnersLogs) {
 // The prefixes NEST, and "begins with" is not ownership.
 //
 // `live_trend` is a prefix of `live_trend_conservative`; `bt_portfolio` of
-// `bt_portfolio_conservative`. B-5b scoped retention to files whose name STARTS WITH the
-// logger's prefix, which fixed the equity-versus-futures eviction and left the two futures
-// books sharing one budget: every `live_portfolio` run counted -- and deleted -- the
-// conservative runner's logs. The conservative runner is the production futures book, so the
-// half of the pair whose evidence was still being destroyed was the one that matters most.
+// `bt_portfolio_conservative`. Scoping retention to files whose name STARTS WITH the
+// logger's prefix would separate equities from futures but leave the two futures books
+// sharing one budget: every `live_portfolio` run would count -- and delete -- the
+// conservative runner's logs. The conservative runner is the production futures book, so
+// that half of the pair is the one whose evidence matters most.
 TEST(LoggerRetention, ABaseRunnerDoesNotEvictItsConservativeNamesake) {
     TempLogDir dir;
     // Four conservative logs, well over the base runner's budget of 3, and one of the base
@@ -261,11 +260,11 @@ TEST(LoggerRetention, AnEmptySubdirectoryIsTheOldFlatPathExactly) {
     }
 }
 
-// ===== LOG-retention-order: order by the timestamp IN THE NAME, not by mtime =====
+// ===== Retention order: by the timestamp IN THE NAME, not by mtime =====
 //
 // Retention keeps the newest max_files and deletes the rest, so "which is
-// oldest" decides which evidence survives. It used to answer that with
-// std::filesystem::last_write_time.
+// oldest" decides which evidence survives. It is answered from the timestamp in
+// the filename, not from std::filesystem::last_write_time.
 //
 // mtime is when a file was last WRITTEN, which is not when its session ran:
 //   * a long run holds part1 open while parts 2 and 3 are created and closed, so
@@ -279,8 +278,8 @@ TEST(LoggerRetention, AnEmptySubdirectoryIsTheOldFlatPathExactly) {
 // The test writes four sessions whose filename order is the exact REVERSE of
 // their mtime order, then takes a fifth. With a budget of 3, exactly two of the
 // four must go, and they must be the two oldest BY NAME (20260101, 20260102).
-// Ordering by mtime deletes 20260104 and 20260103 instead -- the newest two --
-// so the two assertions cannot both hold under the old behaviour.
+// Ordering by mtime would delete 20260104 and 20260103 instead -- the newest two --
+// so the two assertions cannot both hold under mtime ordering.
 TEST(LoggerRetention, RetentionOrdersByFilenameTimestampNotMtime) {
     TempLogDir dir;
 

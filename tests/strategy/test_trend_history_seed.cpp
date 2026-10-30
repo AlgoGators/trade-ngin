@@ -1,10 +1,9 @@
-// The estimators' window reaches back W consumed bars, further than a run's own bar window
-// (LOOP_SPEC v6.2 section 1, "History and seeds"):
-//   - the trend sleeve keeps the last W bars and reads all of them (it used to read the last 1,000);
+// The estimators' window reaches back W consumed bars, further than a run's own bar window:
+//   - the trend sleeve keeps the last W bars and reads all of them (not only the last 1,000);
 //   - the bars before a run's window are seeded into the sleeve's history (seed_history), where a
 //     bulk feed keeps them in front of the fed bars and a daily feed appends to them, so a seeded
 //     sleeve computes what a sleeve fed the whole history computes;
-//   - the published forecast is the fixed-scalar, attenuated forecast of section 2.5;
+//   - the published forecast is the fixed-scalar, attenuated forecast;
 //   - a pair without a fixed scalar is refused;
 //   - the PortfolioManager hands the seed to its sleeves; both engines build it from the bars before
 //     their window with K-01 applied (live_estimator_history.hpp) and seed before they feed.

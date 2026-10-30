@@ -1,4 +1,4 @@
-// The trend sleeve's estimators (LOOP_SPEC v6.2 sections 1 and 2.4 to 2.6; trend_estimator.hpp):
+// The trend sleeve's estimators (trend_estimator.hpp):
 // a pure function of the last W consumed bars, every recursion started at the window's first bar.
 //   - the volatility: a mean-centred EWMA standard deviation, the variance seeded at 0.1 r^2 and
 //     floored at 1e-6, annualised bar by bar and clamped to [0.005, 5]; its long-run mean over the

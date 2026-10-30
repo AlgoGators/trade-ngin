@@ -1,6 +1,6 @@
 // tests/live/test_live_statistics_columns.cpp
 //
-// The live statistics of migration 036 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8a commit (12b)):
+// The live statistics of migration 036:
 // the worst day's symbol, the three statistics on the sizing capital, the monthly skew and tail
 // ratio, the calendar years, the fill counts, and the NULL rules, as values on small fixtures
 // whose arithmetic is written beside each expectation.

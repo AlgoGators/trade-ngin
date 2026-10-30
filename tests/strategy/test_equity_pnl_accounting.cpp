@@ -157,7 +157,7 @@ TEST_F(EquityPnLAccountingTest, UnknownEquityGetsCorrectDefaults) {
     auto equity_config = registry.get_config("RANDOM_STOCK", AssetType::EQUITY);
     EXPECT_NEAR(equity_config.point_value, 1.0, 1e-6);        // NOT 100.0
     EXPECT_NEAR(equity_config.commission_per_unit, 0.005, 1e-6); // NOT -1.0
-    // E2-C3: IBKR Pro Fixed is all-inclusive of exchange, clearing and regulatory fees, so
+    // IBKR Pro Fixed is all-inclusive of exchange, clearing and regulatory fees, so
     // SEC/FINRA must NOT be charged separately. True would be correct under Tiered.
     EXPECT_FALSE(equity_config.apply_regulatory_fees);
 
@@ -174,11 +174,11 @@ TEST_F(EquityPnLAccountingTest, KnownEquityGetsExplicitConfig) {
     auto aapl_config = registry.get_config("AAPL");
     EXPECT_NEAR(aapl_config.point_value, 1.0, 1e-6);
     EXPECT_NEAR(aapl_config.commission_per_unit, 0.005, 1e-6);
-    // E2-C3 / E2-C1: the equity schedule is IBKR Pro FIXED throughout -- $0.005/share,
-    // $1.00 minimum, 1% maximum, fees included. It previously carried Tiered's 0.5% cap on
-    // top of Fixed's rate and minimum, taking the worse half of each tier. Switching to
-    // Tiered is a three-field change (rate -> 0.0005-0.0035, minimum -> 0.35,
-    // apply_regulatory_fees -> true), not a one-field one.
+    // The equity schedule is IBKR Pro FIXED throughout -- $0.005/share, $1.00 minimum,
+    // 1% maximum, fees included, not Tiered's 0.5% cap on top of Fixed's rate and minimum
+    // (the worse half of each tier). Switching to Tiered is a three-field change
+    // (rate -> 0.0005-0.0035, minimum -> 0.35, apply_regulatory_fees -> true), not a
+    // one-field one.
     EXPECT_FALSE(aapl_config.apply_regulatory_fees);
     EXPECT_NEAR(aapl_config.max_commission_pct, 0.01, 1e-6);  // 1% cap (Fixed)
 }
@@ -201,15 +201,15 @@ TEST_F(EquityPnLAccountingTest, TieredEquityConfig) {
 }
 
 // ===========================================================================
-// E2-F8: the target position carries a MARK, positions_ carries the BASIS.
+// The target position carries a MARK, positions_ carries the BASIS.
 //
 // The backtest coordinator's unrealized calculation reads average_price off the
 // positions returned by get_strategy_positions(), which are the strategy's TARGET
 // positions -- and MeanReversionStrategy::get_target_positions() sets
-// `pos.average_price = inst_data.current_price` (mean_reversion.cpp:214), the day's
-// close. Measured against the live DB, the mark implied by day D's stored unrealized
-// equalled day D+1's stored average_price on ~87% of consecutive rows: the column was
-// a one-day mark change, not a position-lifetime unrealized.
+// `pos.average_price = inst_data.current_price` (mean_reversion.cpp), the day's close.
+// Read from the target positions, the mark implied by day D's stored unrealized would
+// equal day D+1's stored average_price on most consecutive rows: a one-day mark change,
+// not a position-lifetime unrealized.
 //
 // BaseStrategy::on_execution() is the sole legitimate writer of a volume-weighted cost
 // basis and keeps it in positions_, which get_target_positions() deliberately does not

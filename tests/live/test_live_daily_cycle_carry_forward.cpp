@@ -1,17 +1,14 @@
 // tests/live/test_live_daily_cycle_carry_forward.cpp
 //
-// T-OR.3 -- the closed-day path.
+// The closed-day path.
 //
-// The equity runner has processed weekends and holidays as CARRY-FORWARD days since
-// `eaa292d1`: the book, live_results and equity_curve are written from the previous
-// session while signal generation and execution are skipped. That behaviour was
-// implemented as five inline copies of `dow == 0 || dow == 6 || is_holiday(...)` inside
-// main(), and nothing anywhere covered the predicate or the carry decision -- `grep
-// is_holiday tests/live tests/strategy` returned nothing. A closed day that silently
-// starts trading, or a carried book that silently gains a realized figure, would be
-// invisible until it showed up in the P&L.
+// The equity runner processes weekends and holidays as CARRY-FORWARD days: the book,
+// live_results and equity_curve are written from the previous session while signal
+// generation and execution are skipped. A closed day that silently starts trading, or a
+// carried book that silently gains a realized figure, would be invisible until it showed
+// up in the P&L.
 //
-// The two decisions now live in LiveDailyCycle, and this is their test.
+// The two decisions live in LiveDailyCycle, and this is their test.
 
 #include <gtest/gtest.h>
 

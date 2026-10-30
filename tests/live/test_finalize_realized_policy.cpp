@@ -1,6 +1,6 @@
 // tests/live/test_finalize_realized_policy.cpp
 //
-// E2-F19 / E2-F20: what the Day T-1 finalization leaves in realized_pnl, per
+// What the Day T-1 finalization leaves in realized_pnl, per
 // settlement model.
 //
 // LivePnLManager::finalize_previous_day writes the settlement move
@@ -16,9 +16,9 @@
 // futures path is untouched by construction. These tests pin both halves: the
 // futures value that must never move, and the equity restore that must.
 //
-// F20 measured the weekend consequence: Saturday's and Sunday's runs both
-// finalize Friday, so Monday loads Friday's row already holding a mark move and
-// seeds it (META 2026-07-31..08-04: Tue 120.590763 = 73.351951 Friday mark +
+// The weekend consequence: Saturday's and Sunday's runs both finalize Friday, so
+// without the restore Monday would load Friday's row holding a mark move and
+// seed it (META 2026-07-31..08-04: Tue 120.590763 = 73.351951 Friday mark +
 // 31.311175 Mon trade + 15.927637 Tue trade). Restoring from the loaded row makes
 // the Friday row a fixed point across all three finalizations.
 
@@ -54,7 +54,7 @@ namespace {
 using Book = std::unordered_map<std::string, Position>;
 using Closes = std::unordered_map<std::string, double>;
 
-// Real MNQ.v.0 numbers from 2025-10-10, the E2-F3 fixture.
+// Real MNQ.v.0 numbers from 2025-10-10.
 constexpr double kFutQty = 3.0;
 constexpr double kFutT2 = 25335.0;
 constexpr double kFutT1 = 24188.0;
@@ -102,10 +102,10 @@ protected:
     void SetUp() override {
         InstrumentRegistry::instance().instruments_["MNQ.v.0"] = make_mnq_futures();
         // The P&L manager looks the contract up by its metadata key, the symbol without the
-        // ".v.0" suffix; with no fallback table any more (CM1) the row must be there.
+        // ".v.0" suffix; there is no fallback table, so the row must be there.
         InstrumentRegistry::instance().instruments_["MNQ"] = make_mnq_futures();
         // The equity row is registered as the equity runner registers every equity it holds;
-        // a futures manager no longer guesses 1.0 for a symbol the registry does not hold.
+        // a futures manager does not guess 1.0 for a symbol the registry does not hold.
         EquitySpec eq;
         eq.exchange = "NASDAQ";
         eq.currency = "USD";
@@ -154,7 +154,7 @@ protected:
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// T-1: the futures pin. Must pass before and after; fails loudly if anyone makes
+// The futures pin: fails loudly if anyone makes
 // the equity behaviour unconditional or routes futures through the restore.
 // ---------------------------------------------------------------------------
 
@@ -183,7 +183,7 @@ TEST_F(FinalizeRealizedPolicyTest, DefaultPolicyMatchesSettled) {
 }
 
 // ---------------------------------------------------------------------------
-// T-2: the equity restore. The row keeps the trade realized the day's own run
+// The equity restore. The row keeps the trade realized the day's own run
 // wrote; the mark goes to unrealized; the aggregate still reports the move.
 // ---------------------------------------------------------------------------
 
@@ -217,7 +217,7 @@ TEST_F(FinalizeRealizedPolicyTest, RestoreDoesNotTouchTheAggregate) {
 }
 
 // ---------------------------------------------------------------------------
-// T-4: the degenerate branches -- no T-1 close, then no T-2 close. A single thin
+// The degenerate branches -- no T-1 close, then no T-2 close. A single thin
 // name reaches these at 852 symbols, and a naive fix would silently zero a real
 // figure here.
 // ---------------------------------------------------------------------------
@@ -229,9 +229,9 @@ TEST_F(FinalizeRealizedPolicyTest, MissingT1CloseStillRestoresRealized) {
 
     EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6)
         << "a missing T-1 close must not erase the day's trade realized";
-    // R-2: the last known mark is carried, on the row AND in the aggregate. A halted or
-    // unprinted name is still worth its last price; zero made the level vanish for a day
-    // and reappear as a phantom jump.
+    // The last known mark is carried, on the row AND in the aggregate. A halted or
+    // unprinted name is still worth its last price; zero would make the level vanish for
+    // a day and reappear as a phantom jump.
     EXPECT_NEAR(only(r).unrealized_pnl.as_double(), 146.98, 1e-6);
     EXPECT_NEAR(r.finalized_unrealized_pnl, 146.98, 1e-6);
 }
@@ -241,14 +241,14 @@ TEST_F(FinalizeRealizedPolicyTest, MissingT2CloseStillRestoresRealized) {
     auto r = finalize_and_restore(loaded, {{kEq, kEqT1}}, /*t2*/ {{"OTHER", 1.0}});
 
     EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6);
-    // R-2: a T-1 close exists, so the mark against the cost basis is computable; no
+    // A T-1 close exists, so the mark against the cost basis is computable; no
     // settlement move is reported (T-2 missing), but the level is not zeroed.
     EXPECT_NEAR(only(r).unrealized_pnl.as_double(), kEqQty * (kEqT1 - kEqBasis), 1e-6);
     EXPECT_NEAR(r.finalized_unrealized_pnl, kEqQty * (kEqT1 - kEqBasis), 1e-6);
     EXPECT_DOUBLE_EQ(r.finalized_daily_pnl, 0.0);
 }
 
-// Under SETTLED the degenerate branches keep writing 0 -- the futures pin for T-4.
+// Under SETTLED the degenerate branches write 0: the futures pin for them.
 TEST_F(FinalizeRealizedPolicyTest, SettledDegenerateBranchesWriteZero) {
     Book loaded{{"MNQ.v.0", make_row("MNQ.v.0", kFutQty, kFutT2, 123.45)}};
     auto r = finalize(loaded, {}, {{"MNQ.v.0", kFutT2}},
@@ -258,7 +258,7 @@ TEST_F(FinalizeRealizedPolicyTest, SettledDegenerateBranchesWriteZero) {
 }
 
 // ---------------------------------------------------------------------------
-// T-5 / T-5b: a closed row (qty 0, realized != 0) carried into the T-1 write set
+// A closed row (qty 0, realized != 0) carried into the T-1 write set
 // keeps its realized, contributes nothing to any aggregate, and is not dead.
 // ---------------------------------------------------------------------------
 
@@ -289,10 +289,10 @@ TEST_F(FinalizeRealizedPolicyTest, ClosedRowSurvivesFinalizationWithItsRealized)
 }
 
 // ---------------------------------------------------------------------------
-// T-13: the Sat/Sun/Mon triple. Each finalization of the same loaded rows must
+// The Sat/Sun/Mon triple. Each finalization of the same loaded rows must
 // leave the row equal to what was LOADED -- not merely equal to the previous
 // pass, which the finalizer already guarantees because it is a fixed point of
-// quantity and closes (F20 §5). The claim under test is stability against the
+// quantity and closes. The claim under test is stability against the
 // day's own written value.
 // ---------------------------------------------------------------------------
 
@@ -329,9 +329,9 @@ TEST_F(FinalizeRealizedPolicyTest, RowWithoutALoadedCounterpartGetsZeroRealized)
 }
 
 // ---------------------------------------------------------------------------
-// R-1: the finalizer itself no longer writes the mark move into realized under
-// MARK_TO_MARKET -- without the runner's restore step. A new caller cannot fall
-// into the trap. The aggregate still carries the move.
+// The finalizer itself does not write the mark move into realized under
+// MARK_TO_MARKET, even without the runner's restore step, so a new caller cannot
+// fall into the trap. The aggregate still carries the move.
 // ---------------------------------------------------------------------------
 TEST_F(FinalizeRealizedPolicyTest, FinalizerAloneKeepsTradeRealizedUnderMarkToMarket) {
     Book loaded{{kEq, make_row(kEq, kEqQty, kEqBasis, kEqRealized)}};

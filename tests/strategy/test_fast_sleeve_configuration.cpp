@@ -1,4 +1,4 @@
-// The FAST sleeve is a configuration of the one trend class (LOOP_SPEC v6.2 section 2.5, D21):
+// The FAST sleeve is a configuration of the one trend class:
 //   - TrendFollowingStrategy on the four fast EMA pairs (2,8), (4,16), (8,32), (16,64); the (1,4)
 //     pair is dropped;
 //   - no separate fast or slow trend class exists, in the library or in a runner's factory;

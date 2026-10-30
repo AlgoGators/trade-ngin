@@ -17,27 +17,26 @@
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
-// NEW-6(a) / T-OR.5 -- the backtest and the live runner must reach the same state from
+// The backtest and the live runner must reach the same state from
 // the same bars.
 //
-// This file used to feed BOTH sides the same vector in the same call and assert they
-// agreed, which is a tautology: it proved that one function is deterministic. It could
-// not see the difference that actually existed, because the two runners do not stage
-// their data the same way.
+// Feeding BOTH sides the same vector in the same call and asserting they agree would be
+// a tautology: it proves only that one function is deterministic, and cannot see a
+// difference in how the two runners stage their data.
 //
 //   BACKTEST  BacktestCoordinator walks the history and calls on_data() once per day
-//             with that day's bars (backtest_coordinator.cpp:393, :587), then reads
+//             with that day's bars, then reads
 //             get_target_positions().
 //   LIVE      LiveDailyCycle::prepare_strategy_for_signals() seeds the previous day's
 //             book, then PortfolioManager::process_market_data() calls on_data() once
-//             with the whole loaded window (portfolio_manager.cpp:217) and reads
+//             with the whole loaded window and reads
 //             get_target_positions().
 //
-// Until E2-F28 the live path fed that window TWICE -- prepare_strategy_for_signals()
-// called on_data() itself and then the portfolio manager called it again. MeanReversion
-// appends per bar, so the live strategy's volatility window, ADV EMA and warm-up counter
-// were all computed over a series twice as long as the one that traded, and the two
-// runners silently disagreed on the same data.
+// The live path feeds that window ONCE. Were prepare_strategy_for_signals() to call
+// on_data() itself before the portfolio manager calls it again, MeanReversion (which
+// appends per bar) would compute the live strategy's volatility window, ADV EMA and
+// warm-up counter over a series twice as long as the one that traded, and the two
+// runners would silently disagree on the same data.
 //
 // So the test drives the two SEQUENCES and compares the state each arrives at. The
 // window is deliberately shorter than vol_lookback: that is where the doubling changes
@@ -76,8 +75,8 @@ protected:
         TestBase::TearDown();
     }
 
-    // The config block both runners read from portfolio.json, through the shared builder
-    // (review T2.6). vol_lookback exceeds the window on purpose -- see the file header.
+    // The config block both runners read from portfolio.json, through the shared builder.
+    // vol_lookback exceeds the window on purpose -- see the file header.
     static nlohmann::json config_json() {
         return {{"lookback_period", 20},  {"entry_threshold", 2.0},
                 {"exit_threshold", 0.5},  {"risk_target", 0.15},
@@ -233,7 +232,7 @@ TEST_F(LiveBtSignalConsistencyTest, BacktestAndLiveStagingReachTheSameState) {
 }
 
 // The seeded book must survive the live staging: seeding is what lets generate_signal()
-// take the exit branch and lets the stop-loss measure from a basis (F-B). A staging
+// take the exit branch and lets the stop-loss measure from a basis. A staging
 // change that quietly dropped it would make every held position look flat again.
 TEST_F(LiveBtSignalConsistencyTest, LiveStagingKeepsTheSeededBook) {
     auto mr = apps::build_mean_reversion_config(config_json());

@@ -1,16 +1,14 @@
 // tests/live/test_unrealized_cost_basis.cpp
 //
-// F-D: per-row trading.positions.unrealized_pnl and the live_results aggregate must be
+// Per-row trading.positions.unrealized_pnl and the live_results aggregate must be
 // the same measurement.
 //
-// They were not. The aggregate came from Position::average_price, which on_execution
-// maintains and the corp-action applier adjusts. The persisted row came from
-// MeanReversionInstrumentData::entry_price -- a field with NO writer anywhere in the
-// tree, so it was always 0.0, the guard `entry_price > 0.0` never passed, and every row
-// was written with unrealized_pnl = 0 while the aggregate reported something else. A
-// guaranteed log-versus-DB mismatch on any day with open positions.
-//
-// Both sides now go through unrealized_from_cost_basis(), and the dead field is gone.
+// Both come from Position::average_price, which on_execution maintains and the corp-action
+// applier adjusts, through unrealized_from_cost_basis(). A row computed from a field with no
+// writer (MeanReversionInstrumentData::entry_price, always 0.0, behind a guard
+// `entry_price > 0.0` that never passed) would be written with unrealized_pnl = 0 while the
+// aggregate reported something else: a log-versus-DB mismatch on any day with open positions.
+// That field must not exist.
 
 #include <gtest/gtest.h>
 #include <memory>
@@ -70,23 +68,20 @@ TEST(UnrealizedCostBasis, MarkPriceIsTheCallersToScreen) {
 }
 
 TEST(UnrealizedCostBasis, AHeldPositionDoesNotMeasureAsZero) {
-    // The defect in one line: with a real basis and a real mark, the persisted row must
-    // carry a nonzero figure. Pre-F-D it was always exactly 0.
+    // With a real basis and a real mark, the persisted row must carry a nonzero figure.
     const double v = LivePnLManager::unrealized_from_cost_basis(250.0, 188.25, 194.10);
     EXPECT_NE(v, 0.0);
     EXPECT_NEAR(v, 250.0 * (194.10 - 188.25), 1e-9);
 }
 
 TEST(UnrealizedCostBasis, RowAndAggregateAgreeOnTheSameInputs) {
-    // The invariant F-D restores: what the runner writes per row equals what the MANAGER
+    // The invariant: what the runner writes per row equals what the MANAGER
     // reports in its aggregate.
     //
-    // BA-3 / C-3 D2(b): this test used to accumulate BOTH sides from
-    // unrealized_from_cost_basis itself, differing only by point_value defaulted versus
-    // passed as 1.0. That is a tautology -- it compared the helper to itself and never
-    // read a single manager output, so it would have passed even if the aggregate had
-    // stopped using the helper entirely, which is the exact drift the commit claims to
-    // prevent. It now reads get_current_snapshot(), and pins both sides against an
+    // Both sides are read, not derived from the helper: accumulating BOTH from
+    // unrealized_from_cost_basis itself would compare the helper to itself and never read
+    // a single manager output, so it would pass even if the aggregate stopped using the
+    // helper. This reads get_current_snapshot(), and pins both sides against an
     // independently computed figure so they cannot drift TOGETHER either.
     auto& registry = InstrumentRegistry::instance();
     LivePnLManager mgr(500000.0, registry);
@@ -128,14 +123,8 @@ TEST(UnrealizedCostBasis, RowAndAggregateAgreeOnTheSameInputs) {
         << "row and aggregate are the same measurement on the same inputs (F-D)";
 }
 
-// BA-3 / C-3 D2(a): an ACTUAL compile-time pin on the struct's shape.
-//
-// This test used to claim "if a member named entry_price comes back, this file stops
-// compiling at the line above" while its body only asserted that two unrelated members
-// were 0.0. Nothing referenced entry_price, so nothing could stop compiling: restoring
-// the field AND reverting the runner to the always-zero persistence left the file
-// building and the suite green. The claim is now enforced by a detector rather than
-// asserted in a comment.
+// A compile-time pin on the struct's shape: a detector, so restoring a member named
+// entry_price stops this file compiling.
 namespace {
 
 template <typename T, typename = void>

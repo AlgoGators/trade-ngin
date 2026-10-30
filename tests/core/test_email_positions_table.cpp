@@ -1,18 +1,16 @@
 // tests/core/test_email_positions_table.cpp
 //
-// D9 / BA-16: one unpriceable row must not suppress the whole daily email.
+// One unpriceable row must not suppress the whole daily email.
 //
-// format_positions_table computed margin from Position::average_price alone.
-// On the equity path that column is a COST BASIS, and 0 is its documented "no
-// basis known" value (docs/AVERAGE_PRICE_LIFECYCLE.md rule 5) -- reachable for a
-// held position whose basis could not be resolved, a state the runner already
-// reports as an ERROR and carries inert. get_margin_requirement(0, qty) then
-// returned 0, the function threw, and the bare `throw;` in its catch propagated
-// out: one such row and nobody received a report at all.
+// On the equity path Position::average_price is a COST BASIS, and 0 is its documented "no
+// basis known" value (docs/AVERAGE_PRICE_LIFECYCLE.md rule 5) -- reachable for a held
+// position whose basis could not be resolved, a state the runner reports as an ERROR and
+// carries inert. get_margin_requirement(0, qty) returns 0, so a margin priced at that basis
+// alone would fail the table, and one such row would leave nobody with a report.
 //
-// Margin asks what a position is WORTH, so the current close is the right input
-// and the basis is the fallback -- the same preference the notional block in the
-// same loop already applies.
+// format_positions_table prices margin at the cost basis and falls back to the current close
+// when no basis is known; a row with neither is left out of the margin total and the email
+// still goes out.
 
 #include <gtest/gtest.h>
 
@@ -166,10 +164,10 @@ TEST_F(EmailPositionsTableTest, AClosedRowIsNotReportedAsAPosition) {
         << "a zero-quantity row is not an open position";
 }
 
-// T-8D D3 (a): the margin line is priced at the cost basis, the price MarginManager stores
+// The margin line is priced at the cost basis, the price MarginManager stores
 // margin_posted at, so the email and the database agree. 50 shares bought at 200, closing at
-// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (at the close it read 5,250). The notional is the
-// other way round (T-8D-2 R60): at the close.
+// 210, Reg T long: 0.5 x 50 x 200 = 5,000 (not 5,250, the close's). The notional is the
+// other way round: at the close.
 TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
     const std::unordered_map<std::string, Position> positions{
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
@@ -182,8 +180,8 @@ TEST_F(EmailPositionsTableTest, TheMarginLineIsPricedAtTheCostBasis) {
                            ? 0
                            : html.find("Total Notional"));
     EXPECT_EQ(html.find("<strong>Total Margin Posted:</strong> $5,250"), std::string::npos);
-    // T-8D-2 R60 (T-8D D9): the notional is at the Day T-1 close, 50 x 210 = 10,500 (at the basis
-    // it read 10,000), and so is the row: its notional is its quantity at the price it prints.
+    // The notional is at the Day T-1 close, 50 x 210 = 10,500 (not 10,000, the basis's), and
+    // so is the row: its notional is its quantity at the price it prints.
     EXPECT_NE(html.find("<strong>Total Notional:</strong> $10,500.00"), std::string::npos) << html;
     EXPECT_EQ(html.find("$10,000"), std::string::npos) << html;
     EXPECT_NE(html.find("<td>$210.0000</td>\n<td>$10,500.00</td>\n<td>100.00%</td>"),
@@ -212,10 +210,8 @@ TEST_F(EmailPositionsTableTest, TheMarginLineFallsBackToTheCloseWithoutABasis) {
     EXPECT_NE(html.find("<strong>Total Margin Posted:</strong> $7,500"), std::string::npos);
 }
 
-// HD 2026-10-10: the summary under the single positions table prints the overlay's expected risk
-// beside the risk target and the one-day 95 percent VaR in dollars, in place of "Portfolio VaR".
-// HD 10-13: neither the expected risk, nor the VaR, nor a portfolio VaR is in the summary any more
-// (the first two are in the account detail file).
+// The summary under the single positions table prints neither the overlay's expected risk, nor the
+// one-day 95 percent VaR, nor a portfolio VaR (the first two are in the account detail file).
 TEST_F(EmailPositionsTableTest, TheSummaryCarriesNoExpectedRiskAndNoVar) {
     const std::unordered_map<std::string, Position> positions{
         {"ZPRICED", held("ZPRICED", 50.0, 200.0)}};
@@ -227,7 +223,7 @@ TEST_F(EmailPositionsTableTest, TheSummaryCarriesNoExpectedRiskAndNoVar) {
         EXPECT_EQ(html.find(absent), std::string::npos) << absent;
 }
 
-// T-EMAIL P2-3: the rows are in symbol order, whatever order the map hands them out in. The same
+// The rows are in symbol order, whatever order the map hands them out in. The same
 // twelve positions are put in a map built two ways (different bucket counts, reversed insertion),
 // which iterate differently, and the table must be the same text with the symbols ascending.
 TEST_F(EmailPositionsTableTest, RowsAreInSymbolOrderWhateverTheMapIterationOrderIs) {

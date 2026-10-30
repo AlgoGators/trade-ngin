@@ -1,7 +1,6 @@
 // tests/live/test_margin_columns.cpp
 //
-// live/margin_columns.hpp -- the margin and leverage cells of a trading.live_results row
-// (T-8D R21, section 3.14; POST_AUDIT_FIXES P-6).
+// live/margin_columns.hpp -- the margin and leverage cells of a trading.live_results row.
 //
 // Two layers:
 //   * the values the day's own run writes: the ratio and the cushion have no value on a day
@@ -230,7 +229,7 @@ TEST_F(MarginColumnsFinalizeDbTest, AValueOfZeroDoesNotFailTheStatement) {
     EXPECT_FALSE(cell(r, "margin_cushion").has_value());
 }
 
-// T-8D R22: the equity book's gross_leverage is its gross notional over the finalised value;
+// The equity book's gross_leverage is its gross notional over the finalised value;
 // a futures row, whose finalize carries no such clause, keeps the column NULL.
 TEST(MarginColumns, TheGrossLeverageClauseAssignsThatOneCell) {
     const std::string sql = finalize_gross_leverage_sql("V");
@@ -242,7 +241,7 @@ TEST(MarginColumns, TheGrossLeverageClauseAssignsThatOneCell) {
 TEST_F(MarginColumnsFinalizeDbTest, TheEquityRowsGrossLeverageIsRecomputedAndAFuturesRowsStaysNull) {
     pqxx::work w(*c_);
     create(w);
-    // EQUITY_MR 2026-06-15 with the risk report's leverage figures (0.1604) as stored before.
+    // EQUITY_MR 2026-06-15 with the risk report's leverage figures (0.1604) in its cells.
     w.exec("INSERT INTO fake_live_results VALUES ('eq', 99327.9760, 15899.203254, 15899.203254, "
            "16042.838059, 83285.137941, 6.19, 1, 0.1601, 0.1604, 0.1604)");
     w.exec("INSERT INTO fake_live_results VALUES ('fut', 497239.3978, 793465.000000, "

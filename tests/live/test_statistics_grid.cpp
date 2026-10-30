@@ -1,8 +1,8 @@
 // tests/live/test_statistics_grid.cpp
 //
-// The series the live statistics are taken on (T-8D R1, R3, R5, R6, R27, R28, R39; T-8D-2
-// R74, R76, R77): the returns of the statistics grid from the book's base, and each family of
-// statistic computed on it. Small dated fixtures with the cases the rulings name: a Saturday
+// The series the live statistics are taken on: the returns of the statistics grid from the
+// book's base, and each family of statistic computed on it. Small dated fixtures with the cases
+// that matter: a Saturday
 // row, a missing session, a start row that carries P&L, and a Sunday-to-Friday date too thin
 // to be a grid row.
 
@@ -80,7 +80,7 @@ TEST(StatisticsGrid, AThinDateFoldsIntoTheNextGridReturn) {
 
 TEST(StatisticsGrid, ASaturdayRowFoldsIntoSundaysReturn) {
     const auto s = week_through("2026-04-26");
-    // Saturday's -100 and Sunday's +400 are one grid return on Friday's level (R1).
+    // Saturday's -100 and Sunday's +400 are one grid return on Friday's level.
     EXPECT_DOUBLE_EQ(s.pnl[4], -100.0 + 400.0);
     EXPECT_DOUBLE_EQ(s.returns_pct[4], (501300.0 / 501000.0 - 1.0) * 100.0);
     // Nothing is dropped: the returns chain to the cumulative return.
@@ -95,7 +95,7 @@ TEST(StatisticsGrid, ASaturdayRowFoldsIntoSundaysReturn) {
 }
 
 TEST(StatisticsGrid, ANonGridRowCarriesTheLastGridRowsSeries) {
-    // R28 / R27: a series through Saturday is the series through Friday; a series through the
+    // A series through Saturday is the series through Friday; a series through the
     // thin Thursday is the series through Wednesday.
     const auto friday = week_through("2026-04-24");
     const auto saturday = week_through("2026-04-25");
@@ -106,7 +106,7 @@ TEST(StatisticsGrid, ANonGridRowCarriesTheLastGridRowsSeries) {
 }
 
 TEST(StatisticsGrid, TheSeriesStopsAtTheLastSettledRow) {
-    // R39: the row of Sunday 04-26 as written reads through Saturday 04-25, so Sunday's own
+    // The row of Sunday 04-26 as written reads through Saturday 04-25, so Sunday's own
     // level is not in it.
     const auto as_written = week_through("2026-04-25");
     EXPECT_EQ(as_written.dates.back(), "2026-04-24");
@@ -114,7 +114,7 @@ TEST(StatisticsGrid, TheSeriesStopsAtTheLastSettledRow) {
 }
 
 TEST(StatisticsGrid, AStartRowThatCarriesPnlIsAReturnRowOnTheInitialCapital) {
-    // R77 (c): BASE's start row stores 502,357.1083 on a base of 500,000.
+    // BASE's start row stores 502,357.1083 on a base of 500,000.
     const std::vector<DatedLevel> stored = {{"2025-11-11", 502357.1083},
                                             {"2025-11-12", 503182.4441}};
     const auto s = build_statistics_series(stored, {"2025-11-11", "2025-11-12", "2025-11-13"},
@@ -154,7 +154,7 @@ TEST(StatisticsGrid, AnEmptyBookOrGridGivesAnEmptySeries) {
 
 // ===== a futures book's grid from the bars it holds in memory (the backtest's) =====
 
-// T-8D R3: a Sunday-to-Friday date with at least kStatisticsGridMinSymbols distinct symbols
+// A Sunday-to-Friday date with at least kStatisticsGridMinSymbols distinct symbols
 // printing. A Saturday is never a row, whatever printed (MBT prints Saturday bars from
 // 2026-06-13); a thin date is not a row either.
 //   | date       | day | symbols printing | grid date |
@@ -200,7 +200,7 @@ TEST(StatisticsGrid, TotalDaysIsTheCountOfSettledGridReturns) {
     // Seven stored rows; five grid returns.
     const auto m = calc.calculate(week_through("2026-04-26"), kFuturesK, 0);
     EXPECT_EQ(m.total_days, 5);
-    // The Saturday row and the row as written carry Friday's n (R28, R39).
+    // The Saturday row and the row as written carry Friday's n.
     EXPECT_EQ(calc.calculate(week_through("2026-04-25"), kFuturesK, 0)
                   .total_days,
               4);
@@ -217,7 +217,7 @@ TEST(StatisticsGrid, AnnualizedReturnIsGeometricOnTheGridForEveryN) {
     EXPECT_NEAR(m.total_annualized_return, 17.532, 5e-3);
     EXPECT_DOUBLE_EQ(grid_annualized_return_pct(s, kFuturesK), m.total_annualized_return);
 
-    // No NULL and no special case at a short n (T-8D-2 R74): n = 1 is the formula too.
+    // No NULL and no special case at a short n: n = 1 is the formula too.
     const auto one = week_through("2026-04-20");
     ASSERT_EQ(one.size(), 1);
     EXPECT_NEAR(grid_annualized_return_pct(one, kFuturesK),
@@ -290,7 +290,7 @@ TEST(StatisticsGrid, VolatilityAndSharpeAreTakenOnTheGridReturnsWithItsSessionsA
 
 TEST(StatisticsGrid, TheSaturdayAndTheThinDateAreNotObservationsOfTheVolatility) {
     LiveHistoricalMetricsCalculator calc;
-    // A series through Saturday is Friday's (R28): same volatility, Sharpe and Sortino.
+    // A series through Saturday is Friday's: same volatility, Sharpe and Sortino.
     const auto friday = calc.calculate(week_through("2026-04-24"), kFuturesK, 0);
     const auto saturday = calc.calculate(week_through("2026-04-25"), kFuturesK, 0);
     EXPECT_DOUBLE_EQ(saturday.volatility, friday.volatility);
@@ -351,7 +351,7 @@ TEST(StatisticsGrid, TheDrawdownPeakIsSeededAtTheBookEquityAtItsStart) {
                                            "2026-04-19", 500000.0, "2026-04-21");
     EXPECT_NEAR(calc.calculate(s, kFuturesK, 0).max_drawdown, 0.4, 1e-9);
 
-    // A start row that carries a loss (R77 (c)): the base is still the initial capital.
+    // A start row that carries a loss: the base is still the initial capital.
     const std::vector<DatedLevel> losing_start = {{"2025-11-11", 495000.0},
                                                   {"2025-11-12", 496000.0}};
     const auto t = build_statistics_series(losing_start, {"2025-11-11", "2025-11-12"},
@@ -372,7 +372,7 @@ TEST(StatisticsGrid, WinningAndLosingDaysCountGridReturnsAndTheWinRateLeavesFlat
     EXPECT_EQ(m.flat_days, 1);
     EXPECT_EQ(m.total_days, 5);
     EXPECT_NEAR(m.win_rate, 3.0 / (3.0 + 1.0) * 100.0, 1e-12);
-    // B5A D7 holds by construction, so the writer's warning names only the carried session.
+    // W + L + flat = n holds by construction, so the writer's warning names only the carried session.
     EXPECT_EQ(m.winning_days + m.losing_days + m.flat_days, m.total_days);
     EXPECT_EQ(statistics_days_warning(m, s).find("differs from total_days"), std::string::npos);
     const auto cols = historical_metrics_int_columns(m);
@@ -401,7 +401,7 @@ TEST(StatisticsGrid, AStartRowWithPnlIsCountedAndNoDecidedDayGivesAZeroWinRate) 
     const auto s = build_statistics_series(stored, {"2025-11-11", "2025-11-12"}, "2025-11-11",
                                            500000.0, "2025-11-12");
     const auto m = calc.calculate(s, kFuturesK, 0);
-    EXPECT_EQ(m.winning_days, 1);  // the start day itself (R77 (c))
+    EXPECT_EQ(m.winning_days, 1);  // the start day itself
     EXPECT_EQ(m.flat_days, 1);     // 11-12 carried
     EXPECT_NEAR(m.win_rate, 100.0, 1e-12);
     // Only flat sessions: W + L = 0, the rate is 0, not a division by zero.
@@ -436,7 +436,7 @@ TEST(StatisticsGrid, TheDistributionIsTakenOnGridReturnsAndGridLevelDifferences)
     EXPECT_DOUBLE_EQ(m.gross_profit, 1000.0 + 2000.0 + 300.0);
     EXPECT_DOUBLE_EQ(m.gross_loss, 2000.0);
     EXPECT_NEAR(m.profit_factor, 3300.0 / 2000.0, 1e-12);
-    // The sum of the grid P&L is the book's P&L from the base: nothing is dropped (R1).
+    // The sum of the grid P&L is the book's P&L from the base: nothing is dropped.
     EXPECT_DOUBLE_EQ(m.gross_profit - m.gross_loss, 501300.0 - 500000.0);
 }
 
@@ -466,10 +466,10 @@ TEST(StatisticsGrid, AStartRowWithPnlIsTheBestDayAndAGrossProfitOnTheInitialCapi
     EXPECT_NEAR(m.gross_loss, 357.1083, 1e-6);
 }
 
-// T-8D R12: the profit factor has a value from the first losing session on.
+// The profit factor has a value from the first losing session on.
 //   | through        | gross_profit | gross_loss | profit_factor      |
-//   | 04-19 (empty)  | 0            | 0          | no value (was 0)   |
-//   | 04-20 Mon      | 1,000        | 0          | no value (was 999.99) |
+//   | 04-19 (empty)  | 0            | 0          | no value (not 0)   |
+//   | 04-20 Mon      | 1,000        | 0          | no value (not 999.99) |
 //   | 04-22 Wed      | 1,000        | 2,000      | 0.5                |
 TEST(StatisticsGrid, AnEmptySeriesGivesZerosAndNoLossesGiveNoProfitFactor) {
     LiveHistoricalMetricsCalculator calc;

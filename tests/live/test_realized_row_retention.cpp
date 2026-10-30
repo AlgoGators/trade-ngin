@@ -1,17 +1,17 @@
 // tests/live/test_realized_row_retention.cpp
 //
-// E2-F19 route 3 and gap G1: which trading.positions rows survive a write.
+// Which trading.positions rows survive a write.
 //
-// A position closed to zero used to write NO row, so the realized P&L of the exit --
-// the largest single figure of an equity position's life -- had nowhere to live at
-// row level. The rule was copied from futures, where an exit realizes exactly zero
-// (average_price is reset to close(T-1) daily and fills strike at close(T-1)), so
-// dropping the row there discards a row that is genuinely empty. Equities carry a
-// true cost basis and the exit realizes the whole accumulated gain.
+// A position closed to zero writes a row, so the realized P&L of the exit -- the
+// largest single figure of an equity position's life -- has somewhere to live at row
+// level. Dropping a flat row suits futures, where an exit realizes exactly zero
+// (average_price is reset to close(T-1) daily and fills strike at close(T-1)), so the
+// dropped row is genuinely empty. Equities carry a true cost basis and the exit
+// realizes the whole accumulated gain.
 //
-// Measured 2026-04-15: TMUS sold out for -402.654413; live_results carried it, the
-// positions table did not, residual 436.64 for the day. Eleven such close events in
-// the 2026-04-01..08-04 series.
+// Example: TMUS sold out on 2026-04-15 for -402.654413; with no row, live_results
+// carries it and the positions table does not, a residual of 436.64 for the day. There
+// are eleven such close events in the 2026-04-01..08-04 series.
 //
 // These tests pin the pure rules the runner applies at both write sites, plus the
 // load-time partition that keeps closed rows out of every other consumer.
@@ -52,7 +52,7 @@ TEST(RealizedRowRetention, FlatRowWithNoRealizedIsDead) {
     EXPECT_TRUE(LiveDailyCycle::is_dead_row(row("MNQ.v.0", 0.0, 0.0)));
 }
 
-// The AAPL/TMUS close-day case: the row that used to be dropped.
+// The AAPL/TMUS close-day case: the row is kept.
 TEST(RealizedRowRetention, ClosedRowCarryingRealizedIsKept) {
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(row("TMUS", 0.0, -402.654413)))
         << "an equity exit realizes its whole accumulated gain; the row that carries "
@@ -110,7 +110,7 @@ TEST(RealizedRowRetention, PartitionIsIdentityOnAnOpenOnlyBook) {
 }
 
 // ---------------------------------------------------------------------------
-// add_rowless_exits (G1): a symbol the strategy closed out that has no entry in
+// add_rowless_exits: a symbol the strategy closed out that has no entry in
 // the day-T target map. Reachable when a held name leaves the configured universe
 // (contra-merge, rename, de-configuration): generate_daily_executions emits the
 // close-out, on_execution books the realized, and nothing iterates it into a row.

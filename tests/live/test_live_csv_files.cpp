@@ -194,7 +194,7 @@ TEST_F(LiveCsvFiles, TheSettledFileKeepsEveryDigitOfASmallMark) {
     ASSERT_EQ(lines.size(), 2u);
     const auto cells = cells_of(lines[1]);
     ASSERT_EQ(cells.size(), 6u) << lines[1];
-    // HD 2026-10-14 (section 16.9): four decimals on every price, so a 6J close reads 0.0063
+    // Four decimals on every price, so a 6J close reads 0.0063
     EXPECT_EQ(cells[3], "0.0063") << lines[1];
     EXPECT_EQ(cells[4], "0.0063") << lines[1];
     EXPECT_EQ(cells[2], "-1.00");
@@ -228,9 +228,8 @@ TEST_F(LiveCsvFiles, ThePositionsFileAndTheCarriedFileKeepEveryDigitOfASmallMark
     EXPECT_EQ(carried_cells[2], "-1.00");
 }
 
-// Landed before this series (one trend class since the fast and slow classes were removed): the
-// fast sleeve's row is filled as the trend sleeve's is. Columns by position, so the test reads
-// the same on the parent.
+// One trend class: the fast sleeve's row is filled as the trend sleeve's is. Columns by
+// position.
 TEST_F(LiveCsvFiles, TheFastSleevesRowCarriesItsOwnForecastSizingVolatilityAndAverages) {
     const auto lines = positions_file();
     const size_t h = header_at(lines);
@@ -245,8 +244,8 @@ TEST_F(LiveCsvFiles, TheFastSleevesRowCarriesItsOwnForecastSizingVolatilityAndAv
     ASSERT_NE(data, nullptr);
     ASSERT_NE(data->current_volatility, 0.01) << "the test sleeve computed no volatility";
     ASSERT_NE(data->current_forecast, 0.0) << "the test sleeve computed no forecast";
-    // Row 2 onward printed six decimals before this series as well; the first row did not, so
-    // the figures are compared as numbers to the precision the parent's first row has.
+    // The first row's figures are compared as numbers, to the precision a row printed with
+    // fewer decimals has.
     EXPECT_NEAR(std::stod(fast[7]), data->current_forecast, 0.005);
     EXPECT_EQ(fast[8], six(data->current_volatility));
     const auto emas = fast_->strategy->get_ema_values(kSym, {8, 32, 64, 256});
@@ -282,7 +281,7 @@ TEST_F(LiveCsvFiles, EveryRowOfTheSettledFilePrintsSixDecimalsAndItsMarksInFull)
     EXPECT_EQ(cells[5], "-185.00");
 }
 
-// HD 2026-10-12: the settled file's prior_mark and mark are the two prices of the report's settled
+// The settled file's prior_mark and mark are the two prices of the report's settled
 // table, the pair the settle booked the row on (core/report_settled_marks.hpp). A Monday file
 // settles Sunday: KE (1 contract; Thu 679.50, Fri 668.50, no Sunday session) printed no bar, so
 // its mark is empty and its prior_mark is its last known close, Friday's 668.5, not Thursday's
