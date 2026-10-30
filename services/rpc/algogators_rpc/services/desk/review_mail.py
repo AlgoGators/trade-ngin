@@ -53,9 +53,11 @@ class Review:
     held_date: Optional[dt.date]  # the last published day before the target
     held: Dict[str, Line]         # its book (qt on a desk portfolio)
     desk_edits_kept: bool
-    data_status: str              # complete | partial
+    data_status: str              # complete | partial | failed
     missing: Tuple[str, ...] = ()
-    missing_last_bar: Mapping[str, dt.date] = field(default_factory=dict)
+    missing_last_bar: Mapping[str, Optional[dt.date]] = field(default_factory=dict)
+    # Missing symbols neither the row nor the table could name (counted, listed as a number).
+    unnamed_missing: int = 0
     supersedes: Optional[str] = None   # when the earlier e-mail of the day went out
     desk_url: str = ""
 
@@ -117,14 +119,18 @@ def build(review: Review) -> Tuple[str, str]:
         notes.append("<p><b>The desk's saved edits for this day were kept.</b> Only the model "
                      "(system) book was rebuilt; the new target column is the desk's book, the "
                      "model book column is the rebuilt model.</p>")
-    if review.missing:
+    if review.missing or review.unnamed_missing:
         items = []
         for sym in review.missing:
             last = review.missing_last_bar.get(sym)
             items.append(f"<li>{e(sym)}: last bar {e(str(last)) if last else 'none'}</li>")
-        notes.append(f"<p>data-ngin reported {len(review.missing)} symbol(s) missing for "
+        if review.unnamed_missing:
+            items.append(f"<li>{review.unnamed_missing} more the data does not name, with no bar "
+                         "in the table</li>")
+        notes.append(f"<p>{len(review.missing) + review.unnamed_missing} symbol(s) are missing for "
                      f"{e(str(review.bar_date))} (status {e(review.data_status)}); each is "
-                     "within the engine's staleness tolerance and is held at its last price:</p>"
+                     "carried at its last price (a per-contract root is priced from the vendor's "
+                     "bar when there is one):</p>"
                      f"<ul>{''.join(items)}</ul>")
     else:
         notes.append(f"<p>Data for {e(str(review.bar_date))}: {e(review.data_status)}, no "
