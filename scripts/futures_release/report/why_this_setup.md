@@ -1,7 +1,7 @@
 ## Why this setup
 
-The full reasoning, with the evidence for each point, is in `docs/knowledge/` (start with
-`03_tuning_and_results/TUNING_STORY.md` and `02_decisions/CARVER_DEPARTURES.md`). In short:
+The full reasoning, with the evidence for each point, goes in the repository with the knowledge documents, a separate pull
+request. In short:
 
 - **Sample covariance and the fraction step.** The set chosen from Carver's joint search of the optimiser covariance, the
   buffer step and the limits over 21 windows. The carver covariance and the edge step lifted only the 2y and lowered

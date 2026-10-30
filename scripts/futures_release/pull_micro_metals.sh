@@ -1,21 +1,21 @@
 #!/bin/zsh
 # pull_micro_metals.sh <END>: the Databento pull of micro gold (MGC) and micro silver (SIL) (PULL_REQUEST.md).
-#   START (environment, default 2026-10-27): the first day. END is exclusive, as Databento reads it: the merge day
-#   loads through the day before. Per-contract daily bars (parent symbology), both continuous .v.0 series and the
-#   contract definitions of those days.
+#   START (environment, default 2010-06-06, the history part B needs): the first day. END is exclusive, as Databento reads
+#   it: the merge day loads through the day before. Per-contract daily bars (parent symbology), both continuous .v.0 series
+#   and the contract definitions from 2026-10-27.
 #
 # Reads the key from config/databento.env and never prints it or puts it in the process list. Writes only into
-# $RUN_DIR/pull_<today UTC>/ and refuses to overwrite a file. CHANGES: nothing in any database. TAKES: seconds; a few
-# cents (START=2010-06-06: about two dollars). UNDO: remove the new folder.
+# $RUN_DIR/pull_<today UTC>_to_<END>/ and keeps a file already there, so a pull with a later END goes to a new folder. CHANGES:
+# nothing in any database. TAKES: seconds; about two dollars. UNDO: remove the new folder.
 set -e
 REPO="${0:A:h:h:h}"; RUN_DIR="${RUN_DIR:-$REPO/futures_release_run}"
 END="${1:?give END (exclusive), e.g. the seed day}"
 [[ "$END" == <->-<->-<-> ]] || { echo "END must be YYYY-MM-DD"; exit 2 }
-OUT="$RUN_DIR/pull_$(date -u +%F)"
+OUT="$RUN_DIR/pull_$(date -u +%F)_to_$END"
 KEY=$(sed -n 's/^DATABENTO_API_KEY=//p' "$REPO/config/databento.env")
 [ -n "$KEY" ] || { echo "no key in config/databento.env"; exit 1 }
 mkdir -p "$OUT"
-START="${START:-2026-10-27}"
+START="${START:-2010-06-06}"
 
 pull() {  # dataset symbol stype schema file
   local f="$OUT/$5.csv.zst"

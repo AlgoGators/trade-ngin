@@ -5,7 +5,8 @@
 #   fill_on_production.sh production                         new_algo_data (config/defaults.json)
 #   fill_on_production.sh scratch <database with scratch in its name>   PG* from the environment
 #   FILL_YES=1           skip the typed confirmation (tests)
-#   FILL_INCLUDE_NEW=1   also insert holes dated after the tested range (the dry run lists them either way)
+# Every hole found goes in, those dated after the tested range too, by the same rule and listed first: the count piped or
+# typed at the confirmation must equal all of them, or nothing is written (exit 5).
 #
 # Order:
 #   0. preflight: refuses if this target's DONE marker exists (exit 4) or a STARTED marker of an unfinished run does
@@ -46,12 +47,13 @@ PY
     TARGET=production ;;
   scratch)
     db="${2:-}"; [[ "$db" == *scratch* ]] || { print -r -- "REFUSED: scratch needs a database with scratch in its name"; exit 2 }
+    . "${DF:h}/scratch_guard.zsh"; scratch_guard
     export PGDATABASE="$db"
     TARGET="scratch_$db" ;;
   *) print -r -- "usage: fill_on_production.sh production | scratch <scratch database>"; exit 2 ;;
 esac
 export PGTZ=UTC
-INCLUDE_NEW=false; [ "${FILL_INCLUDE_NEW:-}" = 1 ] && INCLUDE_NEW=true
+INCLUDE_NEW=true
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 LOG="$HERE/fill_${TARGET}_${STAMP}.log"; LEDGER="$HERE/fill_${TARGET}_${STAMP}_ledger.csv"
 DONE="$HERE/fill_${TARGET}.DONE"; STARTED="$HERE/fill_${TARGET}.STARTED"
@@ -82,7 +84,7 @@ N=$(( $(wc -l < "$W/fill_rows.csv") - 1 ))
 say "holes found: $N"
 if [ "$N" -eq 0 ]; then say "nothing to fill: 0 holes. No write made."; CLEAN=1; exit 0; fi
 
-# the junk verdict of each row (the session classifier's volume limbs, scripts/junk_replica.py), read-only
+# the junk verdict of each row (the session classifier's volume limbs, fill/scripts/junk_replica.py), read-only
 PGOPTIONS='-c default_transaction_read_only=on' q -c "\\copy (select symbol, ((time at time zone 'UTC')::date)::text as date, volume, high, low from futures_data.ohlcv_1d where symbol like '%.v.0' order by 1, 2) to '$W/series.csv' csv header" || die "series read failed"
 python3 -c "import csv,sys; r=list(csv.DictReader(open(sys.argv[1]))); w=csv.writer(open(sys.argv[2],'w',newline='')); w.writerow(['symbol','d','volume','high','low']); [w.writerow([x['symbol'],x['d'],x['volume'],x['high'],x['low']]) for x in r]" "$W/fill_rows.csv" "$W/holes_min.csv"
 python3 "$PY/junk_replica.py" "$W/series.csv" "$W/holes_min.csv" "$W/junk.csv" | tee -a "$LOG" || die "junk replica failed"
@@ -92,19 +94,20 @@ cat "$LEDGER" >> "$LOG"
 say "== the dry run's ledger against the tested ledger"
 python3 "$PY/ledger_diff.py" "$LEDGER" "$TESTED_LEDGER" "$TESTED_END" "$W/ledger_diff.txt" | tee -a "$LOG"
 [ ${pipestatus[1]} -eq 0 ] || die "the dry run differs from the tested ledger within the tested range (to $TESTED_END): refused, nothing written" 6
-# the rows to insert: the tested range, plus the newer holes with FILL_INCLUDE_NEW=1
+# the rows to insert: every hole, the tested range and the newer ones
 python3 -c "
 import csv, sys
 r = list(csv.DictReader(open(sys.argv[1]))); w = csv.DictWriter(open(sys.argv[2], 'w', newline=''), fieldnames=list(r[0].keys())); w.writeheader()
 [w.writerow(x) for x in r if x['d'] <= sys.argv[3] or sys.argv[4] == 'true']" "$W/fill_rows.csv" "$W/expected.csv" "$TESTED_END" "$INCLUDE_NEW"
 NE=$(( $(wc -l < "$W/expected.csv") - 1 ))
-say "rows to insert into each table: $NE (holes after $TESTED_END not included: $(( N - NE )))"
+NEW=$(python3 -c "import csv,sys; print(sum(1 for x in csv.DictReader(open(sys.argv[1])) if x['d'] > sys.argv[2]))" "$W/expected.csv" "$TESTED_END")
+say "rows to insert into each table: $NE (of them dated after $TESTED_END, with no tested ledger behind them: $NEW)"
 if [ "$NE" -eq 0 ]; then say "nothing to insert. No write made."; CLEAN=1; exit 0; fi
 
 # 2. confirmation and the insert
 if [ "${FILL_YES:-}" != 1 ]; then
   print -n "Insert $NE rows into futures_data.ohlcv_1d and $NE into futures_data.ohlcv_1d_raw on $TARGET? Type $NE to go: "
-  read ans; [ "$ans" = "$NE" ] || die "not confirmed; nothing written" 5
+  read ans; [ "$ans" = "$NE" ] || die "not confirmed: the count given is '$ans' and the holes are $NE, $NEW of them dated after $TESTED_END (listed above); nothing written" 5
 fi
 say "== 2. insert (one transaction)"
 print -r -- "started $STAMP, log $(basename "$LOG")" > "$STARTED"
@@ -132,7 +135,7 @@ q -f "$SQL/fill_counts.sql" 2>&1 | tee -a "$LOG"
 { print -r -- "begin;"; cat "$SQL/fill_core.sql" "$SQL/fill_dryrun.sql" "$SQL/fill_dryrun_guard.sql"; } > "$W/rerun.sql"
 q -f "$W/rerun.sql" 2>&1 | grep -v NOTICE > "$W/rerun.txt"
 again=$(grep -A2 "^ holes" "$W/rerun.txt" | tail -1 | tr -d ' ')
-say "second dry run: $again holes left (holes after $TESTED_END not inserted: $(( N - NE )))"
+say "second dry run: $again holes left"
 print -r -- "filled $NE rows per table at $STAMP (log $(basename "$LOG"))" > "$DONE"
 /bin/rm -f "$STARTED"
 CLEAN=1

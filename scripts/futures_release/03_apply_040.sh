@@ -12,8 +12,8 @@
 #   backtest.executions (double precision), two on backtest.results (roll_bar_moves, roll_gap_values), two CHECKs
 #   (chk_executions_roll_split, chk_backtest_executions_roll_split) and the eight column comments. Every existing row
 #   reads NULL; no value, key or index changes. Nothing else.
-# THE FILE: $WT/migrations/040_roll_split.sql at REF, never a copy. The script refuses unless its git blob equals the
-#   blob of origin/main-rolls (the merged roll work) and the file on disk equals the blob.
+# THE FILE: migrations/040_roll_split.sql of this checkout, never a copy. The script refuses unless the file on disk equals
+#   HEAD's blob.
 # BEFORE AND AFTER: the schema fingerprint (sql/schema_fingerprint.sql: every column and constraint of the engine's
 #   schemas). Before: none of the eight columns or two CHECKs present. After: the fingerprint differs from the one
 #   before by exactly those ten lines, or the script reports FAIL (the migration's own transaction has committed by
@@ -24,7 +24,7 @@
 #   value, which no row does until a per_contract_rolls run writes one).
 set -u
 . "${0:A:h}/lib.zsh"
-TARGET="${TARGET:-${2:-}}"; CONFIRM="${3:-}"
+TARGET="${2:-${TARGET:-}}"; CONFIRM="${3:-}"
 resolve_target
 WT="$REPO"
 OUT="$RUN_DIR/migration_040"; mkdir -p "$OUT"; LOG="$OUT/apply_040_${TAG}.log"

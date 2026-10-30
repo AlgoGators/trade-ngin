@@ -8,15 +8,17 @@ The MGC and SIL bars are bought from Databento and are not kept in the repositor
 | `BACKFILL` | 06 (part A2) and 07 (part B) | 2026-10-27 to the day before the merge |
 | `ROWS` | 07 (part B) | the MGC.v.0 and SIL.v.0 history to 2026-10-26 |
 
-**One pull gives both.** Run it at the release, after the integration PR merges:
+**One pull gives both.** Run it at the release, after AlgoGators/trade-ngin#282 merges. It starts at 2010-06-06 by default,
+because part B needs the history; a later `START` leaves part B with no `ROWS`:
 
 ```
-START=2010-06-06 zsh scripts/futures_release/pull_micro_metals.sh <merge day>
+zsh scripts/futures_release/pull_micro_metals.sh <merge day>
 ```
 
 The end date stays open until then: `<merge day>` is the day of the merge. Databento's end is exclusive, so the pull
 holds bars through the day before. The key is read from `config/databento.env` and never printed. The files go to
-`$RUN_DIR/pull_<today>/`.
+`$RUN_DIR/pull_<today>_to_<merge day>/`, and the script prints the folder. It keeps a file already there, so a retry fills in what
+is missing, and a pull with a later end is a new folder (README, "Steps 3 to 7 and the daily pull").
 
 | File | dataset | symbols | stype_in | schema | start | end |
 |---|---|---|---|---|---|---|
@@ -37,7 +39,7 @@ of definitions is the slow pull and is not needed.
 **Then build the rows:**
 
 ```
-zsh scripts/futures_release/06_build_backfill.sh production "$RUN_DIR/pull_<today>"
+zsh scripts/futures_release/06_build_backfill.sh production "<the folder the pull printed>"
 ```
 
 It decompresses the files under `$RUN_DIR/tmp/`, reads the GC and SI twin rows read only from the target, and runs

@@ -1,18 +1,17 @@
 #!/bin/zsh
 # apply_micro_metals_on_production.sh: loads micro gold (MGC) and micro silver (SIL) into new_algo_data, one part per run,
-# in the order the release's README sets, which cannot be changed. Called by 05, 06 and 07.
+# in the order the release's README sets. Called by 05, 06 and 07.
 #   zsh apply_micro_metals_on_production.sh A|A2|B [production]                 (production is the default)
 #   zsh apply_micro_metals_on_production.sh A|A2|B scratch <scratch database>   a test copy (PG* from the environment)
 #   ROWS=<folder>      part A and B's rows to 2026-10-26 (required, see PULL_REQUEST.md)
 #   BACKFILL=<folder>  part A2's rows (required for A2); for B, the same folder, so its continuous rows go in too
 # Every part runs the read-only preflight first (preflight.sql) and refuses (exit 7) a session that is not UTC. Each part
-# is one transaction that refuses out of order, refuses any row already stored, checks counts and shapes, and commits
+# is one transaction that refuses any row already stored, checks counts and shapes, and commits
 # only if every check passes (exit 1 rolled back). Credentials from config/defaults.json via PG* variables, never
 # printed. The log is written to $RUN_DIR/load/.
 set -u
 setopt pipefail
 cd "${0:A:h}"
-REPO="${0:A:h:h:h:h}"; RUN_DIR="${RUN_DIR:-$REPO/futures_release_run}"; mkdir -p "$RUN_DIR/load"
 REPO="${0:A:h:h:h:h}"; RUN_DIR="${RUN_DIR:-$REPO/futures_release_run}"; mkdir -p "$RUN_DIR/load"
 PART="${1:-}"; MODE="${2:-production}"
 case "$PART" in A|A2|B) ;; *) print -r -- "usage: zsh ${0:t} A|A2|B [production | scratch <scratch database>]"; exit 2;; esac
@@ -32,6 +31,7 @@ PY
     TARGET=production ;;
   scratch)
     db="${3:-}"; [[ "$db" == *scratch* ]] || { print -r -- "REFUSED: scratch needs a database with scratch in its name"; exit 2 }
+    . "${0:A:h:h}/scratch_guard.zsh"; scratch_guard
     export PGDATABASE="$db"
     TARGET="scratch_$db" ;;
   *) print -r -- "usage: zsh ${0:t} A|A2|B [production | scratch <scratch database>]"; exit 2 ;;

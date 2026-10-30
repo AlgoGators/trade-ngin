@@ -146,9 +146,9 @@ move is multiplied once by the same factor below 1 (a symbol on hold stays at it
 | held book | the search starts from the book held (after the sign closes) and moves one contract at a time | code `one_pass::search`, `one_pass.cpp` |
 | 1e-6 | the smallest improvement a search step must make | code, `one_pass.cpp` (config `convergence_threshold` is not read by this search) |
 | 100 | floor on the search's step count (the cap is the larger of 100 and twice the contracts to trade, plus 1) | config `optimization.max_iterations`; code `pass_cap`, `one_pass.cpp` |
-| 0.05 x tau | no-trade buffer: the larger of 5 percent of tau (1 percent) and the risk of one contract of the largest contract held or searched | config `optimization.b_sigma_floor`; `optimization.b_sigma_rule` absent (granularity) |
-| fraction | outside the buffer, every contract moves the same fraction of the way from the held book to the search's answer, a = (tracking error of the held book - buffer) / that error, and is then rounded | config `optimization.buffer_step_rule` (absent: fraction); code `buffer`, `one_pass.cpp` |
-| 2 | a position whose forecast changed sign closes only once the opposite forecast reaches 2 | config `optimization.sign_close_band`; `optimization.wrong_sign_rule` absent (close) |
+| 0.05 x tau | no-trade buffer: the larger of 5 percent of tau (1 percent) and the risk of one contract of the largest contract held or searched | config `optimization.b_sigma_floor`; the larger-of rule is code, `b_sigma`, `one_pass.cpp` |
+| fraction | outside the buffer, every contract moves the same fraction of the way from the held book to the search's answer, a = (tracking error of the held book - buffer) / that error, and is then rounded | code `buffer`, `one_pass.cpp` |
+| 2 | a position whose forecast changed sign closes only once the opposite forecast reaches 2 | config `optimization.sign_close_band`; the closing itself is code |
 | half away from zero | rounding to whole contracts | code `round_half_away`, `one_pass.cpp` |
 | 5 contracts | at most 5 contracts trimmed a day when the rounded book is over a limit | config `risk.json` `trim_max` |
 | signal close | fills are at the close of the bar the decision was made on; cost is charged separately against that day's P&L | code |

@@ -18,6 +18,6 @@ from futures_data.contract_ohlcv_1d t where root in ('MGC', 'SIL') and date <= :
 select 'v0 symbols ' || count(distinct symbol) || ' ' || string_agg(distinct symbol, ' ' order by symbol)
 from futures_data.ohlcv_1d where symbol like '%.v.0';
 -- the contract table without loaded_at (the insert clock: a reload of the same bars differs only there), every row in
--- the order of all its other columns; this is the line compared with fill_mm after the data steps
+-- the order of all its other columns; this is the line compared after the data steps
 select 'contract_ohlcv_1d_less_loaded_at ' || count(*) || ' ' || md5(string_agg(concat_ws(',', instrument_id, date, root, raw_symbol, expiration, open, high, low, close, volume), E'\n' order by instrument_id, date, root, raw_symbol, expiration, open, high, low, close, volume))
 from futures_data.contract_ohlcv_1d t where date <= :'cut'::date;

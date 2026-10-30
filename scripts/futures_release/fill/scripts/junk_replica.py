@@ -3,7 +3,7 @@ session_flags), on one symbol's series of the .v.0 rows after the fill. Replicat
 limb, the 50-lot / 25 % floor, the no-norm floor, and the norm (median of the 20 trailing weekday SESSION bars, strictly
 before the date; bootstrap on all trailing weekday bars until one is SESSION; a median of 0 is no norm).
 Not replicated: the instrument-id limbs (in per-contract mode the ids are the held contract's, which change only at
-rolls). Step 4 compares this with the engine's own verdicts.
+rolls).
 usage: junk_replica.py <series.csv: symbol,date,volume,high,low> <fills.csv> <out.csv>"""
 import csv, sys, datetime, collections
 series_csv, fills_csv, out_csv = sys.argv[1:4]

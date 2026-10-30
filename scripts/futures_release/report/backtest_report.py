@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Writes the three reports of the backtest results folder (backtests_conservative.sh report).
+"""Writes the three reports of the backtest results folder (09_backtests.sh report).
 
-Usage: backtest_report.py <set folder> <knobs.md>   (the database from the PG* environment: production/lib.zsh sets it;
+Usage: backtest_report.py <set folder> <knobs.md>   (the database from the PG* environment: lib.zsh sets it;
        the connection comes from the environment, never from arguments, so no address reaches a file)
 
   <results folder>/CONFIG_AND_KNOBS.md   every tuned number and the config files in full (from knobs.md and the
@@ -25,7 +25,7 @@ WINDOWS = ("2y", "5y", "10y", "16y")
 
 
 def sql(q):
-    return subprocess.run(["/opt/homebrew/opt/postgresql@16/bin/psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", "-c", q],
+    return subprocess.run([os.path.join(os.environ.get("PGBIN", ""), "psql"), "-X", "-At", "-v", "ON_ERROR_STOP=1", "-c", q],
                           capture_output=True, text=True, check=True).stdout.strip()
 
 

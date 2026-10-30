@@ -34,9 +34,14 @@ Data to the cut 2026-10-23, read 2026-10-30 (continuous tables before the fill):
 symbols it signalled on its last day, with any micro among them. Read 2026-10-30: no QT book holds or signals MGC or SIL,
 and each signals on 36 symbols. After the pairs are in, QT's own runs read as the QT desk's owner expects.
 
+These lines read past rows only. They do not show that the runs are stopped or that a config is ready: that is the QT desk's
+owner's word (README, "The QT runs"). A book that looks as expected here can still be running.
+
 ## After the data steps: the data to the cut must equal the tuned data
 
-These are the fingerprints of the data every reference run read:
+These are the fingerprints of the data every reference run read. `sql/expected_fingerprint.txt` holds the same lines, and
+`09_backtests.sh run` and `11_live_chain.sh run` refuse (exit 3) unless they equal it. `01_readonly_checks.sh` cuts its lines at
+200 characters, so its `v0 symbols` line reads short; the file holds the whole line.
 
 | Line | Must read after 08 |
 |---|---|
@@ -48,17 +53,20 @@ These are the fingerprints of the data every reference run read:
 | v0 symbols | 38 (the 36 and MGC.v.0, SIL.v.0) |
 
 The two lines with loaded_at (the contract table whole and the micros' contract rows) differ by the insert clock only.
-If the metadata line differs, read what changed: a display column may have been edited since. Any other difference
-stops the seed before the backtests: production would not be the data the reference runs read.
+If the metadata line differs, read what changed. A display column edited since is harmless: pass that md5 as
+`ACCEPT_METADATA_MD5=<md5>` to 09 and 11. A changed fee is not: the SIL row's fee (0.86, still to confirm) is read by the search,
+so a different fee moves the book and this md5 together. Confirm it before the seed; if it changes, the anchors are remeasured
+and this file, `sql/expected_fingerprint.txt` and the live reference are rewritten from the new runs (README, "Before the seed:
+the fees"). Any other difference stops the seed before the backtests: production would not be the data the reference runs read.
 
 Per step (each script checks its own change and prints PASS or FAIL):
 
 | Step | After it |
 |---|---|
 | 06 part A2 | the contract table grown by the backfill's MGC and SIL rows only |
-| 04 hole fill | both continuous tables +476 rows to the cut (and the listed holes after it, with `<all rows>`); the contract table less loaded_at, metadata and micros unchanged |
+| 04 hole fill | both continuous tables +476 rows to the cut, 167,087 each (and the listed holes after it, when the second number took them); the contract table less loaded_at, metadata and micros unchanged |
 | 07 part B | both continuous tables grown by the micros' rows only; contract table and metadata unchanged |
-| 08 micros fill | both continuous tables +8 rows (4 MGC.v.0, 4 SIL.v.0), equal to `fill/LEDGER_fill_micros.csv` |
+| 08 micros fill | both continuous tables +8 rows to the cut (4 MGC.v.0, 4 SIL.v.0), equal to `fill/LEDGER_fill_micros.csv`, plus any listed hole after it; `second dry run: 0 holes left` |
 
 ## After the backtests (09)
 
@@ -70,6 +78,7 @@ Per step (each script checks its own change and prints PASS or FAIL):
 |---|---|
 | CONSERVATIVE live_results after 10 | 0 rows; live_start_date 2025-10-05 |
 | CONSERVATIVE live_results after 11 | one row per calendar date 2025-10-05 .. END, every identity PASS (`11_live_chain.sh check`) |
+| live reference to 2026-10-23 | PASS: 384 rows to 2026-10-23, book value 519,541.86, md5 1524f1a6a50a38b17d06f49fdbd6f7d1. The rehearsal's chain, to the cent (`11_live_chain.sh check`); no date after it has a reference |
 | QT books | every row dated before the chain's cutoff unchanged (11's check compares count and md5 per table and book) |
 | no CONSERVATIVE row outside the scripts | the book's rows equal the chain's own: dates 2025-10-05 .. END, each run in `checks/progress.txt` |
 
@@ -80,4 +89,4 @@ Per step (each script checks its own change and prints PASS or FAIL):
 | the cron's time zone | UTC |
 | the production image's library versions (`ldd --version`, `ldd` of the runner) | recorded |
 | the server's free disk | room for the archive of the trading schema and four backtests |
-| the first CONSERVATIVE cron day on production | its stored run_metadata settings equal `config_reference/` |
+| the first CONSERVATIVE cron day on production, after AlgoGators/trade-ngin#275 moves the daily jobs to new_algo_data | its stored run_metadata settings equal `config_reference/` |

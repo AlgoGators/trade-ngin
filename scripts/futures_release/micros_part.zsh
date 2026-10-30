@@ -2,12 +2,16 @@
 # part changed only what it names. Called as: . micros_part.zsh <part> <target>; BACKFILL as the load script reads it.
 set -u
 . "${0:A:h}/lib.zsh"
-PART="$1"; TARGET="${TARGET:-${2:-}}"
+PART="$1"; TARGET="${2:-${TARGET:-}}"
 resolve_target
 D="$RUN_DIR/data"; mkdir -p "$D"; LOG="$D/micros_part${PART}_${TAG}.log"
 MMS="$PROD/load/apply_micro_metals_on_production.sh"
 fp() { PGOPTIONS='-c default_transaction_read_only=on' $PGBIN/psql -X -At -v ON_ERROR_STOP=1 -v cut=2099-12-31 -f "$PROD/sql/data_fingerprint.sql" > "$1" || die "fingerprint failed"; }
 check_db
+if [ "$PART" = B ]; then   # part B after the hole fill only: 166,611 rows to the cut before it, 476 more after it, micros aside
+  n=$(qr "select (select count(*) from futures_data.ohlcv_1d where time < '2026-10-24' and symbol not in ('MGC.v.0','SIL.v.0')) || ' ' || (select count(*) from futures_data.ohlcv_1d_raw where ts_event < '2026-10-24' and symbol not in ('MGC.v.0','SIL.v.0'))") || die "the row count to the cut failed"
+  [ "$n" = "167087 167087" ] || die "the continuous tables hold $n rows to 2026-10-23, less the micros, not 167087 167087: run the hole fill (04) first; nothing written" 8
+fi
 say "== part $PART on $DBNAME, $(date -u +%FT%TZ); load script sha256 $(shasum -a 256 "$MMS" | cut -c1-16)${BACKFILL:+; BACKFILL $BACKFILL}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ); B="$D/mm${PART}_${TAG}_${STAMP}_before.txt"; A="$D/mm${PART}_${TAG}_${STAMP}_after.txt"
 fp "$B"; sed 's/^/before: /' "$B" | tee -a "$LOG"
