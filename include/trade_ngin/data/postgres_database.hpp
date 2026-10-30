@@ -497,6 +497,19 @@ public:
         const std::string& book = kDefaultBook);
 
     /**
+     * @brief Issue #188: per symbol, the rolls stored for the dates from `from` (inclusive) to
+     *        `date` (exclusive), oldest first (by date, then by the confirming date the exec id
+     *        carries): the contract each roll's EXEC_<symbol>_<date>_RC closing leg rolled out of
+     *        and the one its _RO opening leg of the same date rolled into ("" when that leg is
+     *        not stored). One roll stored for several sleeves is one entry. A re-run reads it to
+     *        tell whether its own legs are stale (contract_held_coming_into).
+     */
+    virtual Result<std::unordered_map<std::string, std::vector<StoredRoll>>> get_previous_rolls(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& from,
+        const Timestamp& date, const std::string& table_name = "trading.executions",
+        const std::string& book = kDefaultBook);
+
+    /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
      * @param run_id Backtest run identifier
      * @param start_date Start date of backtest

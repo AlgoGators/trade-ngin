@@ -198,6 +198,55 @@ Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_store
     }
 }
 
+Result<std::unordered_map<std::string, std::vector<StoredRoll>>> PostgresDatabase::get_previous_rolls(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& from,
+    const Timestamp& date, const std::string& table_name, const std::string& book) {
+    using Rolls = std::unordered_map<std::string, std::vector<StoredRoll>>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rolls>(validation.error()->code(), validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<Rolls>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
+    }
+    try {
+        pqxx::work txn(*connection_);
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<Rolls>(table_validation.error()->code(),
+                                     table_validation.error()->what());
+        }
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        // Each closing leg with the opening leg of the same roll (same date, sleeve and id stem);
+        // a roll stored for several sleeves once; oldest first.
+        auto result = txn.exec(
+            "SELECT DISTINCT ON (rc.symbol, rc.date, rc.exec_id) rc.symbol, "
+            "COALESCE(rc.instrument_id, ''), COALESCE(ro.instrument_id, '') FROM " + table_name +
+                " AS rc LEFT JOIN " + table_name +
+                " AS ro ON ro.strategy_id = rc.strategy_id AND ro.portfolio_id = rc.portfolio_id"
+                " AND ro.portfolio_type = rc.portfolio_type AND ro.date = rc.date"
+                " AND ro.strategy_name = rc.strategy_name AND ro.symbol = rc.symbol"
+                " AND ro.execution_type = 'ROLL'"
+                " AND ro.exec_id = left(rc.exec_id, length(rc.exec_id) - 3) || '_RO'"
+                " WHERE rc.strategy_id = $1 AND rc.portfolio_id = $2 AND rc.date >= $3::date"
+                " AND rc.date < $4::date AND rc.portfolio_type = $5"
+                " AND rc.execution_type = 'ROLL' AND rc.exec_id LIKE '%\\_RC'"
+                " ORDER BY rc.symbol, rc.date, rc.exec_id, ro.instrument_id",
+            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(from),
+                         trade_ngin::core::format_utc_date(date), book});
+        txn.commit();
+        Rolls out;
+        for (const auto& row : result) {
+            out[row[0].as<std::string>()].push_back({row[1].as<std::string>(), row[2].as<std::string>()});
+        }
+        return Result<Rolls>(out);
+    } catch (const std::exception& e) {
+        return make_error<Rolls>(ErrorCode::DATABASE_ERROR,
+                                 "Failed to read the earlier stored ROLL legs: " + std::string(e.what()),
+                                 "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,
