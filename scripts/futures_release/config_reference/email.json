@@ -1,0 +1,10 @@
+{
+  "_description": "No seeding run sends e-mail. A send, if one were ever attempted, would fail: no server listens here and the address does not exist.",
+  "smtp_host": "127.0.0.1",
+  "smtp_port": 1,
+  "username": "none",
+  "password": "none",
+  "from_email": "seeding@example.invalid",
+  "to_emails": ["nobody@example.invalid"],
+  "use_tls": false
+}
