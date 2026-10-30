@@ -106,6 +106,7 @@ set(TEST_SOURCES
     backtest/test_listing_loader.cpp
     portfolio/test_loop_fixups.cpp
     portfolio/test_worked_days.cpp
+    portfolio/test_overlay_covariance_pass.cpp
     portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
     risk/test_overlay_columns.cpp

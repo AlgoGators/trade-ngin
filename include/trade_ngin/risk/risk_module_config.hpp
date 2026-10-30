@@ -65,6 +65,11 @@ struct CarverModuleConfig {
     /// and the fields above hold RiskConfig's defaults.
     double per_name_cap{0.0};
     int trim_max{0};
+    /// With the overlay's limits, required: how the overlay's covariance is built. "sample" (the
+    /// 252-date sample covariance of the gate window, risk/overlay.hpp) or "carver" (each
+    /// symbol's sizing standard deviation with exponentially weighted weekly correlations,
+    /// overlay::carver_covariance). Empty without the overlay's limits.
+    std::string overlay_covariance;
     /// What the gate does with a configured symbol that has no bar in the window.
     /// "ignore" is today's fail-open behaviour and has to say why it is chosen.
     std::string missing_symbol_policy{"ignore"};

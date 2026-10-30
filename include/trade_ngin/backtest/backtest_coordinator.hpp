@@ -52,6 +52,9 @@ struct BacktestCoordinatorConfig {
     /// (futures or equities). The one source of the factor: there is no default, and a run
     /// without a positive value is refused before it loads a bar.
     double statistics_sessions_per_year = 0.0;
+    /// backtest.first_traded_date ("YYYY-MM-DD", test-only): the warm-up runs on until the first
+    /// bar date on or after it. Empty: the strategies' own warm-up.
+    std::string first_traded_date;
 };
 
 /**

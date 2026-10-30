@@ -202,6 +202,7 @@ public:
                 }
                 required.push_back("per_name_cap");
                 required.push_back("trim_max");
+                required.push_back("overlay_covariance");
             }
             auto r = require_keys(m, required, type, {"R_max", "R_jump_max", "R_shock_max"});
             if (r.is_error()) return forward(r);
@@ -219,6 +220,13 @@ public:
                                        "got " + val(trim));
                 }
                 c.trim_max = trim.get<int>();
+                const auto& cov = m.at("overlay_covariance");
+                if (!cov.is_string() ||
+                    (cov.get<std::string>() != "sample" && cov.get<std::string>() != "carver")) {
+                    return err(path_ + ".overlay_covariance must be \"sample\" or \"carver\" (how "
+                                       "the overlay's covariance is built), got " + val(cov));
+                }
+                c.overlay_covariance = cov.get<std::string>();
             }
             // LOOP_SPEC sections 4 and 12: the overlay's three risk limits, ratios to tau. All
             // three or none; each a positive number.
@@ -660,6 +668,7 @@ nlohmann::json RiskModuleConfig::to_json() const {
             j["R_shock_max"] = c->r_shock_max;
             j["per_name_cap"] = c->per_name_cap;
             j["trim_max"] = c->trim_max;
+            j["overlay_covariance"] = c->overlay_covariance;
         }
         j["missing_symbol_policy"] = c->missing_symbol_policy;
         if (!c->missing_symbol_policy_reason.empty()) {

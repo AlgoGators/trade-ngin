@@ -140,6 +140,78 @@ GateWindow gate_window(const std::vector<std::vector<double>>& returns,
     return out;
 }
 
+void carver_covariance(GateWindow& window, const std::vector<std::vector<double>>& returns,
+                       const std::vector<double>& ordinals, const std::vector<double>& sigma) {
+    if (window.blind()) return;
+    const std::size_t participants = window.in_r.size();
+    if (returns.size() != ordinals.size() || sigma.size() != participants) return;
+    // weekly returns, Saturday to Friday, per participant (NaN for a week with no return)
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<long> weeks;
+    std::vector<std::vector<double>> weekly;  // [week][participant]
+    for (std::size_t d = 0; d < returns.size(); ++d) {
+        const long week = static_cast<long>(std::floor((ordinals[d] - 2.0) / 7.0));
+        if (weeks.empty() || weeks.back() != week) {
+            weeks.push_back(week);
+            weekly.emplace_back(participants, nan);
+        }
+        for (std::size_t i = 0; i < participants && i < returns[d].size(); ++i) {
+            const double r = returns[d][i];
+            if (std::isnan(r)) continue;
+            double& w = weekly.back()[i];
+            w = std::isnan(w) ? r : w + r;
+        }
+    }
+    const double lambda = 2.0 / (kCarverCorrelationWeeks + 1.0);
+    auto rho = [&](std::size_t i, std::size_t j) {
+        std::vector<std::pair<double, double>> both;
+        for (const auto& row : weekly) {
+            if (!std::isnan(row[i]) && !std::isnan(row[j])) both.emplace_back(row[i], row[j]);
+        }
+        if (both.size() < 2) return 0.0;
+        double weight = 1.0, sw = 0.0, mx = 0.0, my = 0.0;
+        std::vector<double> w(both.size());
+        for (std::size_t t = both.size(); t-- > 0;) {  // the newest week weighs 1
+            w[t] = weight;
+            weight *= 1.0 - lambda;
+        }
+        for (std::size_t t = 0; t < both.size(); ++t) {
+            sw += w[t];
+            mx += w[t] * both[t].first;
+            my += w[t] * both[t].second;
+        }
+        mx /= sw;
+        my /= sw;
+        double cxy = 0.0, cxx = 0.0, cyy = 0.0;
+        for (std::size_t t = 0; t < both.size(); ++t) {
+            const double dx = both[t].first - mx, dy = both[t].second - my;
+            cxy += w[t] * dx * dy;
+            cxx += w[t] * dx * dx;
+            cyy += w[t] * dy * dy;
+        }
+        if (!(cxx > 0.0) || !(cyy > 0.0)) return 0.0;
+        return std::max(-1.0, std::min(1.0, cxy / std::sqrt(cxx * cyy)));
+    };
+    std::vector<std::size_t> core;
+    for (std::size_t i = 0; i < participants; ++i) {
+        if (window.in_r[i]) core.push_back(i);
+    }
+    auto sd = [&](std::size_t i) { return std::isfinite(sigma[i]) && sigma[i] > 0.0 ? sigma[i] : 0.0; };
+    const std::size_t k = core.size();
+    window.covariance.assign(k, std::vector<double>(k, 0.0));
+    for (std::size_t a = 0; a < k; ++a) {
+        window.covariance[a][a] = sd(core[a]) * sd(core[a]);
+        for (std::size_t b = a + 1; b < k; ++b) {
+            const double c = sd(core[a]) * sd(core[b]) * rho(core[a], core[b]);
+            window.covariance[a][b] = c;
+            window.covariance[b][a] = c;
+        }
+    }
+    for (std::size_t i = 0; i < participants; ++i) {
+        if (window.in_shock[i]) window.shock_sigma[i] = sd(i);
+    }
+}
+
 Readings readings(const std::vector<double>& weights, const GateWindow& window,
                   const std::vector<double>& sigma_jump) {
     Readings out;

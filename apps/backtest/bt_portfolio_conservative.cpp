@@ -275,6 +275,7 @@ int main() {
         // T-8D R2, T-8D-2 R76: K of the futures statistics grid, the one factor the run's
         // annualised statistics use.
         coord_config.statistics_sessions_per_year = app_config.statistics.futures_sessions_per_year;
+        coord_config.first_traded_date = app_config.backtest.first_traded_date;
 
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);

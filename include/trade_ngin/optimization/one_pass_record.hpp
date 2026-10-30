@@ -34,7 +34,8 @@ inline const char* days_header() {
            "R_shock,L,L_net,m,binding,searched,te,passes,pass_capped,te_h,B_sigma,"
            "B_symbol,a,traded,returned_to_held,stored_R,stored_R_jump,stored_R_shock,"
            "stored_L,stored_L_net,over_limit,over_limit_excess_units,by_hold_terms,"
-           "trim_capped,target_gross,stored_gross,risk_scale,opt_bars_per_year";
+           "trim_capped,target_gross,stored_gross,risk_scale,opt_bars_per_year,carver_R,"
+           "carver_stored_R";
 }
 
 }  // namespace record_detail
@@ -46,7 +47,7 @@ inline void append_no_pass_record(const std::string& id, const std::string& sign
     if (dir == nullptr || *dir == '\0') return;
     const std::string name = "onepass_days_" + id + ".csv";
     if (std::FILE* days = record_file::open_rows(dir, name, record_detail::days_header())) {
-        std::fprintf(days, "%s,%s,%d,,no_pass,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n", signal_date.c_str(),
+        std::fprintf(days, "%s,%s,%d,,no_pass,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n", signal_date.c_str(),
                      cycle_date.c_str(), warmup ? 1 : 0);
         record_file::close_rows(days, dir, name);
     }
@@ -70,7 +71,7 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
         std::fprintf(days,
                      "%s,%s,%d,%.17g,%s,%zu,%zu,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%s,%d,%.17g,%ld,%d,"
                      "%.17g,%.17g,%s,%.17g,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%s,%.17g,%s,%d,%.17g,%.17g,"
-                     "%.17g,%.17g\n",
+                     "%.17g,%.17g,%.17g,%.17g\n",
                      signal_date.c_str(), cycle_date.c_str(), warmup ? 1 : 0, in.capital,
                      overlay::GateWindow::name(r.window.mode), r.window.window_dates,
                      r.window.complete_dates, r.readings.risk, r.readings.jump, r.readings.shock,
@@ -81,7 +82,8 @@ inline void append_one_pass_record(const std::string& id, const std::string& sig
                      r.stored_readings.jump, r.stored_readings.shock, r.stored_readings.gross,
                      r.stored_readings.net, over.empty() ? "-" : over.c_str(), r.over_limit_excess_units,
                      by_hold.empty() ? "-" : by_hold.c_str(), r.trim_capped ? 1 : 0, r.target_gross,
-                     r.stored_gross, r.risk_scale, r.covariance.bars_per_year);
+                     r.stored_gross, r.risk_scale, r.covariance.bars_per_year,
+                     r.carver_readings.risk, r.carver_stored_readings.risk);
         record_file::close_rows(days, dir, days_name);
     }
     if (std::FILE* book = record_file::open_rows(

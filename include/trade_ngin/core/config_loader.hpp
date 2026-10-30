@@ -167,6 +167,11 @@ struct BacktestSpecificConfig {
     // Format: "YYYY-MM-DD", interpreted at 00:00:00 LOCAL time, which is the
     // same frame std::mktime gives the now() path it replaces.
     std::string frozen_end_date{};
+    // Test-only, like frozen_end_date and absent from every shipped config: "YYYY-MM-DD", the
+    // first bar date a backtest may trade on. The warm-up runs on until that date (never shorter
+    // than the strategies' own warm-up), so the book starts empty on it. Absent: the warm-up is
+    // the strategies' own, as before. Read by bt_portfolio_conservative.
+    std::string first_traded_date{};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -176,6 +181,8 @@ struct BacktestSpecificConfig {
         // not introduce the key.
         if (!frozen_end_date.empty())
             j["frozen_end_date"] = frozen_end_date;
+        if (!first_traded_date.empty())
+            j["first_traded_date"] = first_traded_date;
         return j;
     }
 
@@ -186,6 +193,8 @@ struct BacktestSpecificConfig {
             store_trade_details = j.at("store_trade_details").get<bool>();
         if (j.contains("frozen_end_date"))
             frozen_end_date = j.at("frozen_end_date").get<std::string>();
+        if (j.contains("first_traded_date"))
+            first_traded_date = j.at("first_traded_date").get<std::string>();
     }
 };
 
