@@ -77,8 +77,8 @@ struct RiskContext {
                                      ///< applied to that scope so far this rebalance
     /// The symbols the book can hold this rebalance: those some strategy lists and signals
     /// (StrategyInterface::is_signalling) and those any strategy targets or holds non-zero. The
-    /// Carver gate intersects its window's dates over these only (T-7b-2 CGW). Null (a caller that
-    /// does not set it) means every symbol of the window, the rule before CGW.
+    /// Carver gate intersects its window's dates over these only. Null (a caller that
+    /// does not set it) means every symbol of the window.
     const std::set<std::string>* gate_participants{nullptr};
 };
 
@@ -95,7 +95,7 @@ struct RiskApplied {
     /// The multiply did NOT reach every strategy of the scope: `scopes_skipped` of them were
     /// already pinned by a sleeve REFUSE or REPLACE and were skipped. The book the module
     /// measured was therefore cut by LESS than `factor`, and a module that keeps a cumulative
-    /// level must not claim otherwise (T-6a ADVERSARIAL A-5, before commit 9 reads the level).
+    /// level must not claim otherwise.
     bool partial{false};
     size_t scopes_skipped{0};
 };
@@ -122,7 +122,7 @@ public:
                                           const RiskContext& ctx) = 0;
     /// Verbatim enough to reconstruct the module.
     virtual nlohmann::json describe() const = 0;
-    /// T-7b-2 9c: the capital the book is sized on from the next rebalance, pushed by
+    /// The capital the book is sized on from the next rebalance, pushed by
     /// PortfolioManager::set_sizing_capital (the account's equity; every module gets the
     /// PORTFOLIO's figure, as make_risk_module gives it at construction). A module whose reading
     /// divides by capital keeps it beside the book, so a book sized on equity is not measured
@@ -153,9 +153,8 @@ struct RiskDecisionRecord {
     bool empty_book{false};                      ///< the book was empty: on_bars ran, evaluate did not
     std::string error;                           ///< non-empty iff the module (or the risk step) failed.
                                                  ///< A failed module of ANY capability refuses its scope:
-                                                 ///< the book at PORTFOLIO scope (HD 2026-09-21), its one
-                                                 ///< sleeve at SLEEVE scope (T-7b-2 C10b, HD 2026-09-24
-                                                 ///< ruling 18). The first failed module's row is recorded
+                                                 ///< the book at PORTFOLIO scope, its one sleeve at
+                                                 ///< SLEEVE scope. The first failed module's row is recorded
                                                  ///< with applied REFUSE; a failed row is applied NONE when
                                                  ///< another module already refused the scope or an earlier
                                                  ///< module's failure did

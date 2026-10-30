@@ -1,13 +1,10 @@
 #pragma once
 
-// The six overlay columns of trading.live_results (migration 036; HD 2026-10-10): the overlay's
+// The six overlay columns of trading.live_results (migration 036): the overlay's
 // own readings of the STORED book on the sizing capital, and a one-day VaR from the same
 // covariance. Nothing here computes a reading: the readings come from overlay::readings, run by
 // the pass on its stored book (OnePassDay) or by the PortfolioManager on the book a live runner
 // stores (PortfolioManager::overlay_readings_for_book).
-//
-// LOOP_SPEC v6.2 sections 7.2 and 7.3 say the readings stay on the OVERLAY line and are never
-// columns; HD's later decision stores them and governs.
 
 #include <cmath>
 #include <cstdio>

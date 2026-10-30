@@ -24,7 +24,7 @@ std::string number(double v) {
     return buf;
 }
 
-// Carry (trade-ngin #185, HD's Q5): the trend part and the carry part of one symbol's forecast on one
+// Carry: the trend part and the carry part of one symbol's forecast on one
 // signal bar, in one log line; no table or column holds them.
 std::string carry_log_line(const std::string& sleeve, const std::string& symbol,
                            const std::string& date, const InstrumentData& data, double trend_mean,
@@ -191,7 +191,7 @@ Result<void> TrendFollowingStrategy::validate_trend_config(
         }
     }
 
-    // Carry (trade-ngin #185): a weight from 0 to 1; with carry on, spans fastest first, a positive
+    // Carry: a weight from 0 to 1; with carry on, spans fastest first, a positive
     // scalar, and table 52 printing a multiplier for every number of rules a contract can keep.
     if (!(trend_config.carry_weight >= 0.0 && trend_config.carry_weight <= 1.0)) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
@@ -228,7 +228,7 @@ Result<void> TrendFollowingStrategy::validate_trend_config(
                     "TrendFollowingStrategy");
             }
         }
-        // The speed limit (#185; tables 35 and 40): every carry span must turn over no faster than
+        // The speed limit (tables 35 and 40): every carry span must turn over no faster than
         // the fastest trend speed each contract keeps, which passed the 0.15 limit; a span without
         // a table 40 turnover cannot be checked. Otherwise the span's cost is unbounded on that
         // contract and carry is refused until it is measured and the span removed.
@@ -362,7 +362,7 @@ Result<void> TrendFollowingStrategy::initialize() {
 }
 
 Result<void> TrendFollowingStrategy::on_execution(const ExecutionReport& report) {
-    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): a ROLL leg (or a BORROW row) is not a trade of the
+    // A ROLL leg (or a BORROW row) is not a trade of the
     // strategy; nothing is counted on it.
     if (report.execution_type != ExecutionType::STRATEGY) return Result<void>();
     // Override base class to prevent PnL corruption.
@@ -642,7 +642,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     break;
                 }
             }
-            // Carry on (trade-ngin #185): the forecast's volatility at every window bar, which the
+            // Carry on: the forecast's volatility at every window bar, which the
             // carry rules divide by. Off, nothing is asked for and nothing changes.
             const bool carry_on = trend_config_.carry_weight > 0.0;
             std::vector<double> forecast_sigma_bars;
@@ -696,7 +696,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             instrument_data.current_raw_forecast = estimate.mean_scaled;
             instrument_data.current_scaled_forecast = estimate.combined;
-            // The equity slow rule (section 2.5, D40): on a ruled symbol a negative combined
+            // The equity slow rule: on a ruled symbol a negative combined
             // forecast stands only when every slow pair the rule names is negative. The ruled
             // forecast is THE forecast from here on: the sizing, its sign and the stored signal.
             double ruled_forecast = estimate.combined;
@@ -714,10 +714,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             bool slow_rule_zeroed = ruled_forecast != estimate.combined;
             instrument_data.carry_used = false;
             if (carry_on) {
-                // Carry (trade-ngin #185; Carver, strategy eleven): the carry rules on the same
+                // Carry (Carver, strategy eleven): the carry rules on the same
                 // window and, when a raw carry is known, ONE forecast blended from the trend part
                 // and the carry part (carry_estimator.hpp). The equity slow rule acts on the trend
-                // part only (HD's Q1); a short the carry part makes is allowed and counted.
+                // part only; a short the carry part makes is allowed and counted.
                 carry_estimator::Window carry_window;
                 const std::size_t n = forecast_sigma_bars.size();
                 const std::size_t from = prices.size() - n;
@@ -856,7 +856,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                           prices.back(), instrument_data.optimal_position,
                                           slow_rule_zeroed);
 
-            // The published position is N* itself (section 3.2): no buffer, no rounding.
+            // The published position is N* itself: no buffer, no rounding.
             double final_position = raw_position;
             if (std::isnan(final_position) || std::isinf(final_position)) {
                 WARN("Invalid final position for " + symbol + ", using 0.0");
@@ -1065,7 +1065,7 @@ bool TrendFollowingStrategy::overlay_series(const std::string& symbol, OverlaySe
 }
 
 bool TrendFollowingStrategy::is_signalling(const std::string& symbol) const {
-    // on_data's warm-up test, read without a feed (T-OPT E-7): a symbol whose price history holds
+    // on_data's warm-up test, read without a feed: a symbol whose price history holds
     // fewer prices than the longest EMA window gets no forecast and no target of its own.
     int max_window = 0;
     for (const auto& window_pair : trend_config_.ema_windows) {
@@ -1145,7 +1145,7 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     std::unordered_set<std::string> traded_base_symbols;
     auto hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
     if (hlcv_symbols_result.is_ok()) {
-        // MM: a predecessor carried by its stored listed contract (GC with MGC) is not weighted.
+        // A predecessor carried by its stored listed contract (GC with MGC) is not weighted.
         for (const auto& sym : ListingDates::instance().run_universe(hlcv_symbols_result.value())) {
             // Strip .v.0 / .c.0 suffix to get base symbol
             auto dot_pos = sym.find('.');
@@ -1328,7 +1328,7 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
         // The optimal position, before any limit
         if (optimal_position != nullptr) *optimal_position = position;
 
-        // LOOP_SPEC section 3.2 (D4, D13, D14): the position is published as it is, unbuffered,
+        // The position is published as it is, unbuffered,
         // unrounded and unclamped. The per-name cap, the buffer and the rounding are the
         // portfolio's one pass's.
         return position;
@@ -1400,7 +1400,7 @@ std::unordered_map<int, double> TrendFollowingStrategy::get_ema_values(
 
     const auto& price_deque = it->second.price_history;
     std::vector<double> price_history(price_deque.begin(), price_deque.end());
-    // T-ROLLX: the EMAs read the adjusted level (LOOP_SPEC v6.1 section 2.3), as the forecast's do.
+    // The EMAs read the adjusted level, as the forecast's do.
     const auto& id_deque = it->second.bar_instrument_ids;
     const std::vector<std::string> instrument_ids(id_deque.begin(), id_deque.end());
     const roll_series::RollFields roll_from(it->second.bar_roll_from.begin(),

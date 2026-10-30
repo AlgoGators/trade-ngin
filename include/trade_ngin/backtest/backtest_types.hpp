@@ -207,13 +207,13 @@ struct BacktestResults {
     double max_win{0.0};
     double max_loss{0.0};
     double avg_holding_period{0.0};
-    // T-ROLLX (migration 018): the run's cost totals. transaction_costs = every fill's cost after
+    // Migration 018: the run's cost totals. transaction_costs = every fill's cost after
     // netting (the sum the equity curve charged: STRATEGY + ROLL + BORROW), roll_costs the ROLL subset,
     // total_roll_fills the count of ROLL rows (two per held contract per sleeve per roll).
     double transaction_costs{0.0};
     double roll_costs{0.0};
     int total_roll_fills{0};
-    // Rolls step 4 (ruling 18, migration 040): with per_contract_rolls on, the sums of the closing
+    // Migration 040: with per_contract_rolls on, the sums of the closing
     // legs' roll_bar_move (the old contracts' moves booked on the roll bars, P&L already in the
     // equity curve) and roll_gap_value (never P&L); roll_costs is the third total. nullopt (stored
     // NULL, the column not named) with the switch off.
@@ -232,8 +232,8 @@ struct BacktestResults {
     std::vector<ExecutionReport> actual_trades;  // Only actual trades that close positions
     std::vector<Position> positions;
     std::vector<std::pair<Timestamp, double>> equity_curve;
-    // Per equity point, the row's risk_detail object as text (LOOP_SPEC section 7.3; empty for
-    // a NULL cell); empty altogether on a book that stores none.
+    // Per equity point, the row's risk_detail object as text (empty for a NULL cell); empty
+    // altogether on a book that stores none.
     std::vector<std::string> equity_risk_detail;
     // Per equity point, the six overlay cells of the row (migration 037): the overlay's readings
     // of the book the run stores for the row's date and the one-day VaR; every field without a
@@ -241,16 +241,16 @@ struct BacktestResults {
     std::vector<OverlayColumns> equity_overlay;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
     int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
-    // The convention the statistics above were taken with (T-8D R1, R2): K, the sessions a year
+    // The convention the statistics above were taken with: K, the sessions a year
     // of the statistics grid, which every annualised figure uses and the run metadata records as
     // statistics_K; and n, the returns of that grid after the warm-up.
     double statistics_sessions_per_year{0.0};
     int statistics_days{0};
     // The annualised return on that grid, the Calmar ratio's numerator: the CAGR
-    // (1 + R)^(K / n) - 1, R from the base to the last grid level (T-8D R36). Logged with the
+    // (1 + R)^(K / n) - 1, R from the base to the last grid level. Logged with the
     // run's statistics convention; no column.
     double annualized_return{0.0};
-    // The statistics of migration 037 (LOOP_SPEC sections 7.4 and 10): the worst day with its
+    // The statistics of migration 037: the worst day with its
     // date and symbol, the three statistics on the sizing capital, the monthly skew and tail
     // ratio, the calendar-year returns with the losing years, the account's STRATEGY fills. In
     // fractions, on the grid above; a field with no value is a NULL cell of backtest.results.

@@ -1,6 +1,6 @@
 // include/trade_ngin/portfolio/sizing_capital.hpp
 //
-// T-7b-2 9c (HD 2026-09-25): compounding. The futures book is sized on the account's current
+// Compounding. The futures book is sized on the account's current
 // equity, not on the constant initial capital (Carver sizes on current trading capital). The
 // quantity is the SAME on both paths: the account's equity marked at the close of the newest bar
 // the sizing reads (the signal bar, T-1), after every fill before it. It never reads the future:
@@ -34,7 +34,7 @@
 namespace trade_ngin {
 
 /**
- * @brief The sizing capital under Carver's half compounding (LOOP_SPEC section 3.1, D19), as a
+ * @brief The sizing capital under Carver's half compounding, as a
  *        closed form of the settled daily net P&L in date order.
  *
  * C is the cumulative net P&L of the settled days (0 at the start), P its running peak floored at
@@ -111,8 +111,7 @@ struct LiveSizingEquity {
 /// sleeves' stored books of the previous day, one map per sleeve; `t1_closes` and `t2_closes` are the price
 /// manager's Day T-1 and Day T-2 closes (the maps PHASE 5 finalises with); `point_value` is
 /// LivePnLManager::get_point_value. A zero quantity contributes nothing and is not counted.
-/// T-ROLLX-FIX commit 4 (D-B; LOOP_SPEC v6.2 sections 2.1, 3.1, 6.6): the maps and
-/// `zero_settlement_symbols` are STEP 4's own, the T-1 settlement on the CONSUMED bars
+/// The maps and `zero_settlement_symbols` are STEP 4's own, the T-1 settlement on the CONSUMED bars
 /// (live/session_book_gate.hpp, consumed_t1_settlement): a change bar and a withheld bar settle 0 and
 /// every other bar settles against its previous consumed close, so the book is sized on the equity its
 /// stored rows will show.

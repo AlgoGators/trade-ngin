@@ -42,7 +42,7 @@ public:
     /// MarketData. Runs on every lap, including a lap whose book is empty; laps 2..n re-use the
     /// window lap 1 built rather than appending the same bars again. F5's intersection and the
     /// MarketData run over ctx.gate_participants' bars when the context carries a non-empty set
-    /// (T-7b-2 CGW: a symbol nobody signals, targets or holds no longer cuts everyone's dates), and
+    /// (a symbol nobody signals, targets or holds does not cut everyone's dates), and
     /// one GATE_NOT_SIGNALLING line names the window's symbols left out.
     void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override;
 
@@ -50,7 +50,7 @@ public:
     /// gate reads the unfiltered date-capped window, because a 21-date matrix is the
     /// small-sample regime this change set exists to leave.
     ///
-    /// LATENT, recorded not fixed (T-4f_DECISION item 11): the strict rule makes the window's
+    /// LATENT: the strict rule makes the window's
     /// length a function of the NEWEST symbol's bar count, so a symbol listed k days ago caps
     /// the complete dates at k -- and this floor moves that cliff from 21 to 120, reachable by
     /// an ordinary listing. A >= 90 % coverage rule buys only +6 dates on today's universe and
@@ -76,7 +76,7 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
-    /// T-7b-2 9c: RiskConfig::capital, the denominator of the gate's gross and net leverage
+    /// RiskConfig::capital, the denominator of the gate's gross and net leverage
     /// (the only capital-dependent term: the portfolio, jump and correlation terms read weights
     /// over the book's own value), follows the sizing capital. Refuses capital <= 0 and keeps
     /// the old value (RiskManager::update_config's rule).
@@ -85,7 +85,7 @@ public:
     /// compares the raw reading with it to within kLevelQuantum), and
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
     /// no longer a true statement about the book this module measured, so it is marked and
-    /// commit 9's level rule declines to divide by it.
+    /// the level rule declines to divide by it.
     void on_applied(const RiskApplied& applied, const RiskContext& ctx) override;
 
     /// SCALE iff r.risk_exceeded, with scale = r.recommended_scale bit for bit; else NONE with
@@ -97,7 +97,7 @@ public:
     /// (F5's definition). Recomputed from the window; nothing caches it.
     int complete_dates_in_window() const;
 
-    /// LOOP_SPEC sections 4 and 7.7: the overlay's limits (the three risk limits as ratios to tau,
+    /// The overlay's limits (the three risk limits as ratios to tau,
     /// the gross and net leverage limits). A book that names an overlay sleeve is rebalanced by
     /// the PortfolioManager's one pass, which reads its limits from here and evaluates no module:
     /// this module is then the limits' carrier and the name on the rebalance's decision row.

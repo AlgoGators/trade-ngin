@@ -42,25 +42,24 @@ struct CarverModuleConfig {
     /// Always "dates": the Carver window keeps the newest lookback_period DISTINCT dates (a
     /// date on which only some symbols printed still counts), of which the sparse-date filter
     /// keeps the complete ones -- about 187-200 of 252 on the shipped futures books. The key is
-    /// validated and never read; the loader refuses the old "bars", which no longer describes
-    /// the code.
+    /// validated and never read; the loader refuses "bars", which does not describe the code.
     std::string lookback_unit{"dates"};
     /// Fewer complete dates than this in the window and the module reports `blind` on
     /// its decision: it measured, but not on enough dates for the measurement to mean
     /// anything.
     int min_gate_dates{21};
-    /// The overlay's three risk limits as RATIOS to tau (LOOP_SPEC sections 4, 7.5.1 and 12):
+    /// The overlay's three risk limits as RATIOS to tau:
     /// R_max, R_jump_max and R_shock_max. All three or none. Present, the module reads the book in
     /// capital terms (risk/overlay.hpp) with max_gross_leverage and max_net_leverage as L_max and
-    /// L_net_max; absent (0), it reads it as before. A futures book requires them
+    /// L_net_max; absent (0), it reads it on its own limits. A futures book requires them
     /// (ConfigLoader::require_loop_keys).
     double r_max{0.0};
     double r_jump_max{0.0};
     double r_shock_max{0.0};
     bool overlay_limits() const { return r_max > 0.0 && r_jump_max > 0.0 && r_shock_max > 0.0; }
-    /// With the overlay's limits (LOOP_SPEC sections 5.3, 6.4 and 7.7), both required: the
+    /// With the overlay's limits, both required: the
     /// per-name cap L on the sizing capital and the most contracts the trim removes in a day.
-    /// The three limits of the old gate (var_limit, jump_risk_limit, max_correlation) are RETIRED
+    /// The gate's own three limits (var_limit, jump_risk_limit, max_correlation) are RETIRED
     /// on such a module and on its book's risk_reporting block: the loader refuses them there,
     /// and the fields above hold RiskConfig's defaults.
     double per_name_cap{0.0};

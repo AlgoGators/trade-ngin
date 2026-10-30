@@ -1,10 +1,9 @@
 #pragma once
 
-// LOOP_SPEC section 7.7: a futures sleeve's risk_target, idm and vol_lookback_short are read from
-// its "config" object in portfolio.json and are REQUIRED. The first sleeve's risk_target is the
-// tau the risk overlay's three limits are ratios to (section 4), so a runner's own fallback value
-// would move the limits without a word; the runners used to carry different fallbacks (0.15 in
-// one backtest, 0.2 live). A missing or mistyped key refuses the run at load and names the key.
+// A futures sleeve's risk_target, idm and vol_lookback_short are read from its "config" object in
+// portfolio.json and are REQUIRED. The first sleeve's risk_target is the tau the risk overlay's
+// three limits are ratios to, so a runner's own fallback value would move the limits without a
+// word. A missing or mistyped key refuses the run at load and names the key.
 
 #include <string>
 
@@ -59,7 +58,7 @@ inline void hand_over_trading_rule_removals(const AppConfig& app_config, TrendFo
     out.rule_removals = app_config.trading_rule_removals;
 }
 
-/// The hand-over of portfolio.json's carry block (trade-ngin #185) to the book's first sleeve, the
+/// The hand-over of portfolio.json's carry block to the book's first sleeve, the
 /// one place it crosses from the loader to a sleeve, called by every futures runner next to
 /// hand_over_trading_rule_removals. Carry off (the block absent, or weight 0) hands over weight 0
 /// and the sleeve is today's.
