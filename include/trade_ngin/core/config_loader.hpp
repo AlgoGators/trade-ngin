@@ -374,6 +374,12 @@ struct AppConfig {
     // T-7b-1 7d). Absent means 5; a value that is not a whole number of at least 0 is a load error.
     size_t covariance_stale_dates{5};
 
+    // portfolio.json's optional top-level per_contract_rolls (ROLLS_STEP1_PLAN step 2): the futures
+    // bars from the per-contract roll rule (data/contract_rolls.hpp) instead of the vendor's .v.0
+    // series. Absent means false. NOTHING READS IT YET (steps 3 and 4 will), and it is deliberately
+    // not in to_json(), so the stored run metadata does not change while it is off.
+    bool per_contract_rolls{false};
+
     // portfolio.json's top-level equity_slow_rule; required on a futures book.
     EquitySlowRule equity_slow_rule;
 
