@@ -1,6 +1,6 @@
 // tests/backtest/test_backtest_statistics_grid.cpp
 //
-// T-8D R1, R2, R3 and T-8D-2 R76, R79, the backtest half: a run's statistics are taken on the
+// The backtest half: a run's statistics are taken on the
 // statistics grid of its own bars and annualised with the sessions a year the app hands the
 // coordinator. A futures run's grid is the Sunday-to-Friday dates on which at least nine distinct
 // stored symbols printed; a Saturday point and a thin date stay rows of the equity curve and are
@@ -334,7 +334,7 @@ Hand hand(const std::vector<double>& levels, double k) {
 
 }  // namespace
 
-// T-8D-2 R79, executed through run_portfolio: the stored curve keeps the Saturday point and the
+// Executed through run_portfolio: the stored curve keeps the Saturday point and the
 // thin date as rows; the statistics read the grid (those two rows folded into the next grid
 // return) at the K the coordinator was handed; total_return reads every row.
 TEST_F(BacktestStatisticsGridRun, AFuturesRunFoldsItsSaturdayPointAndItsThinDateIntoTheNextGridReturn) {
@@ -375,7 +375,7 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunFoldsItsSaturdayPointAndItsThinDate
     EXPECT_NEAR(r.max_drawdown, grid.max_drawdown, 1e-12);
     EXPECT_NEAR(r.total_return, every_row.back() / every_row.front() - 1.0, 1e-12)
         << "a level, on every row";
-    // Not the rows at 252 with the population deviation (the calculator before T-8b).
+    // Not the rows at 252 with the population deviation.
     const Hand rows_252 = hand(every_row, 252.0);
     EXPECT_GT(std::abs(r.volatility - rows_252.volatility * std::sqrt(20.0 / 21.0)), 1e-6);
 }
@@ -433,7 +433,7 @@ TEST_F(BacktestStatisticsGridRun, ARunWithoutSessionsAYearIsRefused) {
     }
 }
 
-// ===== STAT_QUALITY (T-8D F10, T-8D-2 R82): the summary's lines of a whole run =====
+// ===== STAT_QUALITY: the summary's lines of a whole run =====
 
 class BacktestStatQualityRun : public BacktestStatisticsGridRun {
 protected:
@@ -595,7 +595,7 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration037OnI
     EXPECT_TRUE(r.equity_overlay.empty());
     EXPECT_TRUE(db_->last_equity_risk_detail.empty());
     EXPECT_TRUE(db_->last_equity_curve_cells.empty());
-    // The older columns travel as before, and none of the new ones is among them.
+    // The summary metrics keep total_trades, and no statistics column (worst_day) is among them.
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("total_trades"), 1u);
     EXPECT_EQ(db_->last_backtest_summary_metrics.count("worst_day"), 0u);
 }
@@ -868,7 +868,7 @@ TEST_F(BacktestStatisticsGridRun, AnEquityRunTakesThemOnItsOwnRowsWithNoSizingCa
     EXPECT_FALSE(c.worst_day_sizing_symbol);
 }
 
-// ===== a run whose id is already stored (T-8D-2 R49) =====
+// ===== a run whose id is already stored =====
 //
 // The run id is the strategy ids and the window's end instant, so a second run of the same
 // strategies to the same end date carries the first run's id. A storing run asks, before its
@@ -951,7 +951,7 @@ TEST_F(BacktestStoredRunRefusal, ACountThatCannotBeReadDoesNotRefuseTheRun) {
     EXPECT_GT(db->call_count("store_backtest_positions"), 0);
 }
 
-// T-8D-2 R67, executed through run_portfolio: position_changes.csv of a whole run, against the
+// Executed through run_portfolio: position_changes.csv of a whole run, against the
 // position rows the run hands the database. The sleeve opens 100 contracts, cuts to 60 and closes.
 // Each change is one row of the sleeve: the quantity after the change, the price the day's fill
 // traded at (the run's own execution report) and the realized P&L of the row the run stores for

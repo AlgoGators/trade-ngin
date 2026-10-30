@@ -1,27 +1,25 @@
 // tests/portfolio/test_optimizer_cost_vector.cpp
 //
-// T-7b-1 C8d: H-2 + F4, the optimizer's cost vector (HD 2026-09-17 "thin sessions are traded";
-// STAGE3_PLAN section 28, "Commit 10 not taken": the cost penalty was unfed and mis-scaled).
+// The optimizer's cost vector: fed, and in the right unit.
 //
 // The dynamic optimizer's objective is  sqrt(e' S e) + scalar x sum_i |dw_i| x costs[i],  with
 // the positions dw in WEIGHT (notional / capital). A change of n contracts of symbol i is
 // dw = n x notional_i / capital, and it costs n x cost_per_contract_i dollars, which as a fraction
 // of capital (the tracking error's unit) is n x cost_per_contract_i / capital. So
 //
-//     costs[i] = cost_per_contract_i / notional_per_contract_i        (F4, the unit that is right)
+//     costs[i] = cost_per_contract_i / notional_per_contract_i        (the unit that is right)
 //
-// makes |dw| x costs[i] = n x cost_per_contract_i / capital. The parent divided by capital, so
-// |dw| x costs[i] was n x cost_per_contract_i x notional_i / capital^2, understated by
+// makes |dw| x costs[i] = n x cost_per_contract_i / capital. Dividing by capital instead would make
+// |dw| x costs[i] n x cost_per_contract_i x notional_i / capital^2, understated by
 // capital / notional_i (13.8x for MES at 7,252.5 on $500,000; 4.6x for ZF at 107.85).
 //
-// H-2: PortfolioManager::calculate_trading_costs prices every entry through the PM's OWN cost
-// manager. The backtest feeds it (backtest_coordinator.cpp); the live futures runners never did,
-// so live priced every entry off the fallbacks (ADV 100,000, vol_mult 1.0). They now feed it the
-// same K2 feed C8a gives the execution manager (futures_cost_feed.hpp), before
-// process_market_data runs the optimizer.
+// PortfolioManager::calculate_trading_costs prices every entry through the PM's OWN cost manager.
+// The backtest feeds it (backtest_coordinator.cpp); the live futures runners feed it the same
+// feed the execution manager gets (futures_cost_feed.hpp), before process_market_data runs the
+// optimizer, so live does not price every entry off the fallbacks (ADV 100,000, vol_mult 1.0).
 //
-// The scalar: DynamicOptConfig::from_json read cost_penalty_scalar with get<int>(), so a
-// fractional value (a sweep's 50 / 14 = 3.571...) was floored to 3 without a word.
+// The scalar: DynamicOptConfig::from_json reads cost_penalty_scalar as a double, so a fractional
+// value (a sweep's 50 / 14 = 3.571...) is not floored to 3 without a word.
 //
 // The PM cases reach the private cost vector through `#define private public` (as
 // test_portfolio_manager_internals.cpp does); the wiring cases read the runner sources (they are
@@ -89,7 +87,7 @@ Bar bar_at(const std::string& symbol, int day_index, double close, double volume
 }
 
 /// The date of the run whose T-1 bar is the feed's latest bar: the day after it (the fill day the
-/// feed's weekend merge reads, T-7b-2 C8c3).
+/// feed's weekend merge reads).
 Timestamp run_date_after(const std::vector<Bar>& bars) {
     Timestamp latest{};
     for (const auto& b : bars) latest = std::max(latest, b.timestamp);
@@ -216,11 +214,10 @@ protected:
 // The generic optimiser step's cost vector reads no trend sleeve
 // -----------------------------------------------------------------------------------------------
 
-// F4's unit (the cost of one contract over its notional) lived in the branch of
-// calculate_trading_costs that read a trend sleeve's contract size and price. A book with a trend
-// sleeve names an overlay sleeve and is rebalanced by the one pass, which prices each contract
-// through the cost model itself (test_one_pass_book.cpp), so no book reached that branch and it is
-// gone: the generic step's vector is zero for every symbol, the trend sleeve's own included.
+// A book with a trend sleeve names an overlay sleeve and is rebalanced by the one pass, which
+// prices each contract through the cost model itself (test_one_pass_book.cpp), so
+// calculate_trading_costs has no branch that reads a trend sleeve's contract size and price: the
+// generic step's vector is zero for every symbol, the trend sleeve's own included.
 TEST_F(OptimizerCostVector, TheGenericStepsVectorReadsNoTrendSleeve) {
     ASSERT_GT(cost_per_contract(kMes, kMesPrice), 0.0) << "the cost model itself prices MES";
     const auto costs = pm_->calculate_trading_costs({kMes, kZf, "NOT_HELD.v.0"}, kCapital);
@@ -229,15 +226,14 @@ TEST_F(OptimizerCostVector, TheGenericStepsVectorReadsNoTrendSleeve) {
 }
 
 // -----------------------------------------------------------------------------------------------
-// H-2: the runner's feed reaches the PortfolioManager's cost model, so the vector is priced off
+// The runner's feed reaches the PortfolioManager's cost model, so the vector is priced off
 // the fill day's own volume and the 20-return walk instead of the fallbacks
 // -----------------------------------------------------------------------------------------------
 
 TEST_F(OptimizerCostVector, TheK2FeedPricesThePortfolioManagersCostModelOffTheFedBars) {
-    // The member itself. The runners reach it through get_transaction_cost_manager(), which the
-    // parent lacks; reading the member keeps this case compilable on the parent. Its feed half
-    // passes there too (the helper always worked; nobody called it on this manager: the wiring
-    // case is H-2's RED); its last assertions are F4's unit.
+    // The member itself; the runners reach it through get_transaction_cost_manager(). The wiring
+    // is pinned by the runner-source case below; the last assertions here are the cost vector's
+    // unit.
     auto& tcm = pm_->cost_manager_;
 
     // Unfed, the manager prices from the fallbacks: ADV 100,000 and vol_mult 1.0.
@@ -322,7 +318,7 @@ TEST(OptimizerCostVectorRunnerSource, BothTwinsFeedThePortfolioManagersCostModel
         EXPECT_NE(feed, npos) << "the PortfolioManager's cost model is never fed in live";
         EXPECT_NE(block.find("auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();"),
                   npos);
-        // The execution manager's feed (C8a) is still there, on the same feed.
+        // The execution manager's feed is there too, on the same feed.
         EXPECT_NE(block.find("feed_futures_cost_model(cost_model, strategy_feed_bars, now);"), npos);
         const auto block_at = src.find("// UPDATE TRANSACTION COST MANAGER WITH MARKET DATA");
         const auto process = src.find("portfolio->process_market_data(strategy_feed_bars);");

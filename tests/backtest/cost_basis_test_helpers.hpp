@@ -1,6 +1,6 @@
 // tests/backtest/cost_basis_test_helpers.hpp
 //
-// T-7b-2 8c: a whole backtest (BacktestCoordinator::run_portfolio) on bars the test controls, so
+// A whole backtest (BacktestCoordinator::run_portfolio) on bars the test controls, so
 // the cost of a stored fill can be checked against the inputs the backtest should have priced it
 // on. The database serves the test's rows for whatever window and symbols it is asked for (the
 // run's own load, and any other window a component reads) and the per-bar split events; a
@@ -53,7 +53,7 @@ struct Row {
     double volume;
     bool locked = false;  ///< high == low: the session classifier's JUNK
     int weekend_before = 0;  ///< 0: the bar is trading day `day`; 1 / 2: the Sunday / Saturday before it
-    std::string instrument_id;  ///< T-ROLLX: the vendor contract id; empty = unknown (the column is omitted when every row's is)
+    std::string instrument_id;  ///< the vendor contract id; empty = unknown (the column is omitted when every row's is)
 };
 
 /// A row's instant: trading day `day`, or the Sunday (1) or Saturday (2) before it.
@@ -176,7 +176,7 @@ public:
 };
 
 /// ServingDb that also answers the two counts a storing run asks before its first cycle
-/// (T-8D-2 R49: the rows backtest.results and backtest.final_positions hold of its run id) and
+/// (the rows backtest.results and backtest.final_positions hold of its run id) and
 /// keeps the statements it was asked.
 class StoredRunDb : public ServingDb {
 public:
@@ -217,7 +217,7 @@ public:
     }
 
     std::map<std::string, std::map<int, double>> targets;
-    /// the same by instant (a weekend bar's), applied after `targets` (T-7b-2 C8c3)
+    /// the same by instant (a weekend bar's), applied after `targets`
     std::map<std::string, std::map<Timestamp, double>> targets_at;
 
     Result<void> on_data(const std::vector<Bar>& data) override {

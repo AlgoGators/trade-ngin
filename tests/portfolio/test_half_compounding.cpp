@@ -1,7 +1,5 @@
-// LOOP_SPEC v6.2 section 3.1 (D19): Carver's half compounding is the sizing capital of the futures
-// book in both engines. This file uses only what existed before the commit that brings it
-// (backtest_sizing_equity, the runners' and templates' text), so it compiles on the commit before
-// and fails there: that run is its proof that it tests the change.
+// Carver's half compounding is the sizing capital of the futures book in both engines, read through
+// backtest_sizing_equity and the runners' and templates' text.
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 

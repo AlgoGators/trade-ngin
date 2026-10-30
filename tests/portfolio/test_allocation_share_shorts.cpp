@@ -1,6 +1,5 @@
-// D9 (LOOP_SPEC v6.1 sections 3 and 5.4; T-ROLLX commit 3): the share test that zeroed a
-// single-sign negative total is removed. A sleeve's share is computed on any non-zero total, so a
-// short target is distributed like a long one; a zero total still distributes nothing.
+// No share test zeroes a single-sign negative total: a sleeve's share is computed on any non-zero
+// total, so a short target is distributed like a long one; a zero total still distributes nothing.
 #include <gtest/gtest.h>
 #include <cmath>
 #include <limits>

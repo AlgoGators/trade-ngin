@@ -1,15 +1,14 @@
 // tests/backtest/test_equity_cost_warmup.cpp
 //
-// T-7a commit 6 (ledger H-13; HD 2026-09-21, the root fix). The equity backtest's cost warm-up.
+// The equity backtest's cost warm-up.
 //
-// bt_equity_mr registered each symbol's liquidity-tiered cost config from the 30 days AFTER
-// start_date (a look-ahead) and loaded that window with the MarketDataBus ON, so every warm-up row
-// was a BAR event and the PortfolioManager ran a full process_market_data per row: the
-// mean-reversion sleeve entered the run holding ~21 future closes and the PM's own date-keyed
-// history held them on the warm-up query's adjustment basis (the 189 PM_HISTORY_REPEATED_DATE
-// WARNs on bteq0806). Now the window is the 30 calendar days before start_date, ending strictly
-// before it, and it is loaded with publishing disabled, so the bars reach the two cost
-// registrations and nothing else.
+// bt_equity_mr registers each symbol's liquidity-tiered cost config from the 30 calendar days
+// before start_date, ending strictly before it (the 30 days after it would be a look-ahead), and
+// loads that window with publishing disabled, so the bars reach the two cost registrations and
+// nothing else. With the MarketDataBus ON every warm-up row would be a BAR event and the
+// PortfolioManager would run a full process_market_data per row: the mean-reversion sleeve would
+// enter the run holding the window's closes and the PM's own date-keyed history would hold them on
+// the warm-up query's adjustment basis.
 //
 // The loader below does what PostgresDatabase::get_market_data does: it publishes every row it
 // returns as a BAR event (postgres_database.cpp, "Publish market data events"), then returns the

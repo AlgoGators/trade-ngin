@@ -1,24 +1,19 @@
-// E2-F4 end-to-end: can one book's stale-execution cleanup delete another book's rows?
+// End to end: one book's stale-execution cleanup must not delete another book's rows.
 //
-// delete_stale_executions() used to key on (DATE(execution_time), strategy_name, order_id)
-// with NO portfolio predicate, while trading.executions is keyed
-// (portfolio_id, strategy_id, strategy_name, date, exec_id). order_id is
-// portfolio-independent -- ExecutionManager builds it as "DAILY_<symbol>_<date>"
-// (execution_manager.cpp:147) -- and TREND_FOLLOWING is enabled-live in BOTH the base and
-// conservative books. So a conservative run's pre-insert cleanup could delete
-// BASE_PORTFOLIO's rows for the same symbol and date, and vice versa. The survivor was
-// whichever book ran last, and a DELETE leaves no trace of what it removed.
-//
-// It never fired only because two call sites passed table_name into the strategy_name slot,
-// so the predicate matched nothing. Fixing THAT alone would have armed THIS -- which is why
-// the two changes ship together and why portfolio_id is a required parameter rather than a
-// defaulted one.
+// trading.executions is keyed (portfolio_id, strategy_id, strategy_name, date, exec_id).
+// order_id is portfolio-independent -- ExecutionManager builds it as "DAILY_<symbol>_<date>"
+// -- and TREND_FOLLOWING is enabled-live in BOTH the base and conservative books. Keyed on
+// (DATE(execution_time), strategy_name, order_id) with NO portfolio predicate,
+// delete_stale_executions() would let a conservative run's pre-insert cleanup delete
+// BASE_PORTFOLIO's rows for the same symbol and date, and vice versa: the survivor would be
+// whichever book ran last, and a DELETE leaves no trace of what it removed. So portfolio_id is
+// a required parameter rather than a defaulted one.
 //
 // A mock can only prove the argument reaches the call. Whether the DELETE actually spares
 // the other portfolio's rows is a property of the SQL, so it needs a real server: write two
 // rows that differ ONLY by portfolio_id, delete one book's, and assert the other survives.
 //
-// Writes touch trading.executions only under the scratch identities below, which no live or
+// Writes touch trading.executions only under the test identities below, which no live or
 // backtest book uses; every row is removed in TearDown.
 //
 // Reachability gate matches tests/data/test_db_transaction_atomicity.cpp:

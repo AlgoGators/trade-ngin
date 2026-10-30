@@ -1,6 +1,6 @@
 // tests/backtest/test_backtest_statistics_columns.cpp
 //
-// Migration 037, the statistics of LOOP_SPEC v6.2 sections 7.4 and 10 on backtest.results: the
+// Migration 037, the statistics on backtest.results: the
 // worst day with its date and symbol, the three statistics on the sizing capital, the monthly
 // skew and tail ratio, the calendar-year returns with the losing years, the account's STRATEGY
 // fills. One implementation with the live columns of migration 036 (live_statistics_columns),
@@ -166,7 +166,7 @@ TEST(BacktestStatisticsColumns, TheFirstReturnsSymbolLeavesTheBaseRowsOwnPnlOut)
     const auto bt = backtest_statistics_columns(series, 311.0574, "2025-03-03", "2025-03-05", in);
     EXPECT_EQ(bt.worst_day_date.value_or(""), "2025-03-04");
     EXPECT_EQ(bt.worst_day_symbol.value_or(""), "G1.v.0");
-    // The live call without a base date reads from the first stored row, as before this commit.
+    // The live call without a base date reads from the first stored row.
     const auto live = live_statistics_columns(series, 311.0574, "2025-03-03", "2025-03-05",
                                               in.symbol_pnl, {});
     EXPECT_EQ(live.worst_day_symbol.value_or(""), "G0.v.0");

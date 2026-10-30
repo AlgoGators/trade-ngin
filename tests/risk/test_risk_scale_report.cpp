@@ -1,4 +1,4 @@
-// RISK_SCALE_REPORT (RA-01, T-7b-1 commit C7): the runner-side line that puts the stored
+// RISK_SCALE_REPORT: the runner-side line that puts the stored
 // reporter's risk_scale beside the scale the PortfolioManager actually applied, built from a
 // synthetic PortfolioManager::last_risk_decisions() record. No PortfolioManager is run here: the
 // summary is a pure function of the record, and these cases pin each documented field.
@@ -185,9 +185,9 @@ TEST(RiskScaleReportTest, TheBacktestLineSaysNaAndCarriesTheRebalanceDate) {
               "cutting_laps=1 binding_module=carver date=2025-03-14");
 }
 
-// ---- T-8c (1): the equity row's risk_scale, the equity RISK_DELIVERED book, the console lines ----
+// ---- the equity row's risk_scale, the equity RISK_DELIVERED book, the console lines ----
 
-// T-8D R14: a book that runs no portfolio-risk overlay stores 1.0, whatever the snapshot reporter
+// A book that runs no portfolio-risk overlay stores 1.0, whatever the snapshot reporter
 // recommends (the reporter's 0.895 of the equity run dated 2026-06-16 is not a stored figure).
 TEST(RiskScaleNoOverlayTest, TheStoredValueIsOneAndTheConsoleSaysWhatOneMeans) {
     EXPECT_EQ(kRiskScaleNoOverlay, 1.0);
@@ -198,7 +198,7 @@ TEST(RiskScaleNoOverlayTest, TheStoredValueIsOneAndTheConsoleSaysWhatOneMeans) {
     EXPECT_EQ(risk_scale_console_no_overlay().find("N/A"), std::string::npos);
 }
 
-// T-8D-2 R68 on a futures row: the delivered scale and the request, each named, four decimals.
+// On a futures row: the delivered scale and the request, each named, four decimals.
 // CONSERVATIVE 2026-04-24: stored gross weight 1.60235704 over the capped target's 2.915205069
 // (held rows in both), m_t = 1.
 TEST(RiskScaleConsoleTest, PrintsTheDeliveredScaleAndTheRequestEachLabelled) {
@@ -209,7 +209,7 @@ TEST(RiskScaleConsoleTest, PrintsTheDeliveredScaleAndTheRequestEachLabelled) {
     EXPECT_EQ(risk_scale_console(0.8612, true, 0.7305),
               "Risk Scale (risk_scale: delivered, stored gross / capped target gross): 0.8612\n"
               "Risk Requested (risk_requested: the overlay's m_t): 0.7305\n");
-    // The delivered scale can exceed 1 (LOOP_SPEC section 7.2).
+    // The delivered scale can exceed 1.
     EXPECT_NE(risk_scale_console(1.25, true, 1.0).find("): 1.2500\n"), std::string::npos);
 }
 
@@ -223,7 +223,7 @@ TEST(RiskScaleConsoleTest, ARowWithNoRiskDetailPrintsNoRequest) {
     EXPECT_EQ(risk_scale_console(1.0, false, 0.5), risk_scale_console(1.0, false, 1.0));
 }
 
-// T-8D-2 R69: the equity runner's stored rows, one sleeve, give the book account_book_of gives for
+// The equity runner's stored rows, one sleeve, give the book account_book_of gives for
 // the same rows filed under one sleeve; a closed row (quantity 0) is in the book and adds nothing.
 TEST(AccountBookOfRowsTest, AFlatListOfStoredRowsIsTheOneSleeveAccountBook) {
     const std::vector<Position> rows = {stored_row("AAPL", 12.5), stored_row("TMUS", 0.0),
@@ -256,8 +256,8 @@ TEST(AccountBookOfRowsTest, TheDeliveredLineMeasuresTheStoredRows) {
 }
 
 // READS SOURCE (a twin and wiring guard, not the test of a behaviour): the runners are `main()`s.
-// The behaviours themselves are executed above; the stored cell and the log line are proven by the
-// gate run of the commit (eq2: trading.live_results.risk_scale and the RISK_DELIVERED line).
+// The behaviours themselves are executed above; the stored cell and the log line are checked on a
+// live run (trading.live_results.risk_scale and the RISK_DELIVERED line).
 TEST(RiskScaleRunnerWiringSourceGuard, TheEquityRunnerStoresOneAndMeasuresItsStoredRows) {
     const std::string src = read_runner("apps/strategies/live_equity_mean_reversion.cpp");
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";

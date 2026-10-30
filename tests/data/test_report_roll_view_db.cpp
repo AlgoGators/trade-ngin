@@ -1,6 +1,6 @@
-// R4b: the report's roll view read from the database (contract_rolls::report_roll_view), and the bar
-// source's log floor (R4a open question 4), on the stage-3 copy (TRADE_NGIN_TEST_DSN, contract bars with
-// their expiration). Read only.
+// The report's roll view read from the database (contract_rolls::report_roll_view), and the bar
+// source's log floor, on a test copy (TRADE_NGIN_TEST_DSN, contract bars with their expiration). Read
+// only.
 //   * The worked example's silver roll: December (42218) to March (42044525) on 2025-11-25 is "Silver,
 //     December to March", the price difference to three decimals; on 2025-11-21 SIZ5 is held inside its
 //     window (first notice Fri 11-28, last actionable bar Wed 11-26, its run 11-27), the target SIH6; on
@@ -69,7 +69,7 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     EXPECT_EQ(si.target, "SIH6");
     EXPECT_EQ(si.cycle, "HKNUZ");
     ASSERT_EQ(view.outlook.count("MES"), 1u);
-    // R6: MES is the rule's too; before the 2026-02-22 change it holds ESZ5, printed as the micro's month.
+    // MES is the rule's too; before the 2026-02-22 change it holds ESZ5, printed as the micro's month.
     const auto& mes = view.outlook.at("MES");
     if (mes.held_symbol == "ESZ5") {
         EXPECT_EQ(mes.held, "MESZ5");
@@ -90,7 +90,7 @@ TEST_F(ReportRollViewDbTest, TheSilverRollAndOutlookAreTheWorkedExamples) {
     EXPECT_TRUE(before.names.empty());
 }
 
-// R6: a micro's contracts before the 2026-02-22 change are the full-size root's. The book's id names ESZ5 on
+// A micro's contracts before the 2026-02-22 change are the full-size root's. The book's id names ESZ5 on
 // Mon 2025-12-15, the bar the rule rolls into ESH6 on (the crossover): the cell names the book's contract in the
 // micro's format and no line is shown yet. Each roll's months are read from its own contracts: ESZ5 to ESH6 is
 // December to March, the alias roll ESH6 to MESH6 March to March.

@@ -7,8 +7,8 @@
 // words change has to be changed here on purpose.
 //
 // The rules, by the names the design gives them: T0 (a schema-1 file), S1-S6 (structure),
-// S8 (term ownership), S9 (REFUSE on a multi-sleeve book), R1-R9 (ranges), A1/A2 (parsed
-// but not yet implemented), C1 (the reporter mirrors the gate).
+// S8 (term ownership), S9 (REFUSE on a multi-sleeve book), R1-R9 (ranges), A1/A2 (parsed;
+// A2 not implemented), C1 (the reporter mirrors the gate).
 
 #include <gtest/gtest.h>
 
@@ -95,7 +95,7 @@ nlohmann::json risk_with(const std::vector<nlohmann::json>& modules) {
             {"max_leverage", 2.0}};
 }
 
-/// R10 (T-6b commit 7d): a book no module of which is a `carver` cannot cut itself, so it
+/// R10: a book no module of which is a `carver` cannot cut itself, so it
 /// carries the signature of whoever decided that. Several cases below are deliberately
 /// carver-less in order to test a different rule, and stamp it here rather than restate it.
 nlohmann::json ruled(nlohmann::json risk) {
@@ -334,10 +334,9 @@ TEST(RiskSchemaParse, S8TwoCarverModulesAtPortfolioScopeIsAnError) {
 
 TEST(RiskSchemaParse, S8ACarverAtBothScopesIsAnError) {
     nlohmann::json sleeves = {{"TREND_FOLLOWING", nlohmann::json::array({carver("sleeve_carver")})}};
-    // T-6b commit 7d: a carver at SLEEVE scope is now refused while the module is still being
-    // parsed (C-2: it divides by the portfolio's capital), so S8's chain rule never sees this
-    // pair any more. The stricter message wins, and this asserts that ordering rather than
-    // pretending the old one still fires. S8 itself is still exercised by
+    // A carver at SLEEVE scope is refused while the module is still being parsed (it
+    // divides by the portfolio's capital), so S8's chain rule never sees this pair. The stricter
+    // message wins, and this asserts that ordering. S8 itself is exercised by
     // S8TwoCarverModulesAtPortfolioScopeIsAnError and by the constant_scale pair below.
     EXPECT_EQ(parse_error(risk_with({carver()}), sleeves),
               msg("sleeve_risk_modules.TREND_FOLLOWING[0] is type \"carver\", which is only "
@@ -350,7 +349,7 @@ TEST(RiskSchemaParse, S8ACarverAtBothScopesIsAnError) {
     EXPECT_EQ(parse_error(ruled(risk_with({constant_scale_module()})), ok_sleeves), "");
 }
 
-// ===== S9: no REFUSE on a multi-sleeve book before T-BASE =====
+// ===== S9: no REFUSE on a multi-sleeve book =====
 
 TEST(RiskSchemaParse, S9ARefuseCapableModuleNeedsASingleSleeveBook) {
     EXPECT_EQ(parse_error(risk_with({refuse_module()}), nlohmann::json(), two_sleeves()),
@@ -359,7 +358,7 @@ TEST(RiskSchemaParse, S9ARefuseCapableModuleNeedsASingleSleeveBook) {
     // One sleeve: accepted. (Carver-less, so R10's attribution goes with it.)
     EXPECT_EQ(parse_error(ruled(risk_with({refuse_module()})), nlohmann::json(), one_sleeve()),
               "");
-    // A disabled strategy is not a sleeve (the predicate config_loader.cpp's G-03 uses).
+    // A disabled strategy is not a sleeve (the predicate config_loader.cpp's lookback check uses).
     nlohmann::json one_enabled = two_sleeves();
     one_enabled["TREND_FOLLOWING_FAST"]["enabled_live"] = false;
     EXPECT_EQ(parse_error(ruled(risk_with({refuse_module()})), nlohmann::json(), one_enabled),
@@ -525,7 +524,7 @@ TEST(RiskSchemaParse, RcsTheTestModulesOwnParameters) {
 // ===== A1, A2: parsed, validated, and not yet implemented =====
 
 TEST(A1AndA2, TheUnimplementedOptionsAreRefusedByNameWithTheCommitThatLandsThem) {
-    // A1 landed with T-6b commit 9: "dates" is the unit and loads (carver() carries it).
+    // A1: "dates" is the unit and loads (carver() carries it).
     EXPECT_EQ(parse_error(risk_with({carver()})), "");
 
     for (const char* policy : {"warn", "refuse"}) {
@@ -566,7 +565,7 @@ TEST(RiskSchemaParse, C1AReporterThatHasDriftedFromTheGateIsAnError) {
                   "gate (HD Q5)"));
 
     // With no carver module the reporter is free: the book is measured but not cut, which
-    // is what commit 8 does to EQUITY_MR.
+    // is EQUITY_MR's assignment.
     nlohmann::json none_book = risk_with({none_module()});
     none_book["risk_reporting"]["max_correlation"] = 0.84;
     EXPECT_EQ(parse_error(none_book), "");
@@ -734,7 +733,7 @@ TEST(TrackedRiskModuleExamples, EveryExampleLoadsThroughTheParserItDocuments) {
     EXPECT_EQ(r.value().sleeves.size(), 1u);
 }
 
-// ===== C-2, R10, R11 (T-6b commit 7d) =====
+// ===== a carver only at portfolio scope; R10, R11 =====
 
 // A carver module divides by RiskConfig::capital and ignores RiskContext::capital by design,
 // and make_risk_module hands every module the PORTFOLIO's capital. On a 30 % sleeve its
@@ -752,8 +751,8 @@ TEST(RiskSchemaRulesT6b, CarverIsAcceptedAtPortfolioScope) {
     EXPECT_EQ(parse_error(risk_with({carver()})), "");
 }
 
-// R10. S3 ties attribution to the literal type "none", so a book whose only module is a WARN
-// is just as ungated as a `none` book and used to carry nobody's name.
+// R10. S3 ties attribution to the literal type "none", but a book whose only module is a WARN
+// is just as ungated as a `none` book, so it must carry a name too.
 TEST(RiskSchemaRulesT6b, ABookWithNoCarverNeedsAnAttribution) {
     EXPECT_EQ(parse_error(risk_with({warn_module()})),
               msg("risk._ruled_by is required on a book no module of which is a \"carver\": "
@@ -789,9 +788,9 @@ TEST(RiskSchemaRulesT6b, ALoneNoneIsExemptFromR10) {
     EXPECT_EQ(parse_error(risk_with({none_module()})), "");
 }
 
-// A carver anywhere in the chain satisfies R10, including one on a sleeve... which is now
-// refused, so the only way to satisfy it is a portfolio carver. Pinned so the interaction of
-// C-2 and R10 is deliberate rather than accidental.
+// A carver anywhere in the chain would satisfy R10, but one on a sleeve is refused, so the
+// only way to satisfy it is a portfolio carver. Pinned so the interaction of the sleeve-scope
+// refusal and R10 is deliberate rather than accidental.
 TEST(RiskSchemaRulesT6b, ACarverAtPortfolioScopeSatisfiesR10ForTheWholeBook) {
     EXPECT_EQ(parse_error(risk_with({carver(), warn_module()})), "");
 }
@@ -809,11 +808,11 @@ TEST(RiskSchemaRulesT6b, ANeverConditionNeedsAReason) {
     EXPECT_EQ(parse_error(risk_with({carver(), never})), "");
 }
 
-// ===== T-6b-fix F2: lookback_unit says what the code does =====
+// ===== lookback_unit says what the code does =====
 
 // The Carver window is capped at lookback_period distinct DATES and nothing reads the key. A
-// risk.json migrated before T-6b commit 9 says "bars", which no longer describes the code: it is
-// a load error that names the fix, never a synonym (T-6b INTERIM ADVERSARIAL B-2).
+// risk.json that says "bars" does not describe the code: it is a load error that names the fix,
+// never a synonym.
 TEST(RiskSchemaRulesT6bFix, ABarsUnitIsRefusedAndTheErrorNamesTheMigration) {
     nlohmann::json c = carver();
     c["lookback_unit"] = "bars";
@@ -825,9 +824,10 @@ TEST(RiskSchemaRulesT6bFix, ABarsUnitIsRefusedAndTheErrorNamesTheMigration) {
     EXPECT_EQ(parse_error(risk_with({carver()})), "") << "\"dates\" loads";
 }
 
-// R12 (B-5): F5 needs kF5MinGateDates COMPLETE dates to engage, and lookback_period counts
-// DISTINCT dates, so a period below the floor could never engage it (the gate would read the
-// zero-filled window for ever). The boundary, both sides; the reporter mirrors the gate (C1).
+// R12: the gate's complete-date filter needs kF5MinGateDates COMPLETE dates to engage, and
+// lookback_period counts DISTINCT dates, so a period below the floor could never engage it (the
+// gate would read the zero-filled window for ever). The boundary, both sides; the reporter mirrors
+// the gate (C1).
 TEST(RiskSchemaRulesT6bFix, AWindowBelowTheSparseDateFloorIsALoadError) {
     auto with_window = [](int dates) {
         nlohmann::json c = carver();
@@ -855,11 +855,12 @@ TEST(RiskSchemaRulesT6bFix, TheShippedWindowIsAboveTheSparseDateFloor) {
     EXPECT_EQ(parse_error(risk_with({c})), "");
 }
 
-// ===== The three tracked books, and what each one is assigned (T-6b commit 8) =====
+// ===== The three tracked books, and what each one is assigned =====
 
-// HD's ruling of 2026-09-18: "No risk module on the EQUITY_MR portfolio book (assignment is per
-// portfolio; other equity books choose their own)." This reads the TRACKED config_template tree
-// rather than restating its values, so the assignment cannot drift from the file that ships.
+// No risk module on the EQUITY_MR portfolio book (assignment is per portfolio; other equity books
+// choose their own), and its risk.json says who decided and when. This reads the TRACKED
+// config_template tree rather than restating its values, so the assignment cannot drift from the
+// file that ships.
 TEST(TrackedPortfolioRiskAssignment, EachBookIsAssignedWhatHDRuled) {
     namespace fs = std::filesystem;
     fs::path root = fs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -897,7 +898,7 @@ TEST(TrackedPortfolioRiskAssignment, EachBookIsAssignedWhatHDRuled) {
     EXPECT_EQ(eq.at("modules")[0].at("_ruled_on"), "2026-09-18");
     EXPECT_FALSE(eq.at("modules")[0].at("_reason").get<std::string>().empty());
 
-    // ...but it is still MEASURED. The reporter is untouched (HD Q5, RA-01), so every risk
+    // ...but it is still MEASURED. The reporter is untouched, so every risk
     // column of live_results and of the email still carries a number. A `none` assignment that
     // also dropped the reporter would silently blank those columns.
     ASSERT_TRUE(eq.contains("risk_reporting"));

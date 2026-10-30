@@ -1,5 +1,4 @@
-// The contract-switch classifier and the back-adjusted series of LOOP_SPEC v6.1 sections 2.1 to 2.3
-// (T-ROLLX commit 1), on constructed sequences:
+// The contract-switch classifier and the back-adjusted series, on constructed sequences:
 //   * a change bar is the bar whose id differs from the last known id before it; the next consumed
 //     bar confirms it a ROLL (id kept: the legs' bars are named) or a FLIP (id reverted: every bar
 //     of the sequence, the reverting bar included); a third id extends the pending sequence; a
@@ -234,7 +233,7 @@ TEST(RollSeries, TheTrackerNamesTheLegsOfAConfirmedRoll) {
     EXPECT_EQ(s.bars_pending, 1);
 }
 
-// LOOP_SPEC v6.1 section 2.2 (LEAD-2 2026-10-02, code review D2): an id-less bar inside a pending
+// An id-less bar inside a pending
 // roll is not judged, leaves the roll pending and HOLDS the symbol; the hold ends on the confirm.
 TEST(RollSeries, AnIdLessBarInsideAPendingRollStillHolds) {
     RollTracker t;
@@ -265,7 +264,7 @@ TEST(RollSeries, BothBarsOfAFlipHold) {
     EXPECT_FALSE(t.add("A", 102.0).holds());
 }
 
-// K-01 in the roll status: the status is taken on the CONSUMED bars; a withheld print carrying
+// A withheld bar in the roll status: the status is taken on the CONSUMED bars; a withheld print carrying
 // another contract's id is in no sequence, so it is neither a change nor a confirm.
 TEST(RollSeries, TheRollStatusOfTheConsumedBarsNeverSeesAWithheldPrint) {
     auto bar = [](int d, double c, const std::string& id) {
@@ -285,7 +284,7 @@ TEST(RollSeries, TheRollStatusOfTheConsumedBarsNeverSeesAWithheldPrint) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Rolls step 3: the per-contract source's roll field (Bar::roll_from). On a roll bar the step is the
+// The per-contract source's roll field (Bar::roll_from). On a roll bar the step is the
 // new close minus the OLD contract's close on the same bar and the return is the old contract's own.
 // ------------------------------------------------------------------------------------------------
 
@@ -474,7 +473,7 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
             std::optional<RollFrom> f;
             std::string id = h;
             double close = base;
-            const std::string day = "d" + std::to_string(100 + t);  // the roll's date (step 4)
+            const std::string day = "d" + std::to_string(100 + t);  // the roll's date
             if (r == 0 && t > 0) {  // a known roll
                 f = RollFrom{base - 3.0, h, RollFromKind::KNOWN, day};
                 left = held++;
@@ -487,7 +486,7 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
                 f = RollFrom{base + 10.0, "c" + std::to_string(held + 1), RollFromKind::AWAITS_NEXT,
                              day};
                 if (trial % 2) {
-                    // ruling 19 "vendor" (every other trial): the target's own bar, the field naming
+                    // "vendor" (every other trial): the target's own bar, the field naming
                     // the held contract
                     f = RollFrom{base, h, RollFromKind::AWAITS_NEXT_VENDOR, day};
                     id = "c" + std::to_string(held + 1);
@@ -500,7 +499,7 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
                 }
             } else if (after) {
                 f = RollFrom{base - 4.0, "c" + std::to_string(left), RollFromKind::AFTER_ROLL, left_on};
-                after = rng() % 3 == 0;  // the field rides the bars after a roll (step 3 B-2)
+                after = rng() % 3 == 0;  // the field rides the bars after a roll
             }
             // a bar the consumer withheld: an ordinary bar, or a known roll bar (its AFTER_ROLL
             // field then books it on the next consumed bar)
@@ -540,7 +539,7 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
 }
 
 TEST(RollSeriesPerContract, ARollBarAndTheBarAfterItBothWithheldAreBookedOnTheFirstConsumedBar) {
-    // Audit B-2: the consumer withheld the roll bar and the bar after it; the source carries the
+    // The consumer withheld the roll bar and the bar after it; the source carries the
     // old contract's close on every bar after a roll, so the first consumed bar books the roll, the
     // old contract's own move up to it (101 -> 105) and both legs at its closes.
     const std::vector<double> raw{100, 101, 112, 113};
@@ -552,12 +551,12 @@ TEST(RollSeriesPerContract, ARollBarAndTheBarAfterItBothWithheldAreBookedOnTheFi
     EXPECT_DOUBLE_EQ(s.returns[2], (113.0 - 112.0) / 112.0) << "the second field is not read";
 }
 
-// Rolls step 4 (R3 audit A, the 6L 2013-09-11 case). The consumer consumed an unconfirmed vendor switch
+// The 6L 2013-09-11 case. The consumer consumed an unconfirmed vendor switch
 // into B on 09-06 (A's own bar, the field naming B), withheld every bar after it, the real roll into B on
 // 09-11 included, and consumes 09-18, B's bar with A's close of 09-18 in an AFTER_ROLL field dated 09-11.
 // That field follows a later roll, not the switch it awaits: the roll is booked on 09-18 at its two
-// closes and the bar's move is A's own up to it, 104 - 101 (before: confirmed at 09-06's closes, the move
-// from B's 110).
+// closes and the bar's move is A's own up to it, 104 - 101 (not confirmed at 09-06's closes, nor the
+// move from B's 110).
 TEST(RollSeriesPerContract, AnAwaitedSwitchIsNotConfirmedByALaterRollIntoTheSameTarget) {
     const std::vector<double> raw{100, 101, 115};
     const RollFields rf{std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT, "2013-09-06"),
@@ -585,7 +584,7 @@ TEST(RollSeriesPerContract, AnAwaitedSwitchIsNotConfirmedByALaterRollIntoTheSame
 }
 
 // The same bars with the field dated the switch bar's date: the awaited switch itself, confirmed at the
-// switch bar's closes (step 3's rule, unchanged).
+// switch bar's closes.
 TEST(RollSeriesPerContract, AnAwaitedSwitchIsConfirmedByAFieldDatedItsOwnBar) {
     const std::vector<double> raw{100, 101, 115};
     const RollFields rf{std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT, "2013-09-06"),
@@ -605,7 +604,7 @@ TEST(RollSeriesPerContract, AnAwaitedSwitchIsConfirmedByAFieldDatedItsOwnBar) {
     EXPECT_EQ(st.change_bar_close, 110.0);
 }
 
-// Rolls step 4, ruling 19 ("vendor"): the switch bar is the target's own (B 110), the field naming the
+// With "vendor" the switch bar is the target's own (B 110), the field naming the
 // held contract (A 102). Confirmed by the next bar: legs at the switch bar's closes, the next move from
 // B's 110. Not confirmed: the next move from A's 102. Both exactly as the "held" representation books.
 TEST(RollSeriesPerContract, AVendorSettingSwitchBarBooksWhatTheHeldSettingBooks) {

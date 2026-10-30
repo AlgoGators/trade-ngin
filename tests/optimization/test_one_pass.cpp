@@ -1,8 +1,7 @@
-// The one optimisation pass (LOOP_SPEC v6.2 sections 4 to 6) as pure functions: the cap, the
-// optimiser's covariance, the search from the held book, the buffer and the rounding, the clip and
-// the trim, against values the frozen reference implementation (docs/after_equities/stage3/oracle/
-// book.py) gives on the same inputs. The closes come from one deterministic generator written the
-// same way on both sides.
+// The one optimisation pass as pure functions: the cap, the optimiser's covariance, the search from
+// the held book, the buffer and the rounding, the clip and the trim, against values an independent
+// reference implementation gives on the same inputs. The closes come from one deterministic
+// generator written the same way on both sides.
 #include <gtest/gtest.h>
 
 #include <cmath>

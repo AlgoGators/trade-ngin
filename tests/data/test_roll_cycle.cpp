@@ -1,4 +1,4 @@
-// The roll cycle (HD 2026-10-23, ruling 2): the delivery months the vendor's series has held in at
+// The roll cycle: the delivery months the vendor's series has held in at
 // least half of the years it covers; "held" is named on two consecutive grid bars, so a one-bar
 // stray never counts. The fixed table answers the target and the email's warning.
 #include <gtest/gtest.h>
@@ -28,7 +28,7 @@ TEST(RollCycle, TableLookupsAndTheNextCycleMonth) {
     EXPECT_EQ(roll_cycle("GC").value(), "GJMQZ");
     EXPECT_EQ(roll_cycle("ZC").value(), "HKNZ");
     EXPECT_EQ(roll_cycle("6A").value(), "HMUZ");
-    // MM: the gold and silver micros hold their full-size roots' months (step 0: their own .v.0)
+    // The gold and silver micros hold their full-size roots' months (measured on their own .v.0)
     EXPECT_EQ(roll_cycle("MGC").value(), roll_cycle("GC").value());
     EXPECT_EQ(roll_cycle("SIL").value(), roll_cycle("SI").value());
     EXPECT_TRUE(roll_cycle("XX").is_error());

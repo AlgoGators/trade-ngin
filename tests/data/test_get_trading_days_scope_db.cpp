@@ -1,12 +1,12 @@
-// E2-F6: trading.get_trading_days() must exist in BOTH forms, and the scoped form must scope.
+// trading.get_trading_days() must exist in BOTH forms, and the scoped form must scope.
 //
 // Two distinct things are pinned here, and the first is the one that bites hardest.
 //
-// 1. THE FUNCTION MUST EXIST. Both overloads were created by hand against the live server and
-//    lived nowhere in the repository until migrations/004. That matters because the failure
-//    mode when it is absent is SILENT: the runners initialise `trading_days_count = 1` and
-//    only overwrite it if the query succeeds, so a missing function leaves the count at 1,
-//    nothing throws, the run exits 0, and five stored columns are corrupted --
+// 1. THE FUNCTION MUST EXIST. Both overloads are created by migrations/004. That matters
+//    because the failure mode when it is absent is SILENT: the runners initialise
+//    `trading_days_count = 1` and only overwrite it if the query succeeds, so a missing
+//    function leaves the count at 1, nothing throws, the run exits 0, and five stored columns
+//    are corrupted --
 //    total_annualized_return, sharpe_ratio, sortino_ratio, total_days, and win_rate (which
 //    becomes winning_days * 100, roughly 9000%). A DB rebuilt without 004 fails exactly this
 //    way, and this test is what catches it.
@@ -15,7 +15,7 @@
 //    `ORDER BY live_start_date LIMIT 1` and no portfolio predicate, so it takes the earliest
 //    row across ALL portfolios. LIVE_EQUITY_MEAN_REVERSION unscoped anchors to a stale
 //    2025-08-15 BASE_PORTFOLIO row and reports 356 days against a 10-day series -- a 36x
-//    understatement of annualized return (E2/B4).
+//    understatement of annualized return.
 //
 // Read-only: calls the function, touches no table.
 //

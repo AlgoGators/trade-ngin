@@ -1,18 +1,17 @@
 // tests/backtest/test_backtest_roll_legs_once.cpp
 //
-// T-ROLLX commit 3 (LOOP_SPEC v6.1 section 6.5): the two ROLL legs of a confirmed roll are booked
-// ONCE, on the cycle that consumes the confirming bar, whether or not the symbol has a bar on the
-// cycles after it. The coordinator keeps each symbol's last roll status across groups without a
-// bar of it (the hold of a pending change persists, L-04); the first cut carried the CONFIRM flag
-// with it and booked the pair again on every cycle until the symbol's next bar (the probe P3 of
-// 799e092a: ZC.v.0 three pairs for its 2025-07-03 roll, ZL.v.0 two for 2026-02-20).
+// The two ROLL legs of a confirmed roll are booked ONCE, on the cycle that consumes the confirming
+// bar, whether or not the symbol has a bar on the cycles after it. The coordinator keeps each
+// symbol's last roll status across groups without a bar of it (the hold of a pending change
+// persists), but not the CONFIRM flag: carried along, it would book the pair again on every cycle
+// until the symbol's next bar.
 //
 // The fixture runs a whole futures backtest (run_portfolio) with one sleeve long 2 XA.v.0 from
 // cycle 10, XA's contract id switching on day 30 (the change bar), kept on day 31 (the confirming
 // bar), no XA bar on days 32 and 33, and XB.v.0 printing every day so the cycles go on.
 //
-// T-ROLLX-FIX: X-3, a leg without a usable close fails the run (an error out of run_portfolio, a
-// non-zero exit of the runner), never a warning; X-4, the BORROW rows of an equity short reach the
+// A leg without a usable close fails the run (an error out of run_portfolio, a non-zero exit of
+// the runner), never a warning; the BORROW rows of an equity short reach the
 // run's executions, so 018's transaction_costs is the sum of every stored row's cost.
 
 #include <gtest/gtest.h>
@@ -234,7 +233,7 @@ TEST_F(BacktestRollLegsOnceTest, AConfirmedRollBooksOnePairEvenWhenTheSymbolThen
     EXPECT_LT(line.find(" vol_mult="), line.find(" date=")) << line;
 }
 
-// Rolls step 4 (ruling 18, migration 040): the run's two split totals are set only with
+// Migration 040: the run's two split totals are set only with
 // per_contract_rolls on (the source enabled): NULL in backtest.results with it off. XA's roll is on the
 // vendor's series (no roll field: the micros' case), so no row carries a split and the totals are 0.
 TEST_F(BacktestRollLegsOnceTest, TheRunsSplitTotalsAreNotSetWithTheSwitchOff) {
@@ -258,7 +257,7 @@ TEST_F(BacktestRollLegsOnceTest, TheRunsSplitTotalsAreSetWithTheSwitchOn) {
     EXPECT_EQ(count_lines("ROLL_SPLIT_TOTALS rolls=0 roll_bar_moves=0.000000 roll_gap_values=0.000000"), 1u);
 }
 
-// R4b audit A recheck R1: the results row carries the run's two split totals. The bar source hands
+// The results row carries the run's two split totals. The bar source hands
 // XA's change bar out with the per-contract roll field (a roll known on its bar, the old contract's
 // close 3 points under the new one's), so the run books a roll with a split; the cells the
 // coordinator hands the results row must be the run's sums over its rows, as stored.
@@ -268,7 +267,7 @@ constexpr double kGapPoints = 3.0;
 class RollFieldDb : public ServingDb {
 public:
     using ServingDb::ServingDb;
-    /// The kind of the change bar's field (R6: SOURCE_CHANGE for a micro's change of price source).
+    /// The kind of the change bar's field (SOURCE_CHANGE for a micro's change of price source).
     static inline RollFromKind kind_on_change = RollFromKind::KNOWN;
 
     Result<std::shared_ptr<arrow::Table>> get_market_data(
@@ -394,7 +393,7 @@ TEST_F(BacktestResultsRowSplitTest, TheResultsRowCarriesTheRunsTwoSplitTotals) {
     EXPECT_EQ(*cell.at("roll_gap_values"), live_results_number(gaps).value_or(""));
 }
 
-// R6 (HD 2026-10-26): the same run with the change bar's field a change of price source (the micros'
+// The same run with the change bar's field a change of price source (the micros'
 // 2026-02-23 change): the series books exactly what the known roll books (the old contract's move to its
 // close, the gap excluded), but no execution is stored for it, no cost, no roll in the totals; the run logs
 // one PRICE_SOURCE_CHANGE line with its gap.
@@ -442,8 +441,8 @@ TEST_F(BacktestRollLegsOnceTest, TheStrategyFillsAreTheOpenAloneAndThePositionIs
     EXPECT_DOUBLE_EQ(static_cast<double>(book.at("ROLL_A").at(kXA).quantity), 2.0);
 }
 
-// X-3: the last close before the change bar is not usable (negative), so the closing leg has no
-// price. Section 6.5: the run fails with ROLL_LEG STOP (run_portfolio returns the error; the runner
+// The last close before the change bar is not usable (negative), so the closing leg has no
+// price: the run fails with ROLL_LEG STOP (run_portfolio returns the error; the runner
 // exits non-zero on it), never a warning and a run that goes on.
 TEST_F(BacktestRollLegsOnceTest, ALegWithoutAUsableCloseFailsTheRun) {
     std::string err;
@@ -452,7 +451,7 @@ TEST_F(BacktestRollLegsOnceTest, ALegWithoutAUsableCloseFailsTheRun) {
     EXPECT_NE(err.find("ROLL_LEG STOP " + kXA), std::string::npos) << err;
 }
 
-// X-4: an equity short accrues a BORROW row each cycle it is open. The row is typed BORROW and
+// An equity short accrues a BORROW row each cycle it is open. The row is typed BORROW and
 // reaches the run's executions, so 018's transaction_costs is the sum of every stored row's cost
 // (the sum the equity curve charged), BORROW included.
 class BacktestBorrowRowsTest : public BacktestRollLegsOnceTest {};

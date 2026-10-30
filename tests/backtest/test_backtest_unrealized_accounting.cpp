@@ -1,30 +1,19 @@
-// E2-F2 regression pins — backtest unrealized P&L must be gated on the settlement model.
+// Backtest unrealized P&L is gated on the settlement model (PnLAccountingMethod) and carries
+// point_value.
 //
-// BacktestCoordinator gated `realized_pnl` on PnLAccountingMethod but left `unrealized_pnl`
-// ungated, and its inline expression also omitted point_value:
+// On a futures backtest row `average_price` IS the prior close: TrendFollowingStrategy resets it
+// to current_price after settling and get_target_positions() stamps price_history.back(), while
+// the coordinator feeds on_data the T-1 bars. So an ungated
 //
 //     updated_pos.unrealized_pnl = Decimal((current_close - avg_price) * qty);
 //
-// Two defects on one line. On a futures backtest row `average_price` IS the prior close --
-// TrendFollowingStrategy resets it to current_price after settling
-// (trend_following.cpp:550-556) and get_target_positions() stamps price_history.back()
-// (:610-624), while the coordinator feeds on_data the T-1 bars
-// (backtest_coordinator.cpp:547). So the expression reduces algebraically to the realized
-// formula and records the same settled move twice -- then divides it by the contract
-// multiplier, because point_value is absent.
+// reduces algebraically to the realized formula and records the same settled move twice; without
+// point_value it also divides it by the contract multiplier (unrealized/realized is then EXACTLY
+// 1/point_value on every symbol: MYM 2.0 (pv 0.5), MNQ 0.5 (pv 2), MES 0.2 (pv 5), ZN 0.001
+// (pv 1000), 6A 0.00001 (pv 100000)).
 //
-// Measured on TREND_FOLLOWING_20260901_060030_828: 2,769 of 3,064 backtest.final_positions
-// rows non-zero, gross magnitude $693,172.27, net -$28,315.21. The ratio
-// unrealized/realized was EXACTLY 1/point_value on every symbol -- MYM 2.0 (pv 0.5),
-// MNQ 0.5 (pv 2), MES 0.2 (pv 5), ZN 0.001 (pv 1000), 6A 0.00001 (pv 100000). MYM only
-// looked like a "2x" because its point value happens to be 0.5.
-//
-// `main` has `unrealized_pnl = Decimal(0.0)` unconditionally; the regression entered with
-// 76b4ea5d, and 7e3d07c2 later gated realized but not unrealized.
-//
-// This is the backtest twin of E2-F3 (commit 5b589ac2), which fixed the identical defect on
-// the live side via LivePnLManager::UnrealizedPolicy. Live and backtest must agree; before
-// this they did not -- live said 0, backtest said settled-move / point_value.
+// Live and backtest agree: LivePnLManager::UnrealizedPolicy applies the same rule on the live
+// side, where a futures row's unrealized is 0.
 
 #include <gtest/gtest.h>
 
@@ -47,7 +36,7 @@ constexpr double kPointValue = 0.5;       // MYM contract size
 // (53998 - 54583) * 3 * 0.5 == -877.50, the value stored in realized_pnl.
 constexpr double kSettledMove = (kClose - kPrevClose) * kQty * kPointValue;
 
-// What the pre-fix line produced: the same move, with point_value dropped. -1755.00.
+// What the ungated expression gives: the same move, with point_value dropped. -1755.00.
 constexpr double kBuggyValue = (kClose - kPrevClose) * kQty;
 
 }  // namespace
@@ -67,7 +56,7 @@ TEST(BacktestUnrealizedAccounting, RealizedOnlyYieldsZeroUnrealized) {
            "twice (E2-F2).";
 }
 
-// The specific pre-fix value, pinned so the exact regression cannot come back unnoticed.
+// The ungated expression's value, pinned so it cannot come back unnoticed.
 TEST(BacktestUnrealizedAccounting, RealizedOnlyDoesNotReproduceTheUngatedExpression) {
     const double u = BacktestPnLManager::unrealized_for_accounting(
         PnLAccountingMethod::REALIZED_ONLY, kQty, kPrevClose, kClose, kPointValue);
@@ -111,8 +100,7 @@ TEST(BacktestUnrealizedAccounting, UnrealizedOnlyBehavesLikeMixed) {
            "REALIZED_ONLY is the settled case.";
 }
 
-// The second half of the defect: point_value was absent from the expression. This fails if
-// anyone drops the multiplier again.
+// point_value is part of the expression. This fails if anyone drops the multiplier.
 TEST(BacktestUnrealizedAccounting, PointValueIsAppliedNotAssumedToBeOne) {
     const double u = BacktestPnLManager::unrealized_for_accounting(
         PnLAccountingMethod::MIXED, kQty, kPrevClose, kClose, kPointValue);

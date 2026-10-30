@@ -1,7 +1,7 @@
-// LOOP_SPEC sections 4 to 6 at the portfolio manager: a book that names an overlay sleeve is
+// The one pass at the portfolio manager: a book that names an overlay sleeve is
 // rebalanced by ONE pass (the overlay once on the capped target, the forecast-sign close, one
 // search from the held book, the buffer and one rounding, the cap, the trim, the split back to the
-// sleeves, the fills). The arithmetic itself is pinned against the frozen oracle in
+// sleeves, the fills). The arithmetic itself is pinned against a reference implementation in
 // tests/optimization/test_one_pass.cpp; these tests pin what the manager does with it: where the
 // held book comes from, the hold set, the fills and the ledger, the sleeves' split, the record the
 // runners store, the refusal contract, and that no second lap exists.
@@ -226,7 +226,7 @@ TEST_F(OnePassBookTest, TheBookIsOnePassFromTheHeldBookAndTheLedgerIsTheStoredBo
     EXPECT_EQ(fills("A", "AAA"), (std::vector<double>{4.0, 4.0}));
 }
 
-// Section 4 and 5.3 (D14, F1): the overlay reads the CAPPED target and the stored book never holds
+// The overlay reads the CAPPED target and the stored book never holds
 // a free row beyond the cap. A target of 30 contracts is a weight of 6; the cap of 2 is 10.
 TEST_F(OnePassBookTest, TheTargetIsCappedBeforeTheOverlayAndTheStoredRowStaysInsideTheCap) {
     make_pm();
@@ -305,7 +305,7 @@ TEST_F(OnePassBookTest, TheOverlayCutsOnceAndTheRequestIsRecorded) {
     EXPECT_EQ(pm_->last_one_pass().over_limit_after_rounding_terms, "");
 }
 
-// Section 6.1: a symbol outside the backtest's session set is HELD on every rebalance: its row is
+// A symbol outside the backtest's session set is HELD on every rebalance: its row is
 // fixed at the held quantity (never opened at a stale price when flat, never filled when held),
 // and it re-enters the search on its next session bar.
 TEST_F(OnePassBookTest, ASymbolOutsideTheSessionSetIsHeldAndFillsOnItsNextSession) {
@@ -366,7 +366,7 @@ TEST_F(OnePassBookTest, TheCallersHoldSetHoldsTheSeededBookForOneRebalance) {
     EXPECT_EQ(quantity("A", "BBB"), 8.0);
 }
 
-// Section 5.2: a free symbol held on the other side of its target is closed with ONE fill to flat
+// A free symbol held on the other side of its target is closed with ONE fill to flat
 // before the search, and the move from flat is a second fill. The closes are in the record, per
 // sleeve, for the live runners to book.
 TEST_F(OnePassBookTest, AForecastSignCloseIsItsOwnFillBeforeTheSearch) {
@@ -388,7 +388,7 @@ TEST_F(OnePassBookTest, AForecastSignCloseIsItsOwnFillBeforeTheSearch) {
     EXPECT_EQ(count_of(out, "sign_closes=[AAA]"), 1u) << out;
 }
 
-// Section 5.2 (D39), the deferral band: held against the first sleeve's forecast while |F| < 2,
+// The deferral band: held against the first sleeve's forecast while |F| < 2,
 // the symbol is HELD; at |F| = 2 exactly it is free and the sign close applies. A zero forecast
 // has no sign and is never in the band.
 TEST_F(OnePassBookTest, TheDeferralBandHoldsUntilTheForecastReachesTwo) {
@@ -425,7 +425,7 @@ TEST_F(OnePassBookTest, TheDeferralBandHoldsUntilTheForecastReachesTwo) {
     EXPECT_EQ(fills("A", "AAA").back(), -held) << "ONE fill, the whole held quantity";
 }
 
-// Section 6.2: a symbol that signalled before and no longer signals is closed with one fill to
+// A symbol that signalled before and stops signalling is closed with one fill to
 // flat on a session bar, not walked down through the buffer.
 TEST_F(OnePassBookTest, ASymbolThatStopsSignallingIsClosedWithOneFill) {
     make_pm();
@@ -651,9 +651,8 @@ TEST_F(OnePassBookTest, ASymbolTheCostModelWasNeverFedIsNotPricedOnADefault) {
 
 // A refused day has a record row like any other day. With the rebalance's record switched on (the
 // gate harness switches it on for every run) a scope the MANAGER refuses (here a held symbol with
-// no usable close; a stopped overlay sleeve and a refused sleeve take the same path) used to index
-// three vectors that path never sized, and the run died of a segmentation fault instead of holding
-// the book and exiting as a refusal does.
+// no usable close; a stopped overlay sleeve and a refused sleeve take the same path) holds the book
+// and exits as a refusal does; it must not index vectors that path never sized.
 TEST_F(OnePassBookTest, ARefusedDayWritesItsRecordRowAndDoesNotCrash) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() / ("trade_ngin_refused_record_" + std::to_string(::getpid()));
@@ -723,7 +722,7 @@ TEST_F(OnePassBookTest, ARefusedDayWritesItsRecordRowAndDoesNotCrash) {
 }
 
 // The rebalance's record: a run starts from empty files (the first row a process writes into a
-// directory removes what an earlier run left there, where it used to append to it), and a row is
+// directory removes what an earlier run left there, rather than appending to it), and a row is
 // dated by the newest bar the call was fed, the cycle's own signal date.
 TEST_F(OnePassBookTest, TheRecordStartsFromEmptyFilesAndIsDatedByTheBarFed) {
     const std::filesystem::path dir =
@@ -773,8 +772,8 @@ TEST_F(OnePassBookTest, TheRecordStartsFromEmptyFilesAndIsDatedByTheBarFed) {
     std::filesystem::remove_all(dir);
 }
 
-// A cycle that runs no pass (every bar of its signal group withheld) has a day row saying so: the
-// record used to have no row for it, so a reader had to guess which calendar date was missing.
+// A cycle that runs no pass (every bar of its signal group withheld) has a day row saying so, so a
+// reader need not guess which calendar date is missing.
 TEST_F(OnePassBookTest, ACycleWithNoPassHasADayRowSayingSo) {
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() / ("trade_ngin_no_pass_row_" + std::to_string(::getpid()));
@@ -1036,7 +1035,7 @@ TEST_F(OnePassBookTest, TheOverlaysReadingsOfTheStoredBookAreThePassesToTheBit) 
     EXPECT_EQ(*short_columns.overlay_net_leverage, short_day.overlay_net_leverage);
 }
 
-// R-C point 3: on a BLIND window the three risk readings are not computed: the record says so and
+// On a BLIND window the three risk readings are not computed: the record says so and
 // the leverage readings are still read; a refused rebalance has no record of readings at all.
 TEST_F(OnePassBookTest, ABlindWindowHasNoCovarianceReadingAndARefusalHasNone) {
     make_pm();

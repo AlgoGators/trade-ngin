@@ -1,29 +1,20 @@
-// E2-F54 regression pins -- the backtest's per-bar realized FLOW must come from the
-// fill-maintained record, must be computed before the flat-row skip, and must keep the
-// close-day row.
+// The backtest's per-bar realized FLOW comes from the fill-maintained record, is computed
+// before the flat-row skip, and keeps the close-day row, so the rows match the live definition:
 //
-// THE DEFECT (independent audit 2026-09-04, mechanics verified on a stored run):
+//   (a) The row snapshot the coordinator iterates (`get_strategy_positions()`, the TARGET copy
+//       PortfolioManager::current_positions holds) is taken BEFORE on_execution is fed, so its
+//       `pos.realized_pnl` on bar D carries realized through D-1's fills only. The flow reads
+//       the fill-maintained cumulative, so a sale on D lands on D's row, not D+1's.
 //
-//   (a) The row snapshot the coordinator iterates is `get_strategy_positions()` ==
-//       PortfolioManager::current_positions == the TARGET copy taken at
-//       portfolio_manager.cpp:230/:439, which is produced BEFORE on_execution is fed
-//       (backtest_coordinator.cpp:669-672). So `pos.realized_pnl` on bar D carries realized
-//       through D-1's fills only: a sale on D lands on D+1's row.
+//   (b) On a full close the flow is computed before the flat-row skip, so the exit's realized
+//       is emitted on the closing bar; skipped first, it would be STRANDED until the symbol is
+//       re-entered, or LOST if the symbol never trades again.
 //
-//   (b) On a full close `std::abs(qty) < 1e-8` continues (backtest_coordinator.cpp:743)
-//       BEFORE the flow code (:785-791), so `last_cumulative_realized_` is never advanced
-//       for the closing bar and the exit's realized is never emitted. It is not merely
-//       late -- it is STRANDED until the symbol is re-entered (measured: ABT closes 09-11,
-//       its realized surfaces on the 12-17 row) or LOST if the symbol never trades again.
+//   (c) reset_portfolio_state() clears `last_cumulative_realized_`, so a second portfolio
+//       backtest in one process does not open with the previous book's cumulative.
 //
-//   (c) `last_cumulative_realized_` is not cleared in reset_portfolio_state(), so a second
-//       portfolio backtest in one process opens with the previous book's cumulative and
-//       writes a wrong first-bar flow.
-//
-// Present since 165ff068 (2026-05-22); 6401e2ed inherited it and its commit message claims
-// the rows "match the live definition", which is what this pins. No consumer reads the
-// column, so backtest.results, equity_curve and the metrics are unaffected -- this is a
-// stored-row correctness defect, not a P&L defect.
+// No consumer reads the column, so backtest.results, equity_curve and the metrics do not
+// depend on it: this is stored-row correctness, not P&L.
 //
 // The rule lives in BacktestPnLManager next to unrealized_for_accounting because that is
 // where the other per-row accounting rule and its rationale already live, and because the
@@ -31,7 +22,7 @@
 //
 // The wiring -- that the coordinator passes the FILL-maintained cumulative and calls this
 // before the flat-row skip -- is not expressible in a unit test (it is a call-site
-// argument). Run R1 is its evidence: every (date, symbol) flow re-derived from that date's
+// argument); a stored run checks it by re-deriving every (date, symbol) flow from that date's
 // executions against the running basis.
 
 #include <gtest/gtest.h>
@@ -42,7 +33,7 @@ using trade_ngin::backtest::BacktestPnLManager;
 
 // ---------------------------------------------------------------------------
 // The live is_dead_row rule, restated for the backtest.
-// AVERAGE_PRICE_LIFECYCLE step 10 / LiveDailyCycle::is_dead_row: a row dies only when it
+// LiveDailyCycle::is_dead_row: a row dies only when it
 // has NEITHER quantity NOR realized. A closed position that realized something keeps its
 // row so the exit's P&L has somewhere to live.
 // ---------------------------------------------------------------------------
@@ -100,7 +91,7 @@ TEST(BacktestRealizedFlow, APartialSaleLandsOnItsOwnDay) {
 }
 
 TEST(BacktestRealizedFlow, FlowsSumToTheStrategyCumulative) {
-    // The invariant R1 checks against the database: sum of the stored flows over dates
+    // The invariant a stored run is checked against: sum of the stored flows over dates
     // equals the strategy's final cumulative for that symbol, including a symbol that is
     // flat at the end.
     double last = 0.0;
@@ -142,20 +133,19 @@ TEST(BacktestRealizedFlow, AClearedLedgerReportsTheWholeCumulativeNotAnIncrement
 }
 
 // ---------------------------------------------------------------------------
-// E2-F59 -- the ledger must advance only on a bar whose row is actually WRITTEN.
+// The ledger advances only on a bar whose row is actually WRITTEN.
 //
-// THE REGRESSION (introduced by 1b52f2d3, found by the lead's adversarial diff): the flow is
-// computed and `last_cumulative_realized_` advanced before the flat-row check, but three
-// paths after it return without writing anything:
+// The flow is computed before the flat-row check, but three paths after it return without
+// writing anything:
 //
 //     if (curr_it == current_close_prices.end()) continue;          // no bar for this symbol
 //     if (!pnl_manager_->has_previous_close(symbol)) { ...; continue; }
 //     if (pnl_result.valid) { ... }                                 // else: nothing written
 //
-// Before the change the ledger was advanced INSIDE the valid-PnL branch, so a fill on a bar
-// the symbol has no close for was DEFERRED -- it surfaced on the next row that was written.
-// Advancing first turns that deferral into a LOSS: the ledger says the realized has been
-// reported, and no row ever carried it. Σ over rows then under-states the position's realized.
+// A fill on a bar the symbol has no close for is DEFERRED: it surfaces on the next row that is
+// written. Advancing the ledger on such a bar would turn that deferral into a LOSS: the ledger
+// would say the realized has been
+// reported, and no row would carry it; Σ over rows would under-state the position's realized.
 //
 // The rule this pins: `last` is the cumulative AS OF THE LAST ROW WRITTEN, not as of the last
 // bar seen. A bar that writes nothing must leave it alone, and the next written row carries
@@ -179,9 +169,8 @@ TEST(BacktestRealizedFlow, ASkippedBarDefersItsFlowInsteadOfLosingIt) {
 }
 
 TEST(BacktestRealizedFlow, HadTheSkippedBarAdvancedTheLedgerTheFlowWouldBeLost) {
-    // The defect, stated as arithmetic so the fix cannot be undone silently. This is what the
-    // pre-fix ordering produced: advance on the bar that wrote nothing, then report only the
-    // remainder on the next row.
+    // The wrong ordering, stated as arithmetic: advance on the bar that wrote nothing, then
+    // report only the remainder on the next row.
     double last = 0.0;
     BacktestPnLManager::realized_row_for_bar(10.0, 200.0, last);  // the bar that wrote NOTHING
     auto next = BacktestPnLManager::realized_row_for_bar(10.0, 250.0, last);
@@ -190,7 +179,7 @@ TEST(BacktestRealizedFlow, HadTheSkippedBarAdvancedTheLedgerTheFlowWouldBeLost) 
 }
 
 TEST(BacktestRealizedFlow, FlowsStillSumWhenBarsAreSkipped) {
-    // The invariant R1 checks in the database, with two unwritten bars in the middle.
+    // The same invariant, with two unwritten bars in the middle.
     double last = 0.0;
     double summed = 0.0;
 
@@ -212,8 +201,9 @@ TEST(BacktestRealizedFlow, FlowsStillSumWhenBarsAreSkipped) {
 }
 
 TEST(BacktestRealizedFlow, PeekDoesNotAdvanceTheLedger) {
-    // The API shape that makes E2-F59 unrepeatable: a conditional write site must peek, and
-    // commit only once it has written. Peeking twice must give the same answer.
+    // The API shape that keeps a bar that writes nothing from advancing the ledger: a conditional
+    // write site must peek, and commit only once it has written. Peeking twice must give the same
+    // answer.
     double last = 0.0;
     auto a = BacktestPnLManager::realized_row_peek(10.0, 250.0, last);
     auto b = BacktestPnLManager::realized_row_peek(10.0, 250.0, last);

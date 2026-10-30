@@ -1,4 +1,4 @@
-// The per-contract roll rule (HD 2026-10-23, contract_roll_rule.hpp) on hand-built GC-like fixtures, on
+// The per-contract roll rule (contract_roll_rule.hpp) on hand-built GC-like fixtures, on
 // the shipped trading calendar. GC's cycle is G J M Q Z; its deadline is the first notice day (the last
 // trading day of the month before delivery). For GCQ6: D* = Fri 2026-07-31, the window opens Fri
 // 07-24, the last actionable bar (LAB) is Wed 07-29 (its run is Thu 07-30).
@@ -114,7 +114,7 @@ const HeldDay& on(const HeldSeries& s, const std::string& date) {
     throw std::out_of_range("no grid date " + date);
 }
 
-/// The rule's warnings that contain `text` (rolls step 4: each fallback's WARN in the run's log).
+/// The rule's warnings that contain `text` (each fallback's WARN in the run's log).
 size_t warned(const HeldSeries& s, const std::string& text) {
     size_t n = 0;
     for (const auto& w : s.report.warnings)
@@ -318,7 +318,7 @@ TEST(ContractRollRule, ClassCCarriesOrReadsTheVendorsBar) {
     EXPECT_EQ(c.bar_id, "");
     EXPECT_EQ(r.value().report.carry_days, 1);
     EXPECT_EQ(r.value().report.vendor_bar_days, 1);
-    // Rolls step 4: each in the log, naming the symbol, the date and the fallback.
+    // Each in the log, naming the symbol, the date and the fallback.
     EXPECT_EQ(warned(r.value(),
                      "GC.v.0 2026-07-16 fallback vendor_bar: GCQ6 has no contract row and "
                      "the vendor names it: the bar is the vendor's own print (close "
@@ -473,7 +473,7 @@ TEST(ContractRollRule, AContractTheRuleNeedsWithNoExpirationIsRefused) {
     EXPECT_NE(std::string(r.error()->what()).find("GCZ6"), std::string::npos);
 }
 
-// Rolls step 3: what a run whose bars end on a vendor switch can know (HeldDay::awaits_next_bar,
+// What a run whose bars end on a vendor switch can know (HeldDay::awaits_next_bar,
 // TentativeRoll). The bar source hands the switch bar out the same way whatever the next bar says.
 
 TEST(ContractRollRule, AVendorSwitchOnItsOwnBarAwaitsTheNextBar) {
@@ -651,7 +651,7 @@ TEST(ContractRollRule, WarningsBeforeLogFromAreKeptNotLogged) {
     }
 }
 
-// Rolls step 4 (R4a open question 4): a warning on or after log_from is logged only when log_once says so
+// A warning on or after log_from is logged only when log_once says so
 // (the bar source logs each message once per run, however many loads read its bar); log_once is not asked
 // for a warning before log_from. Every warning stays in the report either way.
 TEST(ContractRollRule, AWarningIsLoggedOnlyWhenLogOnceAdmitsIt) {
@@ -689,11 +689,11 @@ TEST(ContractRollRule, AWarningIsLoggedOnlyWhenLogOnceAdmitsIt) {
     EXPECT_TRUE(asked.empty());
 }
 
-// Rolls step 4 (R3 audit A note 1; ruling 4): the held contract's rows end on 07-29 (its bars of 07-30 and
+// The held contract's rows end on 07-29 (its bars of 07-30 and
 // 07-31 are not loaded yet) while the vendor's grid goes on naming it. Each of those days is the vendor's own
 // print with a WARN, as it is when the same days are read from a table that has rows after them: the bar
-// does not depend on how far the contract rows reach. Before: no contract was named, and the held close was
-// carried.
+// does not depend on how far the contract rows reach. No day is left with no contract named and the held
+// close carried.
 TEST(ContractRollRule, TheVendorsBarStandsInForTheHeldContractsBarsNotLoadedYet) {
     auto world = [](bool later_rows) {
         World w(kAug2026);

@@ -86,10 +86,10 @@ class ConversionUtilsTest : public ::testing::Test {};
 
 // ===== arrow_table_to_bars =====
 
-// T-ROLLX-FIX commit 5 (finding 2): an empty result set is an empty set of bars. A zero-row table
-// need not carry a chunk in any column (PostgresDatabase built its empty table on null arrays) and
-// chunk(0) of such a column is past the end: the live runner's classifier-history load died on an
-// empty prefix with exit 139 and no message. Run in a child process, so a crash is a failed test.
+// An empty result set is an empty set of bars. A zero-row table need not carry a chunk in any
+// column (PostgresDatabase can build its empty table on null arrays) and chunk(0) of such a column
+// is past the end: reading it would crash a load of an empty prefix with exit 139 and no message.
+// Run in a child process, so a crash is a failed test.
 TEST_F(ConversionUtilsTest, AnEmptyTableIsAnEmptyVectorOfBars) {
     auto schema = arrow::schema({
         arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
@@ -278,7 +278,7 @@ namespace conversion_utils_safe_get_detail {
 
 using namespace trade_ngin;
 
-// Phase 5 §1.17a + §5d -- pins the type-aware Arrow accessors.
+// Pins the type-aware Arrow accessors.
 //
 // LiveDataLoader builds Arrow columns as utf8 via convert_generic_to_arrow,
 // and many call sites blind-cast to DoubleArray and silently return 0.0 on
@@ -369,10 +369,10 @@ TEST(ConversionUtilsSafeGet, StringNumericParses) {
     EXPECT_DOUBLE_EQ(r.value(), 123.45);
 }
 
-// utf8 garbage must return an error Result -- NOT a silent 0.0, which was
-// the §1.17a regression. (Logger WARN is fired; we don't assert the line
-// here because the project's logger doesn't expose a capture API at this
-// layer -- the existence of the error Result is the contract.)
+// utf8 garbage must return an error Result -- NOT a silent 0.0. (Logger WARN is
+// fired; we don't assert the line here because the project's logger doesn't
+// expose a capture API at this layer -- the existence of the error Result is
+// the contract.)
 TEST(ConversionUtilsSafeGet, StringGarbageReturnsError) {
     auto col = make_string_column({"abc"});
     auto r = DataConversionUtils::safe_get_double(col, 0, "px");
@@ -399,8 +399,8 @@ TEST(ConversionUtilsSafeGet, MultiChunkResolvesCorrectOffset) {
     EXPECT_DOUBLE_EQ(r.value(), 6.0);
 }
 
-// Null cell is an error -- the §1.17a fix forbids the historical silent-0.0
-// behavior for nulls just as it does for type mismatches.
+// Null cell is an error -- no silent 0.0 for nulls, just as for type
+// mismatches.
 TEST(ConversionUtilsSafeGet, NullCellReturnsError) {
     auto col = make_double_column({1.0, 0.0, 3.0}, {false, true, false});
     auto r = DataConversionUtils::safe_get_double(col, 1, "px");
@@ -456,15 +456,15 @@ TEST(ConversionUtilsSafeGet, NullColumnReturnsError) {
 }  // namespace conversion_utils_safe_get_detail
 
 // ──────────────────────────────────────────────────────────────────────────
-// E2-F37 / BA-14 -- safe_get_int64 and temporal columns.
+// safe_get_int64 and temporal columns.
 //
 // The canonical schema stores dates as TimestampArray, but
 // convert_generic_to_arrow may surface the same column as utf8 or int64
 // depending on the source -- which is exactly why LiveDataLoader routes
-// timestamps through safe_get_int64. There was no TIMESTAMP case, so such a
-// column hit `default` and errored; and when it arrived as text,
-// std::stoll("2026-09-02 00:00:00") returned 2026, a silent plausible-looking
-// integer that is not a timestamp in any unit.
+// timestamps through safe_get_int64. A TIMESTAMP column must have its own
+// case rather than hit `default` and error; and text must not go through
+// std::stoll, where "2026-09-02 00:00:00" gives 2026, a silent
+// plausible-looking integer that is not a timestamp in any unit.
 // ──────────────────────────────────────────────────────────────────────────
 namespace {
 

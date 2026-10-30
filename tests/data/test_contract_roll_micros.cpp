@@ -1,4 +1,4 @@
-// The micros' alias (ROLLS_STEP1_PLAN 10b point 5): before the vendor's 2026-02-22 change, MES.v.0 is
+// The micros' alias: before the vendor's 2026-02-22 change, MES.v.0 is
 // the ES contract, so the series reads ES contracts (and rolls among them by the rule); from the change,
 // MES's own. The change is one roll between two contracts of the same expiry, on the first trading-day
 // bar on or after 02-22 (a Sunday) where both print. Fixtures here; the
@@ -100,7 +100,7 @@ TEST(ContractRollMicros, ReadsTheFullSizeContractsBeforeTheChangeAndRollsOnceAcr
     }
 }
 
-// MM (HD 2026-10-27): the gold and silver micros read their full-size root's contracts before their
+// The gold and silver micros read their full-size root's contracts before their
 // listing dates, MGC GC's before 2010-10-04 and SIL SI's before 2013-06-17, on the full-size root's
 // grid (their own .v.0 starts at the listing). The equity micros keep their own grid.
 TEST(ContractRollMicros, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirListing) {
@@ -127,7 +127,7 @@ TEST(ContractRollMicros, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirList
 }
 
 // The three reads of a root's grid, without a database: any root but MGC and SIL reads its own .v.0
-// over the range with the same SQL as before; MGC and SIL read the full-size .v.0 to the day before
+// over the range with one SQL; MGC and SIL read the full-size .v.0 to the day before
 // their change and their own from it, each side left out when the range does not reach it.
 TEST(ContractRollMicros, TheGridReadsSplitAtTheChangeForTheGoldAndSilverMicrosOnly) {
     const auto mes = root_grid_reads("MES", d("2010-06-07"), d("2026-10-23"));
@@ -175,7 +175,8 @@ TEST(ContractRollMicros, TheGridReadsSplitAtTheChangeForTheGoldAndSilverMicrosOn
 }
 
 // MGC across its listing: GCZ0 is held on GC's grid to Friday 2010-10-01, and on Monday 10-04 the
-// change rolls once into MGCZ0 (same expiry 2010-12-29), trigger alias, read like R6's change.
+// change rolls once into MGCZ0 (same expiry 2010-12-29), trigger alias, read like the equity
+// micros' change.
 TEST(ContractRollMicros, MgcReadsGcZ0UntilItsListingAndChangesOnceIntoMgcZ0) {
     std::vector<ContractBar> rows;
     std::vector<VendorBar> grid;
@@ -222,7 +223,7 @@ TEST(ContractRollMicros, MgcReadsGcZ0UntilItsListingAndChangesOnceIntoMgcZ0) {
     EXPECT_EQ(rolls[0]->close, 1300.5);
 }
 
-// SIL across its listing (MM step 0): on Monday 2013-06-17 SI holds SIN3 (July), and SIL lists no July:
+// SIL across its listing: on Monday 2013-06-17 SI holds SIN3 (July), and SIL lists no July:
 // its first contracts are September onwards. The change goes into SIL's cycle target, SILU3 (the
 // contract SIL.v.0 names from its first bar), once, trigger alias; SI's own July-to-September roll
 // never happens in SIL's series.
@@ -268,12 +269,12 @@ TEST(ContractRollMicros, SilWithNoContractOfTheHeldExpiryChangesIntoItsCycleTarg
     EXPECT_EQ(rolls[0]->old->raw_symbol, "SIN3");
     EXPECT_EQ(*rolls[0]->old_close, 21.83);
     EXPECT_EQ(rolls[0]->close, 21.80);
-    // MM fix round 1: the full-size grid kind's series before the change is the full-size contract's
+    // The full-size grid kind's series before the change is the full-size contract's
     // own, and its micro is not listed then: nothing rides along
     for (const auto& day : r.value().days) EXPECT_FALSE(day.micro_volume.has_value()) << ymd(day.date);
 }
 
-// MM fix round 1 (audit A, mutant M04): the fallback's target is SIL's CYCLE target. An off-cycle
+// The fallback's target is SIL's CYCLE target. An off-cycle
 // August contract (SILQ3, expiring 2013-08-28, nearer than SILU3) that prints from the change is
 // passed over: SIL's cycle is H K N U Z, so the change still goes into SILU3. A fallback read on every
 // month would take SILQ3.
@@ -324,7 +325,7 @@ TEST(ContractRollMicros, SilsFallbackPassesOverAnOffCycleContract) {
     }
 }
 
-// R6 (HD 2026-10-26): the bar source hands the change bar out as a change of price source
+// The bar source hands the change bar out as a change of price source
 // (SOURCE_CHANGE, ESH6's close and id) and every bar after it, while ESH6 prints, as AFTER_SOURCE_CHANGE;
 // the earlier roll among the full-size contracts (ESZ5 to ESH6) stays KNOWN and AFTER_ROLL.
 TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
@@ -366,14 +367,14 @@ TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
     EXPECT_EQ(on.at("2026-02-24")->roll_from->date, "2026-02-23");
     EXPECT_EQ(on.at("2025-12-15")->roll_from->kind, trade_ngin::RollFromKind::KNOWN) << "a real roll";
     EXPECT_EQ(on.at("2025-12-16")->roll_from->kind, trade_ngin::RollFromKind::AFTER_ROLL);
-    // MM fix round 1: the change's two kinds carry ESH6's own volume (a listing predecessor's legs
+    // The change's two kinds carry ESH6's own volume (a listing predecessor's legs
     // are priced on it); the bar itself is MESH6's, with MESH6's volume; a real roll's kinds carry none.
     EXPECT_EQ(on.at("2026-02-23")->volume, 1700000.0);
     EXPECT_EQ(on.at("2026-02-23")->roll_from->volume, std::optional<double>(1600000.0));
     EXPECT_EQ(on.at("2026-02-24")->roll_from->volume, std::optional<double>(1600000.0));
     EXPECT_FALSE(on.at("2025-12-15")->roll_from->volume.has_value());
     EXPECT_FALSE(on.at("2025-12-16")->roll_from->volume.has_value());
-    // MM fix round 1: before the change the series holds the full-size contract; where the micro's own
+    // Before the change the series holds the full-size contract; where the micro's own
     // contract of that expiry prints (MESH6 while ESH6 is held) its volume rides along for the
     // listing legs; none while ESZ5 is held (no MESZ5 here), none from the change (the bar is MESH6's).
     EXPECT_EQ(on.at("2026-01-15")->own_contract_volume, std::optional<double>(1700000.0)) << "ESH6 held";
@@ -383,7 +384,7 @@ TEST(ContractRollMicros, TheChangeIsHandedOutAsAChangeOfPriceSource) {
     EXPECT_FALSE(on.at("2026-02-24")->own_contract_volume.has_value());
 }
 
-// R6 fix round 1 (audit A S1): the first REAL roll after the change is an ordinary roll. MES runs past the
+// The first REAL roll after the change is an ordinary roll. MES runs past the
 // change of price source (Monday 02-23, ESH6 to MESH6) and on through its March roll: MESM6 out-trades MESH6
 // from Monday 03-16, inside MESH6's window (from Fri 03-13, the fifth CME trading day before its last
 // trading day Fri 03-20), so the rule rolls there on the crossover. That roll is handed out KNOWN and the

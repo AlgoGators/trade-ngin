@@ -1,6 +1,5 @@
-// LOOP_SPEC v6.2 section 4: the risk overlay reads the book in capital terms. This file reads only
-// the repository's text and the two futures templates, so it compiles on the commit before the one
-// that brings it and fails there: that run is its proof that it tests the change.
+// The risk overlay reads the book in capital terms. This file reads only the repository's text and
+// the two futures templates.
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -58,7 +57,7 @@ TEST(OverlayWiring, TheFuturesTemplatesCarrySection12sLimits) {
 // The four futures runners name the book's first sleeve as the overlay's source and pass its risk
 // target; the PortfolioManager's one pass builds the overlay's window from that sleeve's own series
 // and reads the limits off the book's carver module, which itself reads no book and logs no
-// OVERLAY line (LOOP_SPEC section 4: the overlay answers once per rebalance, inside the pass).
+// OVERLAY line (the overlay answers once per rebalance, inside the pass).
 TEST(OverlayWiring, TheOverlayIsFedFromTheFirstSleeveAndReadByTheOnePass) {
     const auto root = repo_root();
     ASSERT_FALSE(root.empty());

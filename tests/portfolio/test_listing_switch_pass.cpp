@@ -191,7 +191,7 @@ TEST_F(ListingSwitchPassTest, AHeldPredecessorIsExitedAndTheListedContractEntere
     EXPECT_EQ(switch_fills().size(), 2u);
 }
 
-// MM fix round 1 (audits A and B): the switch's legs read the manager's cost model, which the cost
+// The switch's legs read the manager's cost model, which the cost
 // feed sets from each symbol's own-day bar. The predecessor's bar on the switch day carries the
 // full-size contract's own volume (Bar::cost_volume, 400 lots here) while its bar's own volume is
 // the listed contract's (20 lots): the LC- leg pays impact on the 400, the LO- leg on the listed
@@ -628,14 +628,13 @@ TEST_F(ListingSwitchPassTest, OnACutDayTheEntryIsTheScaledTarget) {
     for (const auto& line : fills("EX-")) EXPECT_EQ(line.find("TMIC"), std::string::npos) << line;
 }
 
-// ---- a book of two sleeves: the switch follows the book's own rule (LOOP_SPEC section 5.4) ----
+// ---- a book of two sleeves: the switch follows the book's own rule ----
 //
 // The book's net predecessor holding is exited and the listed contract entered at the BOOK's summed
 // scaled target; the book's whole number is split to the sleeves by the function the pass's own
 // split uses; the rows are stored one per sleeve and netted as every bar's rows are, so the account
 // sends ONE order per symbol and the net costs of a symbol's rows sum to the cost of that order.
 // Sleeve A is the first sleeve (the overlay's, whose forecast the deferral band reads), B the other.
-// The worked tables are in lead2/evidence/T-LISTING/fix_round/ITEM5_WORKED_CASES.md.
 class ListingSwitchTwoSleeveTest : public ListingSwitchPassTest {
 protected:
     void make_book(int sleeves) {

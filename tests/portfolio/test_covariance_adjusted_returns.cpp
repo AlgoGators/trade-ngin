@@ -1,7 +1,7 @@
-// The optimizer's covariance reads the ADJUSTED returns (LOOP_SPEC v6.1 section 2.3; T-ROLLX
-// commit 1): a bar whose instrument_id differs from the previous stored bar's is a contract
-// switch, its step is removed from the level, and the return across it (per symbol, and across a
-// dropped intersection date) is the adjusted change over the raw previous close.
+// The optimizer's covariance reads the ADJUSTED returns: a bar whose instrument_id differs from the
+// previous stored bar's is a contract switch, its step is removed from the level, and the return
+// across it (per symbol, and across a dropped intersection date) is the adjusted change over the
+// raw previous close.
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
 #include <chrono>
@@ -113,7 +113,7 @@ TEST_F(CovarianceAdjustedReturnsTest, TheDateAlignedReturnsReadTheAdjustedLevelO
     EXPECT_NEAR(r.at("NG")[2], ret(3.822, 3.803), 1e-12);
     EXPECT_EQ(r.at("ES"), (std::vector<double>{ret(5000.0, 5050.0), ret(5050.0, 5075.0), ret(5075.0, 5100.0)}));
 
-    // The raw one-argument form is the old series, with the step in it (the control).
+    // The raw one-argument form is the series with the step in it (the control).
     const auto raw = manager_->date_aligned_returns(closes);
     EXPECT_NEAR(raw.at("NG")[1], ret(3.376, 3.822), 1e-12);
     EXPECT_EQ(raw.at("ES"), r.at("ES"));
