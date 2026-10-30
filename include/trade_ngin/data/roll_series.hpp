@@ -170,6 +170,14 @@ public:
         /// Rolls step 3: the bar that confirms a vendor switch: its move is from this close (the
         /// target's on the switch bar), not from the previous bar's close.
         std::optional<double> previous_close;
+        /// Rolls step 4 (ruling 18, migration 040): on the confirm bar of a roll whose two closes
+        /// are on one bar (a per-contract roll: known on its bar, booked on the first consumed bar
+        /// after a withheld roll bar, or a vendor switch confirmed by the next bar), the held (old)
+        /// contract's move booked on the roll bar, in price points: on the roll's own bar, or on the
+        /// switch bar of a confirmed vendor switch. The roll's gap is change_bar_close -
+        /// last_close_before_change. nullopt elsewhere, and on a roll of the vendor's series (no two
+        /// closes on one bar: the switch bar books 0).
+        std::optional<double> roll_bar_points;
         /// LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): the symbol is HELD while its last consumed bar is
         /// a change bar (a pending roll, a third id, either bar of a flip) or an id-less bar inside a
         /// pending roll (code review D2: `change` alone missed that bar).
@@ -208,6 +216,7 @@ private:
     std::string awaiting_old_id_;
     std::string awaiting_date_;  ///< rolls step 4: the switch bar's date (RollFrom::date)
     bool awaiting_on_target_{false};  ///< rolls step 4, ruling 19: the switch bar was the target's
+    double awaiting_bar_points_{0.0};  ///< rolls step 4, ruling 18: the switch bar's booked move
 };
 
 /**
@@ -234,6 +243,26 @@ std::vector<ExecutionReport> make_roll_legs(
     const std::string& exec_id_close, const std::string& order_id_close,
     const std::string& exec_id_open, const std::string& order_id_open,
     const std::function<RollLegCost(const std::string&, double, double)>& cost_of);
+
+/**
+ * @brief Rolls step 4 (HD 2026-10-23, ruling 18; migration 040): the roll's split, on the CLOSING
+ *        leg of `legs` (make_roll_legs' pair) only, so a sum over stored rows counts each roll once:
+ *        roll_bar_move = q_held x roll_bar_points x point_value (the held contract's move booked on
+ *        the roll bar, dollars), roll_gap_points = opening price - closing price (the two closes of
+ *        the roll bar), roll_gap_value = roll_gap_points x q_held x point_value (shown, never P&L).
+ *        Signed with the position. The opening leg keeps nullopt. Nothing when `legs` is empty.
+ */
+void attach_roll_split(std::vector<ExecutionReport>& legs, double q_held, double roll_bar_points,
+                       double point_value);
+
+/// The sums of the split over a run's rows (migration 040's backtest.results totals): every row's
+/// roll_bar_move and roll_gap_value that is set (the closing legs), so each roll counts once.
+struct RollSplitTotals {
+    double roll_bar_moves{0.0};
+    double roll_gap_values{0.0};
+    int rolls{0};  ///< rows carrying a split
+};
+RollSplitTotals roll_split_totals(const std::vector<ExecutionReport>& executions);
 
 /// The status of each symbol's LAST bar in `bars`, every bar of the symbol taken in time order
 /// through a RollTracker (a catch-up is evaluated bar by bar), keyed by symbol. `bars` must be the

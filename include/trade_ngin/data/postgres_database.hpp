@@ -36,6 +36,7 @@
 #include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/data/per_contract_source.hpp"
+#include "trade_ngin/data/report_roll_view.hpp"
 #include "trade_ngin/data/strategy_config_row.hpp"
 
 namespace trade_ngin {
@@ -456,6 +457,14 @@ public:
         const std::vector<std::pair<std::string, std::vector<ExecutionReport>>>& sleeves,
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name, const std::string& book = kDefaultBook);
+
+    /**
+     * @brief Rolls step 4 (R4b): the daily report's roll view (contract_rolls::report_roll_view), on
+     *        its own read transaction, with the per-contract source's calendar. An empty view (the
+     *        switch off: nothing new printed) when the source is off or the database cannot be read.
+     */
+    ReportRolls report_roll_view(const contract_rolls::ReportRollQuery& query,
+                                 const std::function<double(const std::string&)>& tick_of);
 
     /**
      * @brief T-ROLLX-FIX commit 6 (section 6.5, a late roll's settlement): the stored positions

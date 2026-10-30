@@ -316,6 +316,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
             st.last_close_before_change = awaiting_old_close_;
             st.change_bar_close = awaiting_close_;
             st.bars_pending = 1;
+            st.roll_bar_points = awaiting_bar_points_;  // ruling 18: the switch bar's booked move
             if (!on_target)
                 st.previous_close = awaiting_close_;
             // ("vendor": the switch bar already carries the target's id, so this is no change)
@@ -347,6 +348,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         awaiting_old_close_ = rf->close;
         awaiting_old_id_ = rf->instrument_id;
         awaiting_date_ = rf->date;
+        awaiting_bar_points_ = st.move(close, last_close_);
         last_known_ = rf->instrument_id;
         st.held_id = held_;
         last_close_ = close;
@@ -362,6 +364,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         awaiting_old_close_ = close;
         awaiting_old_id_ = id;
         awaiting_date_ = rf->date;
+        awaiting_bar_points_ = st.move(close, last_close_);
         last_known_ = id;
         st.held_id = held_;
         last_close_ = close;
@@ -379,6 +382,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         st.last_close_before_change = rf->close;
         st.change_bar_close = close;
         st.bars_pending = 1;
+        st.roll_bar_points = st.move(close, last_close_);  // ruling 18: the old contract's own move
         held_ = id;
         last_known_ = id;
         pending_.clear();
@@ -458,6 +462,27 @@ std::vector<ExecutionReport> make_roll_legs(
     legs.push_back(leg(true));
     legs.push_back(leg(false));
     return legs;
+}
+
+void attach_roll_split(std::vector<ExecutionReport>& legs, double q_held, double roll_bar_points,
+                       double point_value) {
+    if (legs.empty()) return;
+    ExecutionReport& closing = legs.front();
+    const double gap = static_cast<double>(legs.back().fill_price) - static_cast<double>(closing.fill_price);
+    closing.roll_bar_move = q_held * roll_bar_points * point_value;
+    closing.roll_gap_points = gap;
+    closing.roll_gap_value = gap * q_held * point_value;
+}
+
+RollSplitTotals roll_split_totals(const std::vector<ExecutionReport>& executions) {
+    RollSplitTotals out;
+    for (const auto& e : executions) {
+        if (!e.roll_bar_move) continue;
+        out.roll_bar_moves += *e.roll_bar_move;
+        out.roll_gap_values += e.roll_gap_value.value_or(0.0);
+        ++out.rolls;
+    }
+    return out;
 }
 
 std::unordered_map<std::string, RollTracker::Status> roll_status_of(const std::vector<Bar>& bars) {

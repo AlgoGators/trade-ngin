@@ -1,6 +1,7 @@
 // include/trade_ngin/data/contract_rolls.hpp
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -80,6 +81,7 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  */
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
                                              Day start, Day end, const FuturesCalendar& calendars,
-                                             Day log_from = Day{});
+                                             Day log_from = Day{},
+                                             std::function<bool(const std::string&)> log_once = {});
 
 }  // namespace trade_ngin::contract_rolls

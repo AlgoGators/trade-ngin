@@ -4,6 +4,7 @@
 #include <chrono>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -212,6 +213,12 @@ struct BacktestResults {
     double transaction_costs{0.0};
     double roll_costs{0.0};
     int total_roll_fills{0};
+    // Rolls step 4 (ruling 18, migration 040): with per_contract_rolls on, the sums of the closing
+    // legs' roll_bar_move (the old contracts' moves booked on the roll bars, P&L already in the
+    // equity curve) and roll_gap_value (never P&L); roll_costs is the third total. nullopt (stored
+    // NULL, the column not named) with the switch off.
+    std::optional<double> roll_bar_moves;
+    std::optional<double> roll_gap_values;
 
     // Risk metrics
     double var_95{0.0};

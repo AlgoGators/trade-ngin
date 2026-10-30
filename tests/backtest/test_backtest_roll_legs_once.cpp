@@ -32,6 +32,7 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -221,6 +222,30 @@ TEST_F(BacktestRollLegsOnceTest, AConfirmedRollBooksOnePairEvenWhenTheSymbolThen
     EXPECT_NE(line.find(" adv="), std::string::npos) << line;
     EXPECT_NE(line.find(" vol_mult="), std::string::npos) << line;
     EXPECT_LT(line.find(" vol_mult="), line.find(" date=")) << line;
+}
+
+// Rolls step 4 (ruling 18, migration 040): the run's two split totals are set only with
+// per_contract_rolls on (the source enabled): NULL in backtest.results with it off. XA's roll is on the
+// vendor's series (no roll field: the micros' case), so no row carries a split and the totals are 0.
+TEST_F(BacktestRollLegsOnceTest, TheRunsSplitTotalsAreNotSetWithTheSwitchOff) {
+    run();
+    EXPECT_FALSE(results_.roll_bar_moves.has_value()) << "switch off: no total";
+    EXPECT_FALSE(results_.roll_gap_values.has_value());
+    EXPECT_EQ(count_lines("ROLL_SPLIT"), 0u);
+}
+
+TEST_F(BacktestRollLegsOnceTest, TheRunsSplitTotalsAreSetWithTheSwitchOn) {
+    contract_rolls::PerContractSource::instance().enable(contract_rolls::FuturesCalendar{});
+    const bool ok = run_rows(rows(), nullptr);
+    contract_rolls::PerContractSource::instance().disable();
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(results_.roll_bar_moves.has_value()) << "switch on: a total, 0 with no split";
+    ASSERT_TRUE(results_.roll_gap_values.has_value());
+    EXPECT_EQ(*results_.roll_bar_moves, 0.0);
+    EXPECT_EQ(*results_.roll_gap_values, 0.0);
+    EXPECT_EQ(rows_of(ExecutionType::ROLL).size(), 2u) << "the vendor-series roll is still legged";
+    for (const auto& leg : rows_of(ExecutionType::ROLL)) EXPECT_FALSE(leg.roll_bar_move.has_value());
+    EXPECT_EQ(count_lines("ROLL_SPLIT_TOTALS rolls=0 roll_bar_moves=0.000000 roll_gap_values=0.000000"), 1u);
 }
 
 // The sleeve's own fills are untouched by the roll: the one STRATEGY fill is the open on cycle 10,

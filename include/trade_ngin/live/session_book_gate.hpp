@@ -347,6 +347,10 @@ struct ConsumedT1Settlement {
     /// a WITHHELD bar (K-01). Their union is zero_pnl_symbols; nothing settles from these two.
     std::unordered_set<std::string> roll_zero_symbols;
     std::unordered_set<std::string> withheld_zero_symbols;
+    /// Rolls step 4 (R4b): the symbols whose T-1 bar is a per-contract roll bar (it books the old
+    /// contract's move, to its close on the bar), for the report's roll footnote; empty with the
+    /// switch off, and without a symbol whose roll this run legs late.
+    std::unordered_set<std::string> per_contract_roll_symbols;
     /// The close each symbol's T-1 move is booked against: its previous CONSUMED bar's close when its
     /// last consumed bar is dated T-1 (a withheld bar in between is skipped); otherwise the raw T-2
     /// close passed in (unused: no consumed T-1 bar books no move).
@@ -404,6 +408,7 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         // from the target's close on the switch bar.
         if (rs != roll_status.end() && rs->second.mark_close) {
             out.t1_close_prices[symbol] = *rs->second.mark_close;
+            if (rs->second.confirm) out.per_contract_roll_symbols.insert(symbol);
         }
         if (rs != roll_status.end() && rs->second.previous_close) {
             out.t2_close_prices[symbol] = *rs->second.previous_close;
@@ -415,6 +420,7 @@ inline ConsumedT1Settlement consumed_t1_settlement(
         out.zero_pnl_symbols.erase(symbol);
         out.roll_zero_symbols.erase(symbol);
         out.withheld_zero_symbols.erase(symbol);
+        out.per_contract_roll_symbols.erase(symbol);
         out.t1_close_prices[symbol] = late.settle_to;
         out.t2_close_prices[symbol] = late.settle_from;
     }

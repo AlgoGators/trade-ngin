@@ -50,6 +50,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_estimator_history.hpp"
 #include "trade_ngin/live/live_roll_legs.hpp"
+#include "trade_ngin/live/report_roll_query.hpp"
 #include "trade_ngin/live/live_sizing_read.hpp"
 #include "trade_ngin/live/settled_stamp.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
@@ -1092,6 +1093,15 @@ int main(int argc, char* argv[]) {
             std::cerr << source.error()->what() << std::endl;
             ERROR(source.error()->what());
             return 1;
+        }
+        if (contract_rolls::PerContractSource::instance().enabled()) {
+            // R4a open question 4: a run consumes its T-1 bar for the first time (runs go on
+            // consecutive days), so the rule's fallbacks are logged from it, each once.
+            const std::string log_floor = core::format_utc_date(now - std::chrono::hours(24));
+            contract_rolls::PerContractSource::instance().set_log_floor(contract_rolls::parse_ymd(log_floor));
+            INFO("PER_CONTRACT_ROLLS fallbacks are logged for bars from " + log_floor +
+                 " (the bar this run consumes for the first time), each once; earlier ones were logged by "
+                 "the run that consumed them");
         }
 
         double initial_capital = app_config.initial_capital;
@@ -3132,6 +3142,20 @@ int main(int argc, char* argv[]) {
                                   "): " + e.what() + ". Refusing to run: a leg without a usable close");
                             std::cerr << "ROLL_LEG STOP " << r.symbol << ": " << e.what() << std::endl;
                             return 1;
+                        }
+                        // Ruling 18 (migration 040): a per-contract roll's split, on its closing leg.
+                        if (r.roll_bar_points) {
+                            const double point_value = pnl_manager->get_point_value(r.symbol);
+                            roll_series::attach_roll_split(legs, q, *r.roll_bar_points, point_value);
+                            if (!legs.empty()) {
+                                INFO("ROLL_SPLIT " + strategy_name + " " + r.symbol + " date=" +
+                                     run_date + " confirmed=" + r.confirm_date + " qty=" +
+                                     model_input(q) + " points=" + model_input(*r.roll_bar_points) +
+                                     " multiplier=" + model_input(point_value) + " roll_bar_move=" +
+                                     model_input(*legs.front().roll_bar_move) + " roll_gap_points=" +
+                                     model_input(*legs.front().roll_gap_points) + " roll_gap_value=" +
+                                     model_input(*legs.front().roll_gap_value) + " (the gap is not P&L)");
+                            }
                         }
                         for (const auto& leg : legs) {
                             const bool closing = leg.exec_id == "EXEC_" + tag + "_RC";
@@ -5606,6 +5630,16 @@ int main(int argc, char* argv[]) {
                     report_context.prior_day_no_session = skip_strategy_processing;
                     report_context.settled_zero_kinds.roll = t1_settlement.roll_zero_symbols;
                     report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;
+                    // Rolls step 4 (R4b, per_contract_rolls on): the roll footnote's rows, the roll
+                    // outlook of the held roots and the words of each roll's line.
+                    if (contract_rolls::PerContractSource::instance().enabled()) {
+                        report_context.settled_zero_kinds.per_contract_roll =
+                            t1_settlement.per_contract_roll_symbols;
+                        report_context.rolls = db->report_roll_view(
+                            report_roll_query(yesterday_date_for_email, positions, strategy_positions_map,
+                                              all_strategy_executions, roll_status),
+                            report_tick_size);
+                    }
                     // The two capital keys of the day's risk_detail, when the row carries one
                     // (the condition and the values of the set_risk_detail call above).
                     if (one_pass_day.stores_detail()) {

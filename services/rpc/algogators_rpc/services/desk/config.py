@@ -145,11 +145,16 @@ class CatchupSettings:
     # Every dataset a run waits for (QT_DATA_READY_DATASET, comma-separated); a portfolio with
     # per_contract_rolls on also waits for CONTRACT_DATA_READY_DATASET.
     data_ready_datasets: Tuple[str, ...] = (DEFAULT_DATA_READY_DATASET,)
-    # Rolls step 4 (HD on R4A's open question 3): how many roots the per-contract row (only that row; the
-    # continuous row's rule is unchanged) may miss. Up to this many, within the age tolerance, the run goes
-    # with an alert (the engine carries those roots or reads the vendor's bar, with a WARN); more is a failed
-    # pull: the run is held with the data_stale alert (QT_CONTRACT_DATA_READY_MAX_MISSING).
+    # Rolls step 4, HD 2026-10-24 (plan 11c ruling 21, an AND condition), the per-contract row only (the
+    # continuous row's rule is unchanged): the run is held with the data_stale alert only when MORE than
+    # this many roots have EACH had no contract bar for more than contract_data_ready_stale_days days
+    # (QT_CONTRACT_DATA_READY_MAX_MISSING, N, default 2). Otherwise it goes, every missing root alerted
+    # (contract_data_partial) and priced by the engine's rule (the vendor's bar of the held contract, else
+    # its last close carried, with a WARN): a one-day "0 of 36" row runs, one root stale for weeks runs.
     contract_data_ready_max_missing: int = 2
+    # X of the same rule (QT_CONTRACT_DATA_READY_STALE_DAYS): None (unset) reads the portfolio's
+    # live.data_staleness_tolerance_days, the engine's tolerance (4 by default).
+    contract_data_ready_stale_days: Optional[int] = None
     # No usable row for the previous trading day by then: today's run alerts instead of waiting,
     # and the daily data-ready check alerts the President (once a day).
     data_alert_at: dt.time = dt.time(6, 0)
@@ -287,8 +292,10 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
     The data-driven run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
     schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"; a comma-separated list, every one
-    waited for), QT_CONTRACT_DATA_READY_MAX_MISSING (2: the roots the per-contract row of a
-    per_contract_rolls portfolio may miss before its pull counts as failed), QT_DATA_READY_ALERT_AT
+    waited for), QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) and QT_CONTRACT_DATA_READY_STALE_DAYS (X, unset:
+    the portfolio's live.data_staleness_tolerance_days, 4): a per_contract_rolls portfolio's run is held
+    only when more than N roots of the per-contract row have each had no contract bar for more than X
+    days; otherwise it runs, every missing root alerted (HD 2026-10-24, ruling 21), QT_DATA_READY_ALERT_AT
     ("06:00"),
     QT_REVIEW_RECIPIENTS (comma-separated; default dominickdupuy@ufl.edu), QT_DESK_URL,
     TRADE_NGIN_HOLIDAYS_JSON (the engine's own variable).
@@ -316,6 +323,9 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
         data_ready_datasets=_datasets(env, "QT_DATA_READY_DATASET",
                                       (DEFAULT_DATA_READY_DATASET,)),
         contract_data_ready_max_missing=_count(env, "QT_CONTRACT_DATA_READY_MAX_MISSING", 2),
+        contract_data_ready_stale_days=(_count(env, "QT_CONTRACT_DATA_READY_STALE_DAYS", 0)
+                                        if (env.get("QT_CONTRACT_DATA_READY_STALE_DAYS") or "").strip()
+                                        else None),
         data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(6, 0)),
         review_recipients=_emails(env, "QT_REVIEW_RECIPIENTS", DEFAULT_REVIEW_RECIPIENTS),
         desk_url=(env.get("QT_DESK_URL") or "").strip() or DEFAULT_DESK_URL,
