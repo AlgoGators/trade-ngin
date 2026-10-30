@@ -1,5 +1,7 @@
 # Code Coverage Analysis — Module-by-Module Breakdown
 
+Historical snapshot: these figures reflect the February 2026 measurement, not current coverage; use `scripts/coverage_baseline.sh` for a fresh baseline.
+
 **Generated**: 2026-02-13  
 **Tool**: lcov + genhtml (Apple Clang 15, Debug, `--coverage`)
 

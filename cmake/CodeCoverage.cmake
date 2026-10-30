@@ -36,14 +36,17 @@ if(ENABLE_COVERAGE)
                 # Cleanup lcov
                 COMMAND ${LCOV_PATH} --directory . --zerocounters
                 
-                # Run tests
-                COMMAND ${CMAKE_BINARY_DIR}/bin/Debug/trade_ngin_tests
+                # Run the full suite with each Google Test case isolated. The
+                # monolithic binary has known order-dependent test failures.
+                # Keep test temp files separate from other worktrees' runs.
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/coverage-tmp"
+                COMMAND ${CMAKE_COMMAND} -E env "TMPDIR=${CMAKE_BINARY_DIR}/coverage-tmp" ${CMAKE_CTEST_COMMAND} --output-on-failure -j 1
                 
                 # Capture coverage info (ignore errors for Apple Clang compatibility)
-                COMMAND ${LCOV_PATH} --directory . --capture --output-file coverage.info --rc lcov_branch_coverage=1 --ignore-errors inconsistent,unsupported,format,count
+                COMMAND ${LCOV_PATH} --directory CMakeFiles/trade_ngin.dir --capture --output-file coverage.info --rc lcov_branch_coverage=1 --ignore-errors inconsistent,unsupported,range,format,count,negative,mismatch
                 
-                # Filter out system headers, test files, and global initializers
-                COMMAND ${LCOV_PATH} --remove coverage.info '/usr/*' '*/tests/*' '*/gtest/*' '*/__cxx_global_var_init*' --output-file coverage.info.cleaned --rc lcov_branch_coverage=1 --ignore-errors inconsistent,unsupported,format,count,unused
+                # Keep only this checkout's src/; external dependencies may also have a src/ directory.
+                COMMAND ${LCOV_PATH} --extract coverage.info "${CMAKE_SOURCE_DIR}/src/*" --output-file coverage.info.cleaned --rc lcov_branch_coverage=1 --ignore-errors inconsistent,unsupported,format,count,unused
                 
                 # Generate HTML report with branch coverage
                 COMMAND ${GENHTML_PATH} -o coverage coverage.info.cleaned --branch-coverage --rc lcov_branch_coverage=1 --rc genhtml_branch_coverage=1 --function-coverage --legend --ignore-errors inconsistent,unsupported,format,count,negative,category
@@ -53,6 +56,7 @@ if(ENABLE_COVERAGE)
                 
                 WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
                 COMMENT "Generating code coverage report..."
+                VERBATIM
             )
             
             message(STATUS "Coverage target 'coverage' added. Run with: make coverage")
