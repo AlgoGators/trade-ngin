@@ -134,7 +134,7 @@ TEST(BaseBusOffSource, TheBaseLoadIsBracketedByTheSameGuardAsConservative) {
     EXPECT_EQ(base_load, cons_load)
         << "the BASE bar load is not bracketed by CONSERVATIVE's guard: every loaded row is "
            "published as a BAR event and the PortfolioManager runs a full rebalance per row "
-           "(T-BASE: 21,972 rebalances on 2026-04-24)";
+           "(21,972 rebalances on 2026-04-24)";
 
     const auto off = base_load.find("MarketDataBus::instance().set_publish_enabled(false);");
     const auto load = base_load.find("db->get_market_data(");

@@ -1127,7 +1127,7 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
                         "market move booked $86; contract price difference 45.25 ($226, not profit or loss); roll "
                         "cost $2.62.</p>"),
               std::string::npos)
-        << "a micro's roll gets the full line (R6)";
+        << "a micro's roll gets the full line";
     EXPECT_EQ(body.find("Micro E-Mini Russell-2000 Index, September"), std::string::npos) << "no split: no line";
     EXPECT_EQ(body.find("not shown for this contract yet"), std::string::npos) << "the cost-only line is gone";
     EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "

@@ -137,9 +137,9 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
                  ", " + std::to_string(ev.children.size()) +
                  " child/children) -- NOTHING applied. A distribution's factor is strictly "
                  "greater than 1; a factor at or below 1 is a reverse split on the same "
-                 "ex-date and belongs to the class-1 path, not here (E2-F48). The parent is "
+                 "ex-date and belongs to the class-1 path, not here. The parent is "
                  "left untouched and the caller must decide which of the bar's columns the "
-                 "class-1 path still applies (E2-F31).");
+                 "class-1 path still applies.");
             log.push_back(std::move(adj));
             continue;
         }
@@ -172,7 +172,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
                  std::to_string(qty) + " shares at basis " + std::to_string(basis) +
                  ", which is a PRE-spinoff basis against a POST-spinoff price series, and "
                  "the children are missing from the book entirely. The caller must also "
-                 "suppress the class-1 event (E2-F31). Load the child price series, or "
+                 "suppress the class-1 event. Load the child price series, or "
                  "reconcile this position by hand.");
             log.push_back(std::move(adj));
             continue;
@@ -245,7 +245,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
                  std::to_string(pool_per_share) + ") from basis " + std::to_string(basis) +
                  ", factor " + std::to_string(F) +
                  ". NOTHING is applied -- a negative cost basis books the child's entire "
-                 "first close, and more, as realized gain (E2-F48).");
+                 "first close, and more, as realized gain.");
             log.push_back(std::move(adj));
             continue;
         }
@@ -562,7 +562,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
             WARN("Termination for " + ev.symbol + " (" + ev.event_date +
                  "): successor '" + ev.contra_ticker +
                  "' is not a usable ticker (sentinel or malformed) -- exiting at the final "
-                 "close rather than rolling into it (E2-F9).");
+                 "close rather than rolling into it.");
         }
 
         if (terms_usable) {

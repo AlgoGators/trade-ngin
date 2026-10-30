@@ -121,7 +121,7 @@ TEST(ToJsonTemporaryHazard, NoCallSiteIteratesItemsOnATemporary) {
     EXPECT_TRUE(hits.empty())
         << "items() is being called directly on the result of a call. nlohmann's items() "
            "holds a reference into that object, and a by-value return dies at the end of "
-           "the full-expression, so the loop iterates freed memory (F-5). Bind the result "
+           "the full-expression, so the loop iterates freed memory. Bind the result "
            "to a named local and iterate that instead."
         << report.str();
 }

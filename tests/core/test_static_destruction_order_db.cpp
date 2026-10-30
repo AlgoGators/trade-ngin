@@ -188,7 +188,7 @@ protected:
         if (!db_available()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but no reachable TRADE_NGIN_TEST_DSN, so the "
-                          "E2-F30 / E2-F61 shutdown goes unverified";
+                          "static destruction order at shutdown goes unverified";
             }
             GTEST_SKIP() << "no reachable TRADE_NGIN_TEST_DSN; skipping";
         }
@@ -252,7 +252,7 @@ TEST_F(StaticDestructionOrderTest, ShutdownLogPrefixIsALiveRegisteredComponent) 
         const std::string prefix = out.substr(line_start, at - line_start);
 
         EXPECT_NE(prefix.find("[PostgresDatabase]"), std::string::npos)
-            << "the component prefix is not the component that registered last -- E2-F61, "
+            << "the component prefix is not the component that registered last -- the "
                "Logger read its thread_local after that string was destroyed. Prefix was: '"
             << prefix << "'";
 
@@ -260,7 +260,7 @@ TEST_F(StaticDestructionOrderTest, ShutdownLogPrefixIsALiveRegisteredComponent) 
         // the message itself, because the allocator reused the freed buffer.
         EXPECT_EQ(prefix.find(msg.substr(0, 8)), std::string::npos)
             << "the component prefix contains the head of the message it is prefixing, "
-               "which is freed memory reused by the message string (E2-F61). Prefix was: '"
+               "which is freed memory reused by the message string. Prefix was: '"
             << prefix << "'";
         ++checked;
         at = out.find(msg, at + 1);

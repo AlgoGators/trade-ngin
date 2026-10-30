@@ -57,7 +57,7 @@ protected:
         conn_ = discover_connection_string();
         if (conn_.empty()) {
             if (require_db) FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is "
-                                       "not set; E2-F6 scoping goes unverified";
+                                       "not set; the trading-days scoping goes unverified";
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set";
         }
         try {
@@ -129,7 +129,7 @@ TEST_F(GetTradingDaysScopeTest, FuturesScopedAndUnscopedStillAgree) {
             << "Conservative futures annualization moved at " << date
             << " when the runners were repointed to the scoped form. The two "
                "LIVE_TREND_FOLLOWING metadata rows no longer share live_start_date, so the "
-               "no-movement assumption behind E2-F6 has ended -- investigate before shipping.";
+               "no-movement assumption behind repointing has ended -- investigate before shipping.";
 
         const int base_old = txn.exec("SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING_"
                                       "TREND_FOLLOWING_FAST', " +

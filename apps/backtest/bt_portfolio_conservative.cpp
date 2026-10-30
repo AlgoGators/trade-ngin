@@ -140,7 +140,7 @@ int main() {
         config.strategy_config.start_date = window.first;
         config.strategy_config.end_date = window.second;
         if (frozen_window) {
-            WARN("M-12 FROZEN BACKTEST WINDOW in force: end_date pinned to "
+            WARN("FROZEN BACKTEST WINDOW in force: end_date pinned to "
                  + app_config.backtest.frozen_end_date
                  + ". This is a TEST configuration; a production run must not show this line.");
         }

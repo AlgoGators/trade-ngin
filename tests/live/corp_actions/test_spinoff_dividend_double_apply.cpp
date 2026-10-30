@@ -127,7 +127,7 @@ TEST(SpinoffDividendDoubleApply, RoutingItAgainWouldRestateTheBasisTwiceOverMMMs
     const double after_dividend = basis / factor;      // what run N left in the book
     const double after_spinoff_too = after_dividend / factor;  // what run N+k would leave
 
-    EXPECT_NEAR(after_dividend, 89.515530, 1e-6) << "B-4's hand-checked figure";
+    EXPECT_NEAR(after_dividend, 89.515530, 1e-6) << "the hand-checked figure";
     EXPECT_NEAR(after_spinoff_too, 75.544736, 1e-6);
     EXPECT_GT((after_dividend - after_spinoff_too) / after_dividend, 0.15)
         << "the second restatement moves the basis by more than 15 %, and it is persisted "
@@ -186,7 +186,7 @@ TEST(SpinoffDividendDoubleApply, TheRoutingAsksTheLedgerAndRefusesRatherThanCorr
     // It asks.
     EXPECT_NE(src.find("const bool dividend_already_applied ="), std::string::npos)
         << "the routing does not consult is_applied(DIVIDEND); a bar an earlier run applied "
-           "as a dividend would be routed as a spinoff and restated a second time (BA-26)";
+           "as a dividend would be routed as a spinoff and restated a second time";
 
     // The answer keeps the bar in class 1 rather than routing it.
     EXPECT_NE(src.find("dividend_already_applied ||"), std::string::npos)
@@ -280,7 +280,7 @@ TEST(SpinoffDividendDoubleApply, BothApplied_TheBasisIsRightAndTheSHARESAreInfla
     EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-12);
     EXPECT_NEAR(gap.shares_inflated_by, 2.0116, 1e-12)
         << "a split_factor above 1 on a spinoff bar is distribution, not a share-count "
-           "change -- applying it as class-1 minted phantom shares (E2-F31)";
+           "change -- applying it as class-1 minted phantom shares";
 }
 
 TEST(SpinoffDividendDoubleApply, ARealReverseSplitAppliedAsClass1DoesNotInflateShares) {

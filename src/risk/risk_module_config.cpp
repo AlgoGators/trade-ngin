@@ -118,7 +118,7 @@ public:
         // S6 first, so an `enabled` key gets its own words instead of S5's generic one.
         if (m.contains("enabled")) {
             return err(path_ +
-                       ".enabled was removed in schema 2 (HD Q8): a module the book does not run "
+                       ".enabled was removed in schema 2: a module the book does not run "
                        "is a module the book does not list");
         }
         // S4
@@ -522,7 +522,7 @@ Result<void> parse_gating_fields(const std::string& prefix, const nlohmann::json
         const auto& corr = m.at("max_correlation");
         if (!corr.is_number() || !(corr.get<double>() > 0.0 && corr.get<double>() < 1.0)) {
             return fail(p + "max_correlation must be in (0, 1), got " + val(corr) +
-                        "; at 1.0 the correlation term can never bind (risk_manager.cpp:551 "
+                        "; at 1.0 the correlation term can never bind (the risk manager "
                         "clamps rho)");
         }
         *max_correlation = corr.get<double>();
@@ -840,8 +840,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
     if (risk.contains("max_leverage")) {
         if (!risk.at("max_leverage").is_number() ||
             !(risk.at("max_leverage").get<double>() > 0.0)) {
-            return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                       "trend_following.cpp:1216)");
+            return err("risk.max_leverage is required and must be > 0 (it sizes the book"
+                       ")");
         }
         out.max_leverage = risk.at("max_leverage").get<double>();
     }
@@ -976,8 +976,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
         if (sleeve_count > 1) {
             auto refuse_error = [&](const std::string& path) {
                 return err(path + " can REFUSE, and a book with " + std::to_string(sleeve_count) +
-                           " sleeves cannot pin every sleeve to a stored T-1 until T-BASE "
-                           "(T-RISK-ARCH_ADVERSARIAL B1)");
+                           " sleeves cannot pin every sleeve to a "
+                           "stored T-1");
             };
             for (size_t i = 0; i < out.portfolio.size(); ++i) {
                 if (out.portfolio[i].can_refuse()) {
@@ -1089,8 +1089,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                    "overlay's limits (R_max, R_jump_max, R_shock_max): remove the key");
     }
     if (!overlay_book && !risk.contains("max_leverage")) {
-        return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                   "trend_following.cpp:1216)");
+        return err("risk.max_leverage is required and must be > 0 (it sizes the book"
+                   ")");
     }
     for (const char* key : kReportingKeys) {
         const bool retired = overlay_book &&
@@ -1113,7 +1113,7 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
     if (!rep.at("type").is_string() || rep.at("type").get<std::string>() != "carver" ||
         !rep.at("window").is_string() || rep.at("window").get<std::string>() != "all_bars") {
         return err("risk.risk_reporting.type must be \"carver\" and window \"all_bars\" on day "
-                   "one (HD Q5)");
+                   "one");
     }
     {
         auto r = parse_gating_fields(
@@ -1149,7 +1149,7 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                 return err("risk.risk_reporting." + std::string(name) + " = " +
                            nlohmann::json(values.first).dump() + " differs from " + path + "." +
                            name + " = " + nlohmann::json(values.second).dump() +
-                           "; on day one the reporter mirrors the gate (HD Q5)");
+                           "; on day one the reporter mirrors the gate");
             }
         }
     }

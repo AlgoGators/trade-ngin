@@ -158,11 +158,11 @@ TEST(SpinoffBarWarnings, TheRunnerAnnouncesOnlyBarsWhoseParentIsHeld) {
     ASSERT_NE(holds_at, std::string::npos);
     const std::string holds_body = src.substr(holds_at, 400);
     EXPECT_NE(holds_body.find("quantity.as_double()) > 1e-9"), std::string::npos)
-        << "book_holds must require a non-zero quantity, not mere presence in the map (BA-27)";
+        << "book_holds must require a non-zero quantity, not mere presence in the map";
 
     // And the forward-split announcement exists and is driven by the predicate, not by an
     // inline comparison that can drift from it.
     EXPECT_NE(src.find("col.folds_a_forward_split()"), std::string::npos);
     EXPECT_NE(src.find("split_factor ABOVE 1"), std::string::npos);
-    EXPECT_NE(src.find("(E2-F51)"), std::string::npos);
+    EXPECT_NE(src.find("warning of it.\");"), std::string::npos);
 }

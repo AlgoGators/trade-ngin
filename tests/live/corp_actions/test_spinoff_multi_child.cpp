@@ -89,7 +89,7 @@ TEST(SpinoffMultiChild, EveryChildIsDeliveredOnceWithItsOwnRatioAndFirstClose) {
                                                         SpinoffChildPolicy::HOLD);
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].outcome, LifecycleOutcome::SPUN_OFF_CHILD_HELD);
-    ASSERT_EQ(log[0].children.size(), 2u) << "the second child was dropped again (E2-F49)";
+    ASSERT_EQ(log[0].children.size(), 2u) << "the second child was dropped again";
     EXPECT_EQ(log[0].children_joined(), "OTIS, CARR");
 
     // Both positions exist, each with its own share count from its own ratio.
@@ -133,7 +133,7 @@ TEST(SpinoffMultiChild, CostBasisIsConservedOverTheParentAndEVERYChild) {
         book += (c.quantity + c.fractional) * c.avg_price;
     }
     EXPECT_NEAR(book, 100.0 * 86.01, 1e-5)
-        << "the distribution created or destroyed cost basis. Before E2-F49 the parent's "
+        << "the distribution created or destroyed cost basis. The known shape: the parent's "
            "basis was divided by the full factor while only ONE child received an "
            "allocation, so the second child's share of the pool vanished from the book";
 

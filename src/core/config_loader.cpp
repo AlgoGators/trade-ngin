@@ -97,8 +97,8 @@ Result<void> check_removed_keys(const nlohmann::json& merged, const std::string&
             ErrorCode::INVALID_DATA,
             config_prefix + where +
                 " (use_risk_management) was removed in schema 2; risk is assigned by risk.json "
-                "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
-                "T-RISK-ARCH_ADVERSARIAL E2)",
+                "\"modules\". Delete the key (a leftover false would silently turn risk back on"
+                ")",
             "ConfigLoader");
     }
     if (merged.contains("risk_defaults")) {

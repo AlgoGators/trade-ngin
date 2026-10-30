@@ -53,7 +53,7 @@ TEST(BacktestUnrealizedAccounting, RealizedOnlyYieldsZeroUnrealized) {
         << "A REALIZED_ONLY (futures) position recorded a non-zero unrealized P&L. Under "
            "daily settlement average_price IS the prior settlement close, so any value here "
            "is the settled move already booked in realized_pnl -- the same day counted "
-           "twice (E2-F2).";
+           "twice.";
 }
 
 // The ungated expression's value, pinned so it cannot come back unnoticed.

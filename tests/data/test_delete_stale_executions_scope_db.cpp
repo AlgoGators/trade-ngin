@@ -97,7 +97,7 @@ protected:
         if (conn_.empty()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not set, "
-                          "so the E2-F4 portfolio scoping goes unverified";
+                          "so the portfolio scoping goes unverified";
             }
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
@@ -106,7 +106,7 @@ protected:
         if (connected.is_error() || !db_->is_connected()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but the database is unreachable, so the "
-                          "E2-F4 portfolio scoping goes unverified";
+                          "portfolio scoping goes unverified";
             }
             GTEST_SKIP() << "database unreachable; skipping";
         }

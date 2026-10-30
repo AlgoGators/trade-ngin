@@ -247,7 +247,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousCl
             .is_ok());
     ASSERT_GT(reanchored->get_position("AAPL"), 0.0)
         << "sanity: against a re-anchored basis the stop cannot fire -- this is the "
-           "silent failure F-E would leave behind";
+           "silent failure re-anchoring would leave behind";
 
     // The same position with the basis it actually has.
     auto retained = create_strategy();
@@ -499,8 +499,8 @@ TEST_F(LiveDailyCycleSeedingTest, SeedZeroesRealizedAndKeepsBasisAndMark) {
         << "unrealized is re-marked from the seeded basis; update_metrics() sums it "
            "into the drawdown gate, so it must be seeded, not zeroed";
     EXPECT_DOUBLE_EQ(it->second.realized_pnl.as_double(), 0.0)
-        << "yesterday's realized must not be seeded: the row is a per-day flow "
-           "(E2-F19 route 1)";
+        << "yesterday's realized must not be seeded: the row is a per-day flow"
+           ".";
 }
 
 // The day's row is the day's trade, not the day's trade plus the chain.
@@ -621,7 +621,7 @@ TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
     ASSERT_TRUE(day2.count("TMUS"));
     EXPECT_DOUBLE_EQ(day2.at("TMUS").realized_pnl.as_double(), 0.0)
         << "a held, untraded position realizes nothing today; a mark move leaked "
-           "in through the seed (E2-F20)";
+           "in through the seed";
 
     auto day2_as_loaded = finalize_like_a_weekend(day2, 105.0, 110.0);
 
@@ -633,7 +633,7 @@ TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
     EXPECT_NEAR(day3.at("TMUS").realized_pnl.as_double(), 100.0, 1e-6)
         << "the close-day row carries the exit's realized";
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(day3.at("TMUS")))
-        << "the day-T write must keep the close-day row (E2-F19 route 3)";
+        << "the day-T write must keep the close-day row";
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +700,7 @@ TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAnUnconfiguredSymbolGetsARow) {
     auto added = LiveDailyCycle::add_rowless_exits(positions, strat->get_positions(), now);
 
     ASSERT_EQ(added.size(), 1u);
-    ASSERT_TRUE(positions.count("MSFT")) << "the exit's realized needs a row (G1)";
+    ASSERT_TRUE(positions.count("MSFT")) << "the exit's realized needs a row";
     EXPECT_NEAR(positions.at("MSFT").realized_pnl.as_double(), 100.0, 1e-6);
     EXPECT_DOUBLE_EQ(positions.at("MSFT").quantity.as_double(), 0.0);
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(positions.at("MSFT")));
@@ -774,7 +774,7 @@ TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) 
         }
     }
     EXPECT_NEAR(rows, aggregate, 1e-9)
-        << "the row sum and the aggregate must mark from the same map (E2-F35)";
+        << "the row sum and the aggregate must mark from the same map";
 
     // And the shape of the defect, for the record: the un-widened map drops THIN's mark.
     double rows_from_t1_only = 0.0;
@@ -786,7 +786,7 @@ TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) 
         }
     }
     EXPECT_NEAR(aggregate - rows_from_t1_only, 200.0, 1e-9)
-        << "characterizing E2-F35: a widened symbol's row was 0 while the aggregate "
+        << "characterizing the gap: a widened symbol's row was 0 while the aggregate "
            "carried its mark";
 }
 

@@ -1049,8 +1049,8 @@ int main(int argc, char* argv[]) {
                          combined_strategy_id + " / " + portfolio_id + " start " +
                          anchor.earliest_result +
                          ". trading.get_trading_days would return 1 for every date before "
-                         "the anchor and explode total_annualized_return just after it "
-                         "(E2-F32). The anchor is NOT moved: the metadata row is authoritative and "
+                         "the anchor and explode total_annualized_return just after it"
+                         ". The anchor is NOT moved: the metadata row is authoritative and "
                          "the function's count stands. Fix the data: correct the row if it is "
                          "wrong, or remove the stray results if they are.");
                 } else {

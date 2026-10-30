@@ -120,7 +120,7 @@ Result<void> configure_per_contract_source(bool per_contract_rolls, const std::s
     PerContractSource::instance().enable(calendar.value(), *setting, carry_quotes);
     INFO(
         "PER_CONTRACT_ROLLS on: the futures bar source hands out the held contract's own bars "
-        "(HD's roll rule, contract_roll_rule.hpp), roll bars carrying the old contract's close; "
+        "(the roll rule, contract_roll_rule.hpp), roll bars carrying the old contract's close; "
         "futures calendar " +
         path + "; per_contract_switch_bar " + to_string(*setting) +
         " (an unconfirmed vendor switch bar is " +

@@ -34,7 +34,7 @@ TEST(TradingDaysAnchor, AMetadataRowLaterThanTheBookIsCaughtButNotOverridden) {
 
     ASSERT_TRUE(a.has_metadata);
     EXPECT_TRUE(a.anchor_is_late)
-        << "an anchor 114 days after the book's first day is the E2-F32 shape";
+        << "an anchor 114 days after the book's first day is the late-anchor shape";
     EXPECT_EQ(a.effective_anchor, "2026-07-24")
         << "the metadata row is authoritative; the runner warns and does not move it";
 

@@ -94,14 +94,14 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                  "double-adjust it. Evidence: " +
                  (ev.basis_provenance_evidence.empty() ? std::string("(none recorded)")
                                                        : ev.basis_provenance_evidence) +
-                 " (E2-F17).");
+                 ".");
             continue;
         }
         if (ev.basis_provenance == CorpActionEvent::BasisProvenance::UNKNOWN) {
             WARN("CorporateActionsApplier: basis provenance for " + ev.symbol + " (ex_date " +
                  ev.ex_date + ", " + std::string(type_to_string(ev.type)) + ") is UNKNOWN; "
                  "APPLYING, because dropping a real adjustment is worse than a double-adjusted "
-                 "basis. Investigate if this repeats (E2-F17).");
+                 "basis. Investigate if this repeats.");
         }
 
         PositionAdjustment adj;

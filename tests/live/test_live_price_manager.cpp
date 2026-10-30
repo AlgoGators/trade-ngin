@@ -66,9 +66,9 @@ struct has_get_settlement_price<
     : std::true_type {};
 
 static_assert(!has_load_close_prices<LivePriceManager>::value,
-              "load_close_prices is back; it was a stub that returned an empty map (C-04)");
+              "load_close_prices is back; it was a stub that returned an empty map");
 static_assert(!has_get_settlement_price<LivePriceManager>::value,
-              "get_settlement_price is back; it was a stub that returned DATA_NOT_FOUND (C-04)");
+              "get_settlement_price is back; it was a stub that returned DATA_NOT_FOUND");
 
 // ===== update_from_bars =====
 

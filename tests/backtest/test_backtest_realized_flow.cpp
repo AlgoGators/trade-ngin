@@ -175,7 +175,7 @@ TEST(BacktestRealizedFlow, HadTheSkippedBarAdvancedTheLedgerTheFlowWouldBeLost) 
     BacktestPnLManager::realized_row_for_bar(10.0, 200.0, last);  // the bar that wrote NOTHING
     auto next = BacktestPnLManager::realized_row_for_bar(10.0, 250.0, last);
     EXPECT_DOUBLE_EQ(next.flow, 50.0);
-    EXPECT_NE(next.flow, 250.0) << "200 of realized has no row to live on -- this is E2-F59";
+    EXPECT_NE(next.flow, 250.0) << "200 of realized has no row to live on";
 }
 
 TEST(BacktestRealizedFlow, FlowsStillSumWhenBarsAreSkipped) {

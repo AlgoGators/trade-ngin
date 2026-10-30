@@ -128,7 +128,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, SettledPolicyWritesZeroEvenWhenPriceMoved) 
     EXPECT_DOUBLE_EQ(u, 0.0)
         << "Futures finalization wrote a non-zero unrealized P&L. average_price is the "
            "prior settlement close, so this value is the settlement move already recorded "
-           "in realized_pnl -- the same day counted twice (E2-F3).";
+           "in realized_pnl -- the same day counted twice.";
 }
 
 // The default must BE the futures behaviour, so a caller that says nothing is safe.
@@ -159,7 +159,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, SettledUnrealizedDoesNotDuplicateTheRealize
 
     EXPECT_NE(settled, kOneDayMove)
         << "Futures unrealized equals the one-day settlement move (" << kOneDayMove
-        << "), which is what realized_pnl already holds. This is the exact E2-F3 signature: "
+        << "), which is what realized_pnl already holds. This is the exact double-count signature: "
            "on 2025-10-10 six of nine rows had unrealized == realized to the cent.";
 }
 
@@ -172,7 +172,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, ThePolicyIsWhatDecidesTheOutcome) {
 
     EXPECT_NE(settled, marked)
         << "UnrealizedPolicy changed nothing. If both paths agree the parameter is not "
-           "wired into the finalizer, and this suite would not catch a regression of E2-F3.";
+           "wired into the finalizer, and this suite would not catch a regression.";
 }
 
 // ===========================================================================
@@ -248,8 +248,8 @@ TEST_F(FinalizeUnrealizedPolicyTest, FinalizedUnrealizedAggregateEqualsSumOfFina
     EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, row_sum)
         << "The aggregate diverged from the rows. live_results.total_unrealized_pnl is "
            "written from this figure and trading.positions.daily_unrealized_pnl from those "
-           "rows, so any gap here reappears as an L5 violation in the database -- which is "
-           "exactly what E2-F13 was.";
+           "rows, so any gap here reappears as an L5 violation in the database"
+           ".";
     EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, kOneDayMove)
         << "The mark-to-market aggregate should equal the one-day move for this fixture, "
            "whose average_price is the T-2 close.";

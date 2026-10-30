@@ -102,8 +102,8 @@ TEST(HistoricalMetricsColumns, TheBlockIsTheFifteenNullColumnsPlusVolatility) {
 
     EXPECT_EQ(keys, expected)
         << "the set of columns the equity runner fills in changed; fifteen of these were "
-           "NULL on every equity live_results row before E2-F33 and `volatility` carried the "
-           "wrong quantity until D3, and both write sites (the Day T-1 UPDATE and the day-T "
+           "NULL on every equity live_results row when the set drifted, `volatility` carried the "
+           "wrong quantity, and both write sites (the Day T-1 UPDATE and the day-T "
            "INSERT) take the set from here";
     EXPECT_EQ(doubles.size(), 13u);
     EXPECT_EQ(ints.size(), 3u);

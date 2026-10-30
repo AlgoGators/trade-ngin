@@ -120,9 +120,9 @@ TEST(SpinoffRefusalBound, TheRunnerKeysTheChildCloseOnItsOwnExDate) {
     // The map is keyed on the pair, and the lookup passes the ROW's ex-date.
     EXPECT_NE(src.find("child_first_close;  // (child, ex_date) -> (date used, close)"),
               std::string::npos)
-        << "child_first_close is keyed on the child alone again (BA-24)";
+        << "child_first_close is keyed on the child alone again";
     EXPECT_NE(src.find("child_first_close.find({t.first, row.date_str})"), std::string::npos)
-        << "the child close is looked up without its ex-date again (BA-24)";
+        << "the child close is looked up without its ex-date again";
     EXPECT_NE(src.find("LiveDailyCycle::first_close_on_or_after("), std::string::npos);
 }
 
@@ -138,14 +138,14 @@ TEST(SpinoffRefusalBound, TheRefusedSpinoffParentIsInsideTheBasisVsMarkBound) {
     // spinoff half is in it: a loop over `events` alone would never see a suppressed spinoff
     // parent.
     const auto guard = src.find("THE SAME BOUND, ON THE EVENTS WE REFUSED.");
-    ASSERT_NE(guard, std::string::npos) << "the G3 bound is gone entirely";
+    ASSERT_NE(guard, std::string::npos) << "the bound on refused events is gone entirely";
     const auto guard_end = src.find("// CLEANUP: nothing to persist", guard);
     ASSERT_NE(guard_end, std::string::npos);
     const std::string block = src.substr(guard, guard_end - guard);
 
     EXPECT_NE(block.find("for (const auto& adj : spinoff_log)"), std::string::npos)
         << "the bound does not inspect refused spinoffs, so the one shape with a KNOWN "
-           "unrestated basis is the one shape nothing measures (BA-24)";
+           "unrestated basis is the one shape nothing measures";
     EXPECT_NE(block.find("SPINOFF to {"), std::string::npos)
         << "a refused spinoff must be NAMED in the guard's message, not folded into a "
            "class-1 label it does not have";

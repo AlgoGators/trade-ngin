@@ -135,7 +135,7 @@ TEST_F(VolumeSlippageModelTest, ImpactIsFlatAboveTheVolumeCap) {
         double slipped = m.calculate_slippage(100.0, qty, Side::BUY, bar);
         EXPECT_NEAR(slipped, expected, 1e-9)
             << "quantity " << qty << " priced differently from the cap; an excess-impact "
-            << "term is being applied where the model is documented as flat (C-19)";
+            << "term is being applied where the model is documented as flat";
     }
 }
 

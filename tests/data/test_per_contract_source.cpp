@@ -984,7 +984,7 @@ TEST_F(PerContractSourceDbTest, TheMicrosReadTheFullSizeContractsUntilTheChangeA
     EXPECT_EQ(change.instrument_id, "42003800") << "MESH6";
     EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 6857.25);
     ASSERT_TRUE(change.roll_from.has_value());
-    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "HD 2026-10-26: no trade";
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "no trade";
     EXPECT_EQ(change.roll_from->instrument_id, "42140878");
     EXPECT_DOUBLE_EQ(change.roll_from->close, 6857.25);
     EXPECT_EQ(change.roll_from->date, "2026-02-23");

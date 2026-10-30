@@ -275,7 +275,7 @@ TEST(RollSeries, TheRollStatusOfTheConsumedBarsNeverSeesAWithheldPrint) {
     const std::vector<trade_ngin::Bar> loaded = {bar(0, 100, "A"), bar(1, 50, "B"), bar(2, 101, "A")};
     const std::vector<trade_ngin::Bar> consumed = {bar(0, 100, "A"), bar(2, 101, "A")};  // day 1 withheld
     EXPECT_TRUE(roll_status_of(loaded).at("XA.v.0").flip)
-        << "walked over the loaded window the corrupt print makes a flip (the T-ROLLX break)";
+        << "walked over the loaded window the corrupt print makes a flip";
     const auto st = roll_status_of(consumed).at("XA.v.0");
     EXPECT_FALSE(st.change);
     EXPECT_FALSE(st.flip);

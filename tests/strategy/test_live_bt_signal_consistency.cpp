@@ -250,7 +250,7 @@ TEST_F(LiveBtSignalConsistencyTest, LiveStagingKeepsTheSeededBook) {
         EXPECT_DOUBLE_EQ(positions.at(symbol).average_price.as_double(), 148.0)
             << "a rename-free staging pass must not restate the cost basis";
         EXPECT_DOUBLE_EQ(positions.at(symbol).realized_pnl.as_double(), 0.0)
-            << "seeding zeroes realized: the column is a daily flow (E2-F19)";
+            << "seeding zeroes realized: the column is a daily flow";
     }
 
     strat->stop();

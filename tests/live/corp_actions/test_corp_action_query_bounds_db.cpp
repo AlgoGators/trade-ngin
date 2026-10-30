@@ -425,7 +425,7 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
     ASSERT_GE(universe.size(), in_table) << "the scan set misses symbols of the table";
     ASSERT_GT(universe.size(), 10u)
         << "the scan set is " << universe.size()
-        << " symbols; E2-F41 is precisely that the ten configured names hide the class, so a "
+        << " symbols; the ten configured names hide the class, so a "
            "set no larger proves nothing";
 
     const auto silent = scan_silent_class1(conn_string_, universe);
@@ -463,7 +463,7 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
            "(bound " << kMaxSilentDividends
         << "). Each is an unapplied basis restatement. The bound exists so the class cannot "
            "grow unnoticed -- if the feed has degraded, raise it deliberately and say why; if "
-           "a configured symbol is now among them, the run-time E2-F41 cross-check will name "
+           "a configured symbol is now among them, the run-time cross-check will name "
            "it every session.";
     // The scan reaches the table. The reference clone holds 87 silent dividends; the tuning
     // copy's 30 symbols have none. So the scan's count must equal the tables' own count

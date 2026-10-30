@@ -500,7 +500,7 @@ int main(int argc, char* argv[]) {
                          "whose ticker has been renamed: " + added +
                          ". Without this the renamed holding would have no bars, no "
                          "instrument and no target, and would be carried unpriceable "
-                         "forever (E2-F34).");
+                         "forever.");
                     symbols = extended;
                 }
             }
@@ -842,8 +842,8 @@ int main(int argc, char* argv[]) {
                          anchor.metadata_anchor + " but live_results for " + portfolio_id +
                          " start " + anchor.earliest_result +
                          ". trading.get_trading_days would return 1 for every date before "
-                         "the anchor and explode total_annualized_return just after it "
-                         "(E2-F32). The anchor is NOT moved: the metadata row is authoritative and "
+                         "the anchor and explode total_annualized_return just after it"
+                         ". The anchor is NOT moved: the metadata row is authoritative and "
                          "the function's count stands. Fix the data: correct the row if it is "
                          "wrong, or remove the stray results if they are.");
                 } else {
@@ -879,8 +879,8 @@ int main(int argc, char* argv[]) {
                 WARN("The corporate-action deal-terms feed has rows after " +
                      std::string(kCorpActionTableFrozenAfter) +
                      ", the date this binary was built against. Deal-terms rollover and "
-                     "survivor-keyed TERMINATION rows are now reachable; confirm E4 "
-                     "NEW-5(A) has landed before running this book at universe scale.");
+                     "survivor-keyed TERMINATION rows are now reachable; confirm they are handled "
+                     "before running this book at universe scale.");
             }
         }
 
@@ -955,7 +955,7 @@ int main(int argc, char* argv[]) {
             const auto feed = LiveDailyCycle::feed_cost_model(tcm, symbols, bars_by_symbol);
             INFO("Cost model fed: " + std::to_string(feed.bars_fed) + " bar(s) and " +
                  std::to_string(feed.returns_fed) + " log return(s) across " +
-                 std::to_string(feed.symbols_fed) + " symbol(s) (E2-F62); ADV and "
+                 std::to_string(feed.symbols_fed) + " symbol(s); ADV and "
                  "volatility now measured, not the adv=100000 fallback");
             if (!feed.no_bars.empty()) {
                 std::string joined;
@@ -1817,7 +1817,7 @@ int main(int argc, char* argv[]) {
                             last_buy_by_symbol = lb.value();
                             exec_history_readable = true;
                         } else {
-                            WARN("E2-F17: could not read execution history for basis provenance ("
+                            WARN("could not read execution history for basis provenance ("
                                  + std::string(lb.error()->what()) +
                                  "). Every event this run resolves to UNKNOWN and will be APPLIED "
                                  "with a warning rather than skipped.");
@@ -1867,7 +1867,7 @@ int main(int argc, char* argv[]) {
                         ERROR("Could not read spinoff deal terms (" +
                               std::string(spin.error()->what()) +
                               ") -- any spinoff in this window will be MISREAD as a split or a "
-                              "dividend by the class-1 applier (E2-F31). Refusing to apply "
+                              "dividend by the class-1 applier. Refusing to apply "
                               "corporate actions this run; re-run once the database is "
                               "reachable.");
                         return 1;
@@ -1902,7 +1902,7 @@ int main(int argc, char* argv[]) {
                             }
                             INFO("Spinoff deal terms | " + key.first + " on " + key.second +
                                  " delivers " + std::to_string(terms.size()) +
-                                 " children: " + joined + " (E2-F49)");
+                                 " children: " + joined + "");
                         }
                     }
                 }
@@ -1941,7 +1941,7 @@ int main(int argc, char* argv[]) {
                             WARN("Could not cross-check the class-1 deal-terms feed against the "
                                  "per-bar feed (" + std::string(class1_terms.error()->what()) +
                                  ") -- a corporate action the bars do not carry would go "
-                                 "unannounced this run (E2-F41).");
+                                 "unannounced this run.");
                         } else {
                             // Every (ticker, ex-date) the PER-BAR feed produced a row for.
                             std::set<std::pair<std::string, std::string>> per_bar_keys;
@@ -1976,13 +1976,13 @@ int main(int argc, char* argv[]) {
                                      " keeps a PRE-event cost basis against a post-event price "
                                      "series and no dedup row records the gap. This is a DATA "
                                      "gap, not a code one: reconcile the position by hand or "
-                                     "fix the bar (E2-F41).");
+                                     "fix the bar.");
                             }
                             if (silent == 0) {
                                 INFO("Class-1 deal-terms cross-check: " +
                                      std::to_string(class1_terms.value().size()) +
                                      " row(s) in the window for held symbols, all visible to "
-                                     "the per-bar applier (E2-F41)");
+                                     "the per-bar applier");
                             }
                         }
                     }
@@ -2128,7 +2128,7 @@ int main(int argc, char* argv[]) {
                              "this database, verified against adjusted_close on both sides of "
                              "the bar. If this ticker really did split forward on its spinoff "
                              "ex-date, the share count is now wrong and this line is the only "
-                             "warning of it (E2-F51).");
+                             "warning of it.");
                     }
                     if (col.has_reverse_split()) {
                         WARN("Spinoff bar carries a coincident REVERSE SPLIT: " + key.first +
@@ -2140,7 +2140,7 @@ int main(int argc, char* argv[]) {
                              "distribution keeps the rest of the bar's step, " +
                              std::to_string(col.total_factor()) + " / " +
                              std::to_string(col.reverse_split_factor()) + " = " +
-                             std::to_string(col.spinoff_factor()) + " (E2-F48).");
+                             std::to_string(col.spinoff_factor()) + ".");
                     }
                     // The bar's DIVIDEND row may already have been applied as an
                     // ordinary class-1 dividend by an earlier run.
@@ -2221,7 +2221,7 @@ int main(int argc, char* argv[]) {
                                            key.first +
                                            "'s SHARE COUNT is inflated by a factor of " +
                                            std::to_string(gap.shares_inflated_by) +
-                                           " (phantom shares, E2-F31). The basis is right; "
+                                           " (phantom shares). The basis is right; "
                                            "it is the quantity that needs repairing."
                                          : std::string("."))
                                   : " -- AND this bar folds a split_factor into the "
@@ -2231,7 +2231,7 @@ int main(int argc, char* argv[]) {
                              " NOTHING is applied. Delivering the children now would need the "
                              "share count held on the ex-date and each child's first close at "
                              "the time; the dividend row recorded neither and this run does "
-                             "not guess at them (BA-26).");
+                             "not guess at them.");
                     }
                     if (!col.routes_a_spinoff()) {
                         WARN("SPINOFF REFUSED for " + key.first + " on " + key.second +
@@ -2247,8 +2247,8 @@ int main(int argc, char* argv[]) {
                              "book its whole first close as realized gain. Every class-1 row "
                              "on this bar is applied as it was before the spinoff path "
                              "existed; the child is NOT delivered and this book holds none "
-                             "of it. No dedup row is written -- it retries every run "
-                             "(E2-F48).");
+                             "of it. No dedup row is written -- it retries every run"
+                             ".");
                     }
                 }
                 for (const auto& [key, col] : spinoff_bar_columns) {
@@ -2264,7 +2264,7 @@ int main(int argc, char* argv[]) {
                          "factor the parent's price series took across the bar is the "
                          "product " + std::to_string(col.split_step()) + " x " +
                          std::to_string(col.dividend_factor()) + " = " +
-                         std::to_string(col.total_factor()) + " (E2-F47).");
+                         std::to_string(col.total_factor()) + ".");
                 }
 
                 // The (ticker, ex_date) keys already routed to the spinoff handler this
@@ -2363,8 +2363,8 @@ int main(int argc, char* argv[]) {
                                      (lb == last_bar_date.end()
                                           ? std::string("nowhere")
                                           : lb->second) +
-                                     ", so the parent bars are still in PRE-event units "
-                                     "(E2-F15). No dedup row is written; it applies on the "
+                                     ", so the parent bars are still in PRE-event units"
+                                     ". No dedup row is written; it applies on the "
                                      "next run once the ex-date bar is in the window.");
                                 continue;
                             }
@@ -2393,7 +2393,7 @@ int main(int argc, char* argv[]) {
                                          (bought_after ? "BUY " + lbuy->second
                                                        : "book verifiably flat at end of "
                                                          "ex-date " + row.date_str) +
-                                         " (E2-F17).");
+                                         ".");
                                     continue;
                                 }
                             }
@@ -2464,7 +2464,7 @@ int main(int argc, char* argv[]) {
                                      "PRE-split share, so they are scaled by " +
                                      std::to_string(ratio_scale) +
                                      " to the post-split share count, and no class-1 split is "
-                                     "pending for the basis-vs-mark bound (E2-F50).");
+                                     "pending for the basis-vs-mark bound.");
                             }
 
                             SpinoffEvent sev;
@@ -2488,7 +2488,7 @@ int main(int argc, char* argv[]) {
                                          ", so the whole " + row.ticker +
                                          " distribution cannot be allocated and is refused: "
                                          "an allocation computed over a subset of the "
-                                         "children is not an allocation (E2-F49).");
+                                         "children is not an allocation.");
                                 }
                                 sev.children.push_back(std::move(ct));
                             }
@@ -2551,8 +2551,8 @@ int main(int argc, char* argv[]) {
                                   "is held but has no bars in the load window")
                                                             : lb->second) +
                                  ", so the bars are still in PRE-event units and restating the "
-                                 "basis now would leave price and position in different frames "
-                                 "(E2-F15). No dedup row is written; it applies on the next run "
+                                 "basis now would leave price and position in different frames"
+                                 ". No dedup row is written; it applies on the next run "
                                  "once the ex-date bar is in the window.");
                             continue;
                         }
@@ -2805,7 +2805,7 @@ int main(int argc, char* argv[]) {
                                 const double basis_to_mark =
                                     (adj.avg_price_after / pending_split) / mk->second;
                                 if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                                    ERROR("E2-F15 guard: after the SPINOFF of {" +
+                                    ERROR("guard: after the SPINOFF of {" +
                                           adj.children_joined() + "} from " + adj.symbol +
                                           " the parent cost basis (" +
                                           std::to_string(adj.avg_price_after) +
@@ -2944,7 +2944,7 @@ int main(int argc, char* argv[]) {
                         // ratios rather than the raw numbers.
                         const double implied = (adj.avg_price_before / adj.avg_price_after);
                         if (std::abs(implied - adj.ratio_change) > 1e-6 * std::max(1.0, adj.ratio_change)) {
-                            ERROR("E2-F15 invariant violated for " + adj.symbol + " (" +
+                            ERROR("invariant violated for " + adj.symbol + " (" +
                                   adj.event_date + "): basis moved by " +
                                   std::to_string(implied) + " but the event ratio is " +
                                   std::to_string(adj.ratio_change) +
@@ -2954,7 +2954,7 @@ int main(int argc, char* argv[]) {
 
                         const double basis_to_mark = adj.avg_price_after / mk->second;
                         if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                            ERROR("E2-F15 guard: after applying " +
+                            ERROR("guard: after applying " +
                                   std::string(CorporateActionsApplier::type_to_string(adj.type)) +
                                   " to " + adj.symbol + " the cost basis (" +
                                   std::to_string(adj.avg_price_after) +
@@ -3021,7 +3021,7 @@ int main(int argc, char* argv[]) {
 
                             const double basis_to_mark = basis / mk->second;
                             if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                                ERROR("E2-F17 guard: " + symbol + " carried an unapplied " +
+                                ERROR("guard: " + symbol + " carried an unapplied " +
                                       what + " and its cost basis (" +
                                       std::to_string(basis) + ") is implausible against the mark (" +
                                       std::to_string(mk->second) + "), ratio " +
@@ -3281,7 +3281,7 @@ int main(int argc, char* argv[]) {
                              (last_bar_terms.empty() ? std::string("(none loaded)")
                                                      : last_bar_terms) +
                              "): it does not describe the termination of this ticker -- "
-                             "either it is the survivor's row (E2-F26) or the bars "
+                             "either it is the survivor's row or the bars "
                              "contradict it. The holding is left untouched.");
                         continue;
                     }
@@ -3624,7 +3624,7 @@ int main(int argc, char* argv[]) {
                     ERROR("Refusing to trade on a strategy that did not see this run's "
                           "prices. get_target_positions() would return stale or empty "
                           "targets, and an empty target map on a held book is a full-book "
-                          "SELL, not a no-op (E2-F43). Nothing has been written for today.");
+                          "SELL, not a no-op. Nothing has been written for today.");
                     return 1;
                 }
 
@@ -3632,8 +3632,8 @@ int main(int argc, char* argv[]) {
                     ERROR("FEED ASSERTION: not one symbol in the effective universe of " +
                           std::to_string(symbols.size()) +
                           " could be verified against a loaded bar, so the check is vacuous "
-                          "and proves nothing about what the strategy saw. Refusing to trade "
-                          "(E2-F43).");
+                          "and proves nothing about what the strategy saw. Refusing to trade"
+                          ".");
                     return 1;
                 }
 
@@ -3769,7 +3769,7 @@ int main(int argc, char* argv[]) {
                 INFO("Finalizing " + symbol + " from the RESTATED T-1 book: a " +
                      "deferred corp action for " + applied_class1_ex_date.at(symbol) +
                      " was applied this run, so the T-1 close is already post-event "
-                     "and the pre-action basis would be a frame behind it (E2-F15).");
+                     "and the pre-action basis would be a frame behind it.");
             }
 
             // Use PnLManager to finalize previous day
@@ -4269,7 +4269,7 @@ int main(int argc, char* argv[]) {
             if (substituted > 0) {
                 INFO("BASIS TRACE | row marks | " + std::to_string(substituted) +
                      " symbol(s) marked from the execution price map rather than the T-1 "
-                     "close map, matching what the aggregate was marked at (E2-F35)");
+                     "close map, matching what the aggregate was marked at");
             }
         }
 
@@ -5331,7 +5331,7 @@ int main(int argc, char* argv[]) {
                 }
             } else {
                 WARN("LiveDataLoader not available or not connected; the statistics through Day "
-                     "T-1 stay at their defaults and the Day T-1 row is not refreshed (E2-F33).");
+                     "T-1 stay at their defaults and the Day T-1 row is not refreshed.");
             }
         } catch (const std::exception& e) {
             WARN("Exception while computing the statistics through Day T-1: " +

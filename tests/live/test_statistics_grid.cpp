@@ -52,7 +52,7 @@ TEST(StatisticsGrid, ReturnsAreTakenOnTheGridLevelsFromTheBase) {
     const auto s = week_through("2026-04-26");
     const std::vector<std::string> dates = {"2026-04-20", "2026-04-21", "2026-04-22",
                                             "2026-04-24", "2026-04-26"};
-    EXPECT_EQ(s.dates, dates) << "the flat start row is the base and not a return row (R5)";
+    EXPECT_EQ(s.dates, dates) << "the flat start row is the base and not a return row";
     EXPECT_DOUBLE_EQ(s.base, 500000.0);
     const std::vector<double> levels = {501000.0, 501000.0, 499000.0, 501000.0, 501300.0};
     EXPECT_EQ(s.levels, levels);
@@ -63,7 +63,7 @@ TEST(StatisticsGrid, ReturnsAreTakenOnTheGridLevelsFromTheBase) {
 
 TEST(StatisticsGrid, AMissingSessionCarriesTheLastStoredLevelAsAFlatReturn) {
     const auto s = week_through("2026-04-26");
-    EXPECT_DOUBLE_EQ(s.returns_pct[1], 0.0) << "Tuesday has no stored row (R6)";
+    EXPECT_DOUBLE_EQ(s.returns_pct[1], 0.0) << "Tuesday has no stored row";
     EXPECT_DOUBLE_EQ(s.pnl[1], 0.0);
     const std::vector<std::string> carried = {"2026-04-21"};
     EXPECT_EQ(s.carried, carried);

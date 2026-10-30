@@ -597,8 +597,8 @@ int main() {
         // with who made it and when, and the PortfolioManager refuses an empty list.
         auto none_module = make_none_module(
             "Equity validation harness: measures the strategy alone, without a portfolio risk "
-            "layer (T-RISK-ARCH \u00a77 table)",
-            "HD (T-RISK-ARCH \u00a77, adopted STAGE3_PLAN \u00a728)", "2026-09-18");
+            "layer",
+            "HD", "2026-09-18");
         if (none_module.is_error()) {
             ERROR(std::string(none_module.error()->what()));
             return 1;

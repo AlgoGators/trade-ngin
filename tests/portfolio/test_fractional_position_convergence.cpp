@@ -186,5 +186,5 @@ TEST_F(FractionalConvergenceTest, TheFlagIsWhatDecidesTheOutcome) {
     EXPECT_NE(permitted, forbidden)
         << "allow_fractional_positions changed nothing. Both paths agreeing means "
            "the flag is not wired into the convergence test, so this suite would "
-           "not catch a regression of E2-F1.";
+           "not catch a regression.";
 }

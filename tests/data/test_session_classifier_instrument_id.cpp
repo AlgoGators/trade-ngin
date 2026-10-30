@@ -258,7 +258,7 @@ TEST(InstrumentIdLimb, TheHoldFractionDecidesWhichUnconfirmedChangesAreHeldOnThe
     const auto none = build(0.0);
     EXPECT_EQ(at(none, "ROLL", "2026-03-04").verdict, SessionVerdict::SESSION);
     EXPECT_EQ(at(none, "FLIP", "2026-03-04").verdict, SessionVerdict::SESSION);
-    EXPECT_EQ(kIdChangeHoldFraction, 0.10) << "HD 2026-09-25";
+    EXPECT_EQ(kIdChangeHoldFraction, 0.10) << "the id-change hold fraction";
     EXPECT_EQ(SessionClassifierConfig{}.id_change_hold_fraction, kIdChangeHoldFraction)
         << "the ruled value is the default";
     // At the boundary: exactly 0.10 of the norm is not below it.
@@ -407,7 +407,7 @@ TEST(InstrumentIdWiring, BothTwinsFeedTheIdsAfterTheBarsAndBeforeTheT1Classifica
         EXPECT_LT(feed, t1);
         blocks[i++] = src.substr(bars, t1 - bars);
     }
-    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' C10a hunks differ";
+    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' hunks differ";
 }
 
 TEST(InstrumentIdWiring, TheBacktestFeedsTheIdsOnceTheBarsAreLoaded) {

@@ -539,7 +539,7 @@ TEST_F(PnLAccountingBranchTest, MeanReversionUsesMixed) {
 
     EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::MIXED)
         << "Equity mean reversion must declare MIXED accounting so the "
-           "backtest coordinator skips daily realized_pnl writes (Phase 4 §1.14).";
+           "backtest coordinator skips daily realized_pnl writes.";
 }
 
 TEST_F(PnLAccountingBranchTest, TrendFollowingUsesRealizedOnly) {
@@ -560,7 +560,7 @@ TEST_F(PnLAccountingBranchTest, TrendFollowingUsesRealizedOnly) {
     EXPECT_EQ(strat.get_pnl_accounting().method, PnLAccountingMethod::REALIZED_ONLY)
         << "Futures trend following must declare REALIZED_ONLY accounting so "
            "the backtest coordinator writes daily MTM into realized_pnl "
-           "(futures settle daily) per Phase 4 §1.14.";
+           "(futures settle daily).";
 }
 
 TEST_F(PnLAccountingBranchTest, AccessorIsStableAcrossCalls) {

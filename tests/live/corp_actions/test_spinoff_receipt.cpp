@@ -287,5 +287,5 @@ TEST(CorpActionSpinoff, TheApplierRefusesASpinoffAndTheTypeRoundTrips) {
     auto bad = CorporateActionsApplier::apply(mangled, {as_split});
     ASSERT_EQ(bad.size(), 1u);
     EXPECT_NEAR(mangled["FTV"].quantity.as_double(), 132.7, 1e-9)
-        << "this is E2-F31: the runner must route the spinoff away from the applier";
+        << "the runner must route the spinoff away from the applier";
 }

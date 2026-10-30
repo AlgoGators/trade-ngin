@@ -86,7 +86,7 @@ protected:
         if (conn_.empty()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not set, "
-                          "so the FIX-0 write/read key agreement goes unverified";
+                          "so the write/read key agreement goes unverified";
             }
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
@@ -95,7 +95,7 @@ protected:
         if (connected.is_error() || !db_->is_connected()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but the database is unreachable, so the "
-                          "FIX-0 write/read key agreement goes unverified";
+                          "write/read key agreement goes unverified";
             }
             GTEST_SKIP() << "database unreachable; key agreement needs a real server";
         }

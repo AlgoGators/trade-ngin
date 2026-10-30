@@ -328,7 +328,7 @@ TEST_F(RiskModuleErrorPathTest, TheFailureIsRecordedAsARefuseCarryingTheError) {
 
     // The run-metadata mark reads it.
     const auto refusal = portfolio_risk_refusal(pm_->last_risk_decisions());
-    ASSERT_TRUE(refusal.has_value()) << "C1's Q2 mark does not see the module failure";
+    ASSERT_TRUE(refusal.has_value()) << "the run-metadata mark does not see the module failure";
     EXPECT_EQ((*refusal)["action"], "REFUSE");
     EXPECT_EQ((*refusal)["module"], "carver");
     EXPECT_EQ((*refusal)["scope_id"], pm_id_);

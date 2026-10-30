@@ -942,7 +942,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     INFO("BT_JUNK_FEED withheld " + b.symbol + " " +
                          SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)) + " " + cycle +
                          "kept out of the strategies, the PortfolioManager's history and the cost "
-                         "models; never fed later (LOOP_SPEC v6.1 section 2.1, K-01)");
+                         "models; never fed later");
                 }
                 k01_feed = std::move(k01.feed);
                 signal_feed = &k01_feed;

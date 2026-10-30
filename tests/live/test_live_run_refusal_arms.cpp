@@ -398,7 +398,8 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpAction
           "Cannot read the corp-action dedup record",
           "Corp-action dedup record holds an entry with ex_date ",
           "Could not read spinoff deal terms", "and the price series disagree. Refusing to trade.",
-          "E2-F15 invariant violated for ", "E2-F15 guard: after applying ", "E2-F17 guard: "}) {
+          "invariant violated for ", "guard: after applying ",
+          "guard: \" + symbol + \" carried an unapplied "}) {
         const auto at = src.find(refusal);
         ASSERT_NE(at, npos) << refusal;
         EXPECT_LT(held, at) << refusal;
@@ -459,7 +460,7 @@ TEST(RunRefusalArmsSource, BothTwinsMarkTheMetadataRowAfterProcessMarketData) {
 
         EXPECT_NE(detect, npos)
             << "the runner never asks the PM whether its risk step refused: a refused run "
-               "leaves an unmarked metadata row that reads as a completed run (T-RISK-ARCH Q2)";
+               "leaves an unmarked metadata row that reads as a completed run";
         EXPECT_NE(second_upsert, npos) << "no second live_run_metadata upsert after the PM call";
         EXPECT_NE(marked, npos) << "the second upsert does not carry the refusal";
         if (detect == npos || second_upsert == npos || marked == npos) continue;

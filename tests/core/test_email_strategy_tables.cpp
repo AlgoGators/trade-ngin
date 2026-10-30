@@ -672,7 +672,7 @@ TEST_F(EmailStrategyTablesTest, AOneSleeveBooksTablesCarryNoNettingColumnAndNoNe
     EXPECT_NE(all.find("<th>Notional</th><th>Transaction Cost</th></tr>\n"), std::string::npos) << all;
     EXPECT_NE(all.find("<td>$3.00</td>\n</tr>"), std::string::npos) << all;
     EXPECT_EQ(all.find("<strong>Trades:</strong> 1 |"), std::string::npos)
-        << "one strategy: its summary line would repeat the book block (HD 10-14)";
+        << "one strategy: its summary line would repeat the book block";
     EXPECT_NE(
         all.find(
             "<div class=\"metric\"><strong>Total Notional Traded:</strong> $5,150.00</div>\n"

@@ -317,7 +317,7 @@ TEST(RiskSchemaParse, S6EnabledIsNotAKey) {
         nlohmann::json m = carver();
         m["enabled"] = value;
         EXPECT_EQ(parse_error(risk_with({m})),
-                  msg("risk.modules[0].enabled was removed in schema 2 (HD Q8): a module the book "
+                  msg("risk.modules[0].enabled was removed in schema 2: a module the book "
                       "does not run is a module the book does not list"))
             << value;
     }
@@ -354,7 +354,7 @@ TEST(RiskSchemaParse, S8ACarverAtBothScopesIsAnError) {
 TEST(RiskSchemaParse, S9ARefuseCapableModuleNeedsASingleSleeveBook) {
     EXPECT_EQ(parse_error(risk_with({refuse_module()}), nlohmann::json(), two_sleeves()),
               msg("risk.modules[0] can REFUSE, and a book with 2 sleeves cannot pin every sleeve "
-                  "to a stored T-1 until T-BASE (T-RISK-ARCH_ADVERSARIAL B1)"));
+                  "to a stored T-1"));
     // One sleeve: accepted. (Carver-less, so R10's attribution goes with it.)
     EXPECT_EQ(parse_error(ruled(risk_with({refuse_module()})), nlohmann::json(), one_sleeve()),
               "");
@@ -370,7 +370,7 @@ TEST(RiskSchemaParse, S9ARefuseCapableModuleNeedsASingleSleeveBook) {
 TEST(RiskSchemaParse, R1MaxCorrelationMustBeStrictlyInsideZeroAndOne) {
     const std::string tail =
         " must be in (0, 1), got %; at 1.0 the correlation term can never bind "
-        "(risk_manager.cpp:551 clamps rho)";
+        "(the risk manager clamps rho)";
     for (const char* value : {"1.0", "0.0"}) {
         nlohmann::json m = carver();
         m["max_correlation"] = nlohmann::json::parse(value);
@@ -481,8 +481,8 @@ TEST(RiskSchemaParse, R9TheTwoStrategyLimitsAreRequiredAndRanged) {
     nlohmann::json risk2 = risk_with({carver()});
     risk2["max_leverage"] = 0.0;
     EXPECT_EQ(parse_error(risk2),
-              msg("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                  "trend_following.cpp:1216)"));
+              msg("risk.max_leverage is required and must be > 0 (it sizes the book"
+                  ")"));
 }
 
 TEST(RiskSchemaParse, RcsTheTestModulesOwnParameters) {
@@ -553,7 +553,7 @@ TEST(RiskSchemaParse, C1TheReporterIsACarverOverAllBars) {
     risk["risk_reporting"]["window"] = "trimmed";
     EXPECT_EQ(parse_error(risk),
               msg("risk.risk_reporting.type must be \"carver\" and window \"all_bars\" on day "
-                  "one (HD Q5)"));
+                  "one"));
 }
 
 TEST(RiskSchemaParse, C1AReporterThatHasDriftedFromTheGateIsAnError) {
@@ -562,7 +562,7 @@ TEST(RiskSchemaParse, C1AReporterThatHasDriftedFromTheGateIsAnError) {
     EXPECT_EQ(parse_error(risk),
               msg("risk.risk_reporting.max_correlation = 0.84 differs from "
                   "risk.modules[0].max_correlation = 0.85; on day one the reporter mirrors the "
-                  "gate (HD Q5)"));
+                  "gate"));
 
     // With no carver module the reporter is free: the book is measured but not cut, which
     // is EQUITY_MR's assignment.

@@ -115,8 +115,8 @@ double k_bps(double adv) {
     return 80.0;
 }
 
-/// The parent's feed: the latest bar only, through the 3-arg ExecutionManager form, which in a
-/// fresh process passes prev_close = close (execution_manager.cpp update_market_data).
+/// The one-bar feed: the latest bar only, through the 3-arg ExecutionManager form, which in a
+/// fresh process passes prev_close = close (ExecutionManager::update_market_data).
 void parent_one_bar_feed(TransactionCostManager& tcm, const std::vector<Bar>& bars) {
     const Bar& last = bars.back();
     const double close = static_cast<double>(last.close);
@@ -186,7 +186,7 @@ TEST(K2FuturesCostFeed, ParticipationAndTheTierArePricedOnTheFillDaysOwnVolume) 
 
 TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheTwentyBarMean) {
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
-    auto normal = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);  // T-1 a Tuesday (C8c3)
+    auto normal = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);  // T-1 a Tuesday
     auto thin = normal;
     thin.back().volume = 30'000.0;
     const double price = static_cast<double>(thin.back().close);
@@ -210,7 +210,7 @@ TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheT
 
 TEST(K2FuturesCostFeed, TheImpactTermAndTheCommissionAreTheParentsToTheBit) {
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
-    // The parent priced participation and the tier on the same own-day volume; only vol_mult
+    // The one-bar feed prices participation and the tier on the same own-day volume; only vol_mult
     // (the spread) may move. A 2 % zigzag is far above the 1 % baseline, so vol_mult is 1.3.
     const auto bars = zigzag(kNg, 30, 3.0, 0.02, 90'000.0);
     const double price = static_cast<double>(bars.back().close);
@@ -335,7 +335,7 @@ TEST(K2FuturesCostFeed, ADuplicateFreeFeedIsWalkedOnceAndARepeatedInstantIsRepor
     EXPECT_TRUE(out_clean.repeated_instants.empty());
     EXPECT_EQ(out_clean.returns_fed, 24u);
 
-    // A second copy of one bar (what the loader's max-volume DISTINCT ON removes, T-6c B0).
+    // A second copy of one bar (what the loader's max-volume DISTINCT ON removes).
     auto dup = clean;
     Bar copy = dup[12];
     copy.volume = 1.0;

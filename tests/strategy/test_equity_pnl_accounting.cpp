@@ -255,7 +255,7 @@ TEST_F(EquityPnLAccountingTest, TargetPositionsCarryTheMarkWhileHeldPositionsCar
     ASSERT_NE(t, targets.end());
     EXPECT_NEAR(static_cast<double>(t->second.average_price), 160.0, 1e-6)
         << "get_target_positions() no longer reports the mark. If this was deliberate, the "
-           "basis resolution in BacktestCoordinator (E2-F8) is now redundant and must be "
+           "basis resolution in BacktestCoordinator is now redundant and must be "
            "removed in the same change -- otherwise the two corrections stack.";
 
     EXPECT_NE(static_cast<double>(h->second.average_price),

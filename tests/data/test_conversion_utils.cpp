@@ -571,7 +571,7 @@ TEST(ConversionUtilsSafeGet, Int64FromDatetimeStringIsUtcOnAnyHost) {
 
     ASSERT_TRUE(r.is_ok()) << r.error()->what();
     EXPECT_EQ(r.value(), 1788307200LL * 1000000LL)
-        << "a UTC instant must not be re-interpreted in the host zone (E2-F22)";
+        << "a UTC instant must not be re-interpreted in the host zone";
 }
 
 // Integer strings are unchanged -- every existing caller relies on this.

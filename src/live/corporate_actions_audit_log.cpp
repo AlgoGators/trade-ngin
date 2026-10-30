@@ -159,7 +159,7 @@ Result<bool> CorporateActionsAuditLog::load() {
                     " corp-action dedup row(s) were written by a LATER pass over this book "
                     "(run date on or after " + run_date_ + "): " + detail +
                     ". Trusting them would skip events whose effect is not in the T-1 "
-                    "position row and finalize it in the wrong frame (E2-F23/E2-F16). "
+                    "position row and finalize it in the wrong frame. "
                     "Refusing to run: reset trading.corp_action_applied for this portfolio "
                     "TOGETHER with the book (positions, live_results, equity_curve, "
                     "executions) from the replay start date, then replay in order.";

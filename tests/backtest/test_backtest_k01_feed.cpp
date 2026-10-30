@@ -158,7 +158,7 @@ TEST_F(BacktestK01FeedTest, AWithheldJunkBarIsNeverFedOnALaterCycle) {
     EXPECT_EQ(strat_->calls[0], (Keys{"AA@0", "XX@0"}));
     EXPECT_EQ(strat_->calls[1], (Keys{"AA@1"})) << "XX's JUNK bar is withheld on its own cycle";
     EXPECT_EQ(strat_->calls[2], (Keys{"AA@2", "XX@2"}))
-        << "and never fed later: no return is formed across it (K-01)";
+        << "and never fed later: no return is formed across it";
     EXPECT_EQ(pm_->closes_by_date_.at("XX").size(), 2u)
         << "the PortfolioManager's own history never holds day 1";
 }

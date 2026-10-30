@@ -445,7 +445,7 @@ TEST(LiveRollWriteOrder, AChangeOfPriceSourceIsNeitherLeggedNorOwed) {
         EXPECT_NE(src.find("                for (const auto& r : confirmed_rolls) {\n"
                            "                    if (r.price_source_change) continue;  // nothing to leg"),
                   std::string::npos)
-            << runner << ": the F-3 stop does not wait for its legs";
+            << runner << ": the price-source-change stop does not wait for its legs";
         const size_t logged = src.find("INFO(\"PRICE_SOURCE_CHANGE \" + r.symbol");
         const size_t confirmed = src.find("INFO(\"ROLL_CONFIRMED \" + r.symbol");
         ASSERT_NE(logged, std::string::npos) << runner;

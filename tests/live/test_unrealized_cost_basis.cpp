@@ -120,7 +120,7 @@ TEST(UnrealizedCostBasis, RowAndAggregateAgreeOnTheSameInputs) {
         << "the manager's aggregate must be the cost-basis measurement, not something else";
     EXPECT_NEAR(row_total, expected, 1e-9) << "so must the per-row figure";
     EXPECT_NEAR(aggregate, row_total, 1e-9)
-        << "row and aggregate are the same measurement on the same inputs (F-D)";
+        << "row and aggregate are the same measurement on the same inputs";
 }
 
 // A compile-time pin on the struct's shape: a detector, so restoring a member named
@@ -141,8 +141,8 @@ struct has_entry_price<T, std::void_t<decltype(std::declval<T&>().entry_price)>>
 static_assert(!has_entry_price<MeanReversionInstrumentData>::value,
               "MeanReversionInstrumentData::entry_price is back. It is a cost-basis field "
               "on per-instrument scratch data with no writer, which is what made every "
-              "persisted trading.positions.unrealized_pnl 0 while live_results disagreed "
-              "(F-D). Cost basis lives on Position::average_price, whose sole writer is "
+              "persisted trading.positions.unrealized_pnl 0 while live_results disagreed"
+              ". Cost basis lives on Position::average_price, whose sole writer is "
               "BaseStrategy::on_execution -- see docs/AVERAGE_PRICE_LIFECYCLE.md.");
 
 }  // namespace

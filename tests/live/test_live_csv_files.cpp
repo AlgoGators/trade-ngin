@@ -175,7 +175,7 @@ TEST_F(LiveCsvFiles, EveryRowOfThePositionsFilePrintsSixDecimalsTheFirstRowInclu
                 << "row " << (i - h) << " column " << c << " prints '" << cells[c]
                 << "': " << lines[i];
         }
-        EXPECT_EQ(cells[3], "110.9062") << "the price at the decimals of its contract (HD 10-13)";
+        EXPECT_EQ(cells[3], "110.9062") << "the price at the decimals of its contract";
         EXPECT_TRUE(std::regex_match(cells[2], std::regex("-?[0-9]+\\.[0-9]{2}"))) << "a quantity has two decimals";
         EXPECT_TRUE(std::regex_match(cells[4], std::regex("-?[0-9]+\\.[0-9]{2}"))) << "money has two decimals";
     }

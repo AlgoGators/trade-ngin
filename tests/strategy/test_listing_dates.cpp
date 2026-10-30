@@ -372,7 +372,7 @@ TEST(ListingDates, TheListedEquityMicroIsPricedOnItsOwnContractOnItsListingSessi
     EXPECT_FALSE(bars[0].cost_volume.has_value());
     EXPECT_EQ(bars[1].cost_volume, std::optional<double>(787.0)) << "the stub merged into the listing session";
     EXPECT_EQ(bars[2].cost_volume, std::optional<double>(162154.0)) << "MESM9's own, not ESM9's 1,865,666";
-    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session R6's series volume stands";
+    EXPECT_FALSE(bars[3].cost_volume.has_value()) << "after the listing session the series volume stands";
     for (size_t i = 0; i < stored.size(); ++i) EXPECT_EQ(bars[i].volume, stored[i].volume);
     for (size_t i = stored.size(); i < bars.size(); ++i) {
         EXPECT_EQ(bars[i].symbol, "ES.v.0");

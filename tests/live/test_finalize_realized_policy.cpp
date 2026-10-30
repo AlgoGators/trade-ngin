@@ -195,8 +195,8 @@ TEST_F(FinalizeRealizedPolicyTest, EquityRowKeepsTheLoadedTradeRealized) {
         << "fixture precondition: the mark move must differ from the trade realized "
            "or the restore is indistinguishable from the finalizer";
     EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6)
-        << "the T-1 row must carry the day's trade realized, not the mark move "
-           "(E2-F19 route 2 / E2-F20)";
+        << "the T-1 row must carry the day's trade realized, not the mark move"
+           ".";
     EXPECT_NEAR(only(r).unrealized_pnl.as_double(), kEqQty * (kEqT1 - kEqBasis), 1e-6)
         << "the mark belongs in daily_unrealized_pnl, measured against the cost basis";
 }

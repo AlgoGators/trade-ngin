@@ -470,8 +470,8 @@ TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
 
         EXPECT_NE(src.find("resolve_backtest_window"), std::string::npos)
             << rel << " does not call ConfigLoader::resolve_backtest_window, so its window is "
-                      "still computed inline and M-12 cannot freeze it";
-        EXPECT_NE(src.find("M-12 FROZEN BACKTEST WINDOW"), std::string::npos)
+                      "still computed inline and a frozen window cannot pin it";
+        EXPECT_NE(src.find("FROZEN BACKTEST WINDOW"), std::string::npos)
             << rel << " does not announce a frozen window, so a frozen run would be "
                       "indistinguishable from a production one in the log";
         // The inline arithmetic the helper replaced must be gone, or a runner

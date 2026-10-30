@@ -200,7 +200,7 @@ TEST(CostModelFeed, HundredShareTmusFillIsPricedInTheTenBpsBucketNotForty) {
     ASSERT_NEAR(fed.get_adv("TMUS"), kAdv, 1e-9);
     ASSERT_DOUBLE_EQ(unfed.get_adv("TMUS"), 0.0) << "unfed is the pre-fix state";
     ASSERT_DOUBLE_EQ(unfed.get_volatility_multiplier("TMUS"), 1.0)
-        << "no returns at all -> the transaction_cost_manager.cpp:37 default";
+        << "no returns at all -> the TransactionCostManager default";
     ASSERT_DOUBLE_EQ(fed.get_volatility_multiplier("TMUS"), 0.8)
         << "twenty exact-zero returns -> sigma 0 -> z -2 -> 1 + 0.15*-2 = 0.7, floored at 0.8";
 

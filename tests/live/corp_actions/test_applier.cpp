@@ -454,7 +454,7 @@ TEST(CorpActionsLongHoldTotalReturnTest, FourQuarterlyDividendsCaptureTotalRetur
     EXPECT_NEAR(mtm, 100.0 * (100.0 - expected_avg), 1e-6);
     EXPECT_GT(mtm, 380.0)
         << "Total return should be ~$390 (close to nominal 4% on $10K). "
-           "Pre-fix MTM would be exactly $0 -- §1.15 silent understatement.";
+           "Pre-fix MTM would be exactly $0 -- a silent understatement.";
     EXPECT_LT(mtm, 400.0);
 
     // Sanity: quantity is unchanged (dividends don't change share count).

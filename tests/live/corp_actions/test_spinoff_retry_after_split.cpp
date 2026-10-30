@@ -93,8 +93,8 @@ TEST(SpinoffRetryAfterSplit, SameRunLeavesTheRatiosAloneAndTellsTheBoundASplitIs
         << "on the same-run path the book is still PRE-split, so the vendor's ratios apply "
            "as written";
     EXPECT_DOUBLE_EQ(f.pending_split_factor, kSplit)
-        << "class 1 applies the reverse split after the routing block, and the G1 bound has "
-           "to divide by it before comparing basis to mark (E2-F48)";
+        << "class 1 applies the reverse split after the routing block, and the basis-vs-mark bound "
+           "has to divide by it before comparing basis to mark";
 }
 
 TEST(SpinoffRetryAfterSplit, AnAlreadyAppliedSplitScalesTheRatiosAndClearsThePendingFactor) {

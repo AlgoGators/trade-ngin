@@ -56,7 +56,7 @@ TEST(RealizedRowRetention, FlatRowWithNoRealizedIsDead) {
 TEST(RealizedRowRetention, ClosedRowCarryingRealizedIsKept) {
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(row("TMUS", 0.0, -402.654413)))
         << "an equity exit realizes its whole accumulated gain; the row that carries "
-           "it must survive the write (E2-F19 route 3)";
+           "it must survive the write";
 }
 
 // A held position that did not trade today: kept, as today.

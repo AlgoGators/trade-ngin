@@ -363,5 +363,5 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
             << "the email flag is put on by deliver_email_report (EmailDelivery.*)";
         blocks[i++] = block;
     }
-    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' C10b blocks differ";
+    EXPECT_EQ(blocks[0], blocks[1]) << "the twins' blocks differ";
 }

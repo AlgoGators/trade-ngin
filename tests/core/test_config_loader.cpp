@@ -524,8 +524,8 @@ TEST(LiveStalenessConfig, BothBoundsRoundTripThroughJson) {
 TEST(LiveStalenessConfig, OmittedKeysKeepTheDocumentedDefaults) {
     LiveSpecificConfig c;
     c.from_json(nlohmann::json{{"historical_days", 730}});
-    EXPECT_EQ(c.data_staleness_tolerance_days, 4) << "default unchanged (BA-11)";
-    EXPECT_EQ(c.execution_price_max_staleness_days, 5) << "default unchanged (BA-11)";
+    EXPECT_EQ(c.data_staleness_tolerance_days, 4) << "default unchanged";
+    EXPECT_EQ(c.execution_price_max_staleness_days, 5) << "default unchanged";
 }
 
 // The drift pin. A field the struct grows and the tracked template does not is a
@@ -855,8 +855,8 @@ TEST_F(ConfigLoaderTest, RemovedKeyUseRiskManagementIsALoadErrorWhereverItHides)
     EXPECT_EQ(load_error(minimal_risk(), portfolio_override),
               "config for TEST_PORTFOLIO: strategies.TREND_FOLLOWING.config.use_risk_management "
               "(use_risk_management) was removed in schema 2; risk is assigned by risk.json "
-              "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
-              "T-RISK-ARCH_ADVERSARIAL E2)");
+              "\"modules\". Delete the key (a leftover false would silently turn risk back on"
+              ")");
 }
 
 TEST_F(ConfigLoaderTest, RemovedKeyRiskDefaultsIsALoadError) {
@@ -1042,7 +1042,7 @@ TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
     risk2.erase("max_leverage");
     EXPECT_EQ(load_error(risk2),
               "risk config for TEST_PORTFOLIO: risk.max_leverage is required and must be > 0 (it "
-              "sizes the book: trend_following.cpp:1216)");
+              "sizes the book)");
     auto risk3 = minimal_risk();
     risk3["max_drawdown"] = 1.2;
     EXPECT_EQ(load_error(risk3),
@@ -1144,7 +1144,7 @@ TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
     ASSERT_TRUE(refused.is_error());
     EXPECT_EQ(std::string(refused.error()->what()),
               "Refusing to start: portfolio.json sets use_optimization=true, but the equity "
-              "runners do not run the optimizer (HD 2026-09-01; see the comment at the "
+              "runners do not run the optimizer (see the comment at the "
               "hard-code).");
 }
 

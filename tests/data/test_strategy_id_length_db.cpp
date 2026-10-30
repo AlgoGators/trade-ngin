@@ -100,7 +100,7 @@ protected:
         if (conn_.empty()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not set, so the "
-                          "E2-F36 identifier length behaviour goes unverified";
+                          "identifier length behaviour goes unverified";
             }
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
