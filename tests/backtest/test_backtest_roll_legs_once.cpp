@@ -24,7 +24,15 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
+
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/futures.hpp"
+// The results-row test registers XA (the P&L's point value) and puts the registry back as it was.
+#define private public
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#undef private
 
 #include "../core/test_base.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
@@ -34,6 +42,8 @@
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/per_contract_source.hpp"
 #include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/futures.hpp"
+#include "trade_ngin/live/live_statistics_columns.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
@@ -246,6 +256,140 @@ TEST_F(BacktestRollLegsOnceTest, TheRunsSplitTotalsAreSetWithTheSwitchOn) {
     EXPECT_EQ(rows_of(ExecutionType::ROLL).size(), 2u) << "the vendor-series roll is still legged";
     for (const auto& leg : rows_of(ExecutionType::ROLL)) EXPECT_FALSE(leg.roll_bar_move.has_value());
     EXPECT_EQ(count_lines("ROLL_SPLIT_TOTALS rolls=0 roll_bar_moves=0.000000 roll_gap_values=0.000000"), 1u);
+}
+
+// R4b audit A recheck R1: the results row carries the run's two split totals. The bar source hands
+// XA's change bar out with the per-contract roll field (a roll known on its bar, the old contract's
+// close 3 points under the new one's), so the run books a roll with a split; the cells the
+// coordinator hands the results row must be the run's sums over its rows, as stored.
+namespace {
+constexpr double kGapPoints = 3.0;
+
+class RollFieldDb : public ServingDb {
+public:
+    using ServingDb::ServingDb;
+
+    Result<std::shared_ptr<arrow::Table>> get_market_data(
+        const std::vector<std::string>& symbols, const Timestamp& start_date,
+        const Timestamp& end_date, AssetClass asset_class, DataFrequency freq = DataFrequency::DAILY,
+        const std::string& data_type = "ohlcv") override {
+        auto served =
+            ServingDb::get_market_data(symbols, start_date, end_date, asset_class, freq, data_type);
+        if (served.is_error()) return served;
+        auto table = served.value();
+        auto symbol = std::static_pointer_cast<arrow::StringArray>(
+            table->GetColumnByName("symbol")->chunk(0));
+        auto time = std::static_pointer_cast<arrow::TimestampArray>(
+            table->GetColumnByName("time")->chunk(0));
+        const auto change_bar = std::chrono::duration_cast<std::chrono::seconds>(
+                                    trading_day(kChangeBar).time_since_epoch())
+                                    .count();
+        arrow::DoubleBuilder close;
+        arrow::StringBuilder id, date;
+        arrow::Int8Builder kind;
+        for (int64_t i = 0; i < table->num_rows(); ++i) {
+            if (symbol->GetString(i) == kXA && time->Value(i) == change_bar) {
+                ARROW_CHECK_OK(close.Append(close_of(kXA, kChangeBar) - kGapPoints));
+                ARROW_CHECK_OK(id.Append(kOldId));
+                ARROW_CHECK_OK(kind.Append(static_cast<int8_t>(RollFromKind::KNOWN)));
+                ARROW_CHECK_OK(date.Append(ymd(kChangeBar)));
+            } else {
+                ARROW_CHECK_OK(close.AppendNull());
+                ARROW_CHECK_OK(id.AppendNull());
+                ARROW_CHECK_OK(kind.AppendNull());
+                ARROW_CHECK_OK(date.AppendNull());
+            }
+        }
+        std::shared_ptr<arrow::Array> c, i, k, d;
+        ARROW_CHECK_OK(close.Finish(&c));
+        ARROW_CHECK_OK(id.Finish(&i));
+        ARROW_CHECK_OK(kind.Finish(&k));
+        ARROW_CHECK_OK(date.Finish(&d));
+        auto add = [&table](const std::string& name, const std::shared_ptr<arrow::DataType>& type,
+                            const std::shared_ptr<arrow::Array>& array) {
+            table = table
+                        ->AddColumn(table->num_columns(), arrow::field(name, type),
+                                    std::make_shared<arrow::ChunkedArray>(array))
+                        .ValueOrDie();
+        };
+        add("roll_from_close", arrow::float64(), c);
+        add("roll_from_id", arrow::utf8(), i);
+        add("roll_from_kind", arrow::int8(), k);
+        add("roll_from_date", arrow::utf8(), d);
+        return Result<std::shared_ptr<arrow::Table>>(table);
+    }
+};
+}  // namespace
+
+class BacktestResultsRowSplitTest : public BacktestRollLegsOnceTest {
+protected:
+    void SetUp() override {
+        BacktestRollLegsOnceTest::SetUp();
+        db_ = std::make_shared<RollFieldDb>("mock://testdb");
+        ASSERT_TRUE(db_->connect().is_ok());
+        // The P&L's point value (the split's multiplier) comes from the instrument: XA, 50 a point.
+        FuturesSpec spec;
+        spec.root_symbol = "XA";
+        spec.exchange = "CME";
+        spec.currency = "USD";
+        spec.multiplier = 50.0;
+        spec.tick_size = 0.25;
+        spec.initial_margin = 1.0;
+        spec.maintenance_margin = 1.0;
+        spec.weight = 1.0;
+        spec.trading_hours = "09:30-16:00";
+        auto& registry = InstrumentRegistry::instance();
+        saved_instruments_ = registry.instruments_;
+        saved_initialized_ = registry.initialized_;
+        registry.instruments_["XA"] = std::make_shared<FuturesInstrument>("XA", spec);
+        registry.initialized_ = true;
+    }
+    void TearDown() override {
+        BacktestRollLegsOnceTest::TearDown();
+        auto& registry = InstrumentRegistry::instance();
+        registry.instruments_ = saved_instruments_;
+        registry.initialized_ = saved_initialized_;
+    }
+
+    std::unordered_map<std::string, std::shared_ptr<Instrument>> saved_instruments_;
+    bool saved_initialized_ = false;
+};
+
+TEST_F(BacktestResultsRowSplitTest, TheResultsRowCarriesTheRunsTwoSplitTotals) {
+    contract_rolls::PerContractSource::instance().enable(contract_rolls::FuturesCalendar{});
+    const bool ok = run_rows(rows(), nullptr);
+    contract_rolls::PerContractSource::instance().disable();
+    ASSERT_TRUE(ok);
+    const auto legs = rows_of(ExecutionType::ROLL);
+    ASSERT_EQ(legs.size(), 2u);
+    double moves = 0.0, gaps = 0.0;
+    int with_split = 0;
+    for (const auto& leg : legs) {
+        if (!leg.roll_bar_move) continue;
+        ++with_split;
+        moves += *leg.roll_bar_move;
+        gaps += *leg.roll_gap_value;
+        EXPECT_NEAR(*leg.roll_gap_points, kGapPoints, 1e-9);
+    }
+    ASSERT_EQ(with_split, 1) << "one roll, its split on the closing leg";
+    // Long 2 x 50: the old contract's move from day 29 to its own close on the change bar, and the gap.
+    EXPECT_NEAR(moves, 2.0 * 50.0 * (close_of(kXA, kChangeBar) - kGapPoints - close_of(kXA, kChangeBar - 1)),
+                1e-6);
+    EXPECT_NEAR(gaps, 2.0 * 50.0 * kGapPoints, 1e-9);
+    ASSERT_NE(moves, 0.0);
+
+    auto saved = coord_->save_portfolio_results_to_db(results_, {"ROLL_A"}, {{"ROLL_A", 1.0}}, pm_,
+                                                      nlohmann::json::object());
+    ASSERT_TRUE(saved.is_ok()) << saved.error()->what();
+    ASSERT_EQ(db_->call_count("store_backtest_summary"), 1);
+    std::map<std::string, std::optional<std::string>> cell;
+    for (const auto& stored : db_->last_backtest_summary_cells) cell[stored.column] = stored.value;
+    ASSERT_EQ(cell.count("roll_bar_moves"), 1u) << "the results row names the run's roll_bar_moves";
+    ASSERT_EQ(cell.count("roll_gap_values"), 1u);
+    ASSERT_TRUE(cell.at("roll_bar_moves"));
+    ASSERT_TRUE(cell.at("roll_gap_values"));
+    EXPECT_EQ(*cell.at("roll_bar_moves"), live_results_number(moves).value_or(""));
+    EXPECT_EQ(*cell.at("roll_gap_values"), live_results_number(gaps).value_or(""));
 }
 
 // The sleeve's own fills are untouched by the roll: the one STRATEGY fill is the open on cycle 10,

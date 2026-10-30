@@ -1147,8 +1147,8 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
         << body;
     EXPECT_LT(body.find("<th>Roll Leg</th>"), body.find("Micro Bitcoin Futures, April to May")) << "under the legs";
     EXPECT_NE(body.find("<p style=\"margin: 4px 0; font-size: 13px;\">Micro E-mini S&P500 Index, September to December: "
-                        "roll cost $2.62 (market move and contract price difference shown once the full-size contracts "
-                        "are loaded).</p>"),
+                        "roll cost $2.62 (the market move and the price difference between the two contracts are not "
+                        "shown for this contract yet).</p>"),
               std::string::npos)
         << "a roll of the vendor's series gets its cost-only line (R4B fix round 1)";
     EXPECT_NE(body.find("<li><strong>QZT:</strong> Currently holding <strong>QZTM6</strong> \xE2\x86\x92 Switch to "
@@ -1169,7 +1169,7 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
         {}, nullptr, settled, t1, t2, {}, "LIVE_TREND_FOLLOWING",
         over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012), off);
     for (const char* absent : {"Micro Bitcoin Futures, April", "Rollover Notice", "rolled to the next one before",
-                               "The old contract's move that day is booked", "shown once the full-size"}) {
+                               "The old contract's move that day is booked", "not shown for this contract yet"}) {
         EXPECT_EQ(off_body.find(absent), std::string::npos) << absent;
     }
     EXPECT_NE(off_body.find("We currently only provide data for the front-month contract"), std::string::npos);
