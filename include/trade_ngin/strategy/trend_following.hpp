@@ -11,6 +11,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/carry_estimator.hpp"
 #include "trade_ngin/strategy/trend_estimator.hpp"
 #include "trade_ngin/strategy/vol_annualisation.hpp"
 
@@ -47,6 +48,15 @@ struct TrendFollowingConfig {
     // removed from a ruled symbol: anything else is refused when the sleeve is built. Empty: every
     // contract runs every pair. The runner sets it from portfolio.json's trading_rule_removals.
     std::map<std::string, std::vector<std::pair<int, int>>> rule_removals;
+    // Carry (trade-ngin #185; Carver, strategies ten and eleven): the carry style's weight in the
+    // blend (0 is off: every value is today's), its spans and its forecast scalar. With weight above
+    // 0 an instrument whose window holds a carry quote trades FDM x ((1 - weight) x its trend average
+    // + weight x its carry average), capped at 20, the FDM table 52's for its number of rules
+    // (carry_estimator.hpp); an instrument with no quote yet trades its trend forecast alone. The
+    // runner sets them on the book's first sleeve from portfolio.json's carry block.
+    double carry_weight{0.0};
+    std::vector<int> carry_spans{5, 20, 60, 120};
+    double carry_scalar{30.0};
 };
 
 /**
@@ -84,6 +94,7 @@ struct InstrumentData {
     std::deque<Timestamp> bar_timestamps;  // each price_history bar's date (vol annualisation)
     std::deque<std::string> bar_instrument_ids;  // each bar's vendor contract id (T-ROLLX, roll_series.hpp)
     std::deque<std::optional<RollFrom>> bar_roll_from;  // each bar's roll field (rolls step 3)
+    std::deque<std::optional<CarryQuote>> bar_carry;     // each bar's carry quote (trade-ngin #185)
     std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
@@ -93,6 +104,7 @@ struct InstrumentData {
     std::deque<Timestamp> seeded_timestamps;
     std::deque<std::string> seeded_instrument_ids;
     std::deque<std::optional<RollFrom>> seeded_roll_from;
+    std::deque<std::optional<CarryQuote>> seeded_carry;
 
     // The estimators at the last signal bar (trend_estimator.hpp), and the position they size
     // before any limit: (forecast / 10) x capital x IDM x weight x tau / (multiplier x price x
@@ -109,7 +121,14 @@ struct InstrumentData {
     std::vector<double> opt_closes;
     std::vector<double> opt_levels;
     double optimal_position = 0.0;
-    bool slow_rule_zeroed = false;  // the equity slow rule set the last forecast to 0
+    // the equity slow rule set the last forecast to 0 (with carry on: the trend part of the blend)
+    bool slow_rule_zeroed = false;
+    // Carry (trade-ngin #185), with carry on: the carry rules and the blend at the last signal bar,
+    // and whether the blend was used (false: no carry quote yet in the window, the trend alone).
+    carry_estimator::Estimate carry;
+    carry_estimator::Blend blend;
+    bool carry_used = false;
+    double trend_part_ruled = 0.0;  // the trend speeds' average after the equity slow rule
 
     // Timestamp of last update
     Timestamp last_update;
@@ -225,6 +244,12 @@ public:
     /// trend_estimator::kWindowBars (a symbol with less history starts at its first bar).
     const std::map<std::string, std::size_t>& short_window_rows() const { return short_window_rows_; }
 
+    /// Carry (trade-ngin #185): whether this sleeve trades the blend (carry weight above 0).
+    bool carry_on() const { return trend_config_.carry_weight > 0.0; }
+
+    /// Carry (trade-ngin #185): the carry-driven equity shorts of this run, per symbol.
+    const std::map<std::string, std::size_t>& carry_driven_shorts() const { return carry_driven_shorts_; }
+
     /**
      * @brief Get target positions from instrument data
      * @note Overrides base class to return positions calculated from instrument_data_
@@ -297,6 +322,11 @@ private:
     /// Per symbol, the bars of this run sized on an estimator window shorter than
     /// trend_estimator::kWindowBars (LOOP_SPEC section 1: flagged and counted).
     std::map<std::string, std::size_t> short_window_rows_;
+    /// Carry (trade-ngin #185): per symbol, the TRADEABLE signal bars of this run on which an equity
+    /// symbol the slow rule names went short on the blend while its trend part alone was not short
+    /// (HD's Q1: carry-driven equity shorts are allowed, counted and reported). A bar outside the
+    /// symbol's tradeable window (listing dates) is not counted.
+    std::map<std::string, std::size_t> carry_driven_shorts_;
 
     // Previous day positions for PnL calculation
 
