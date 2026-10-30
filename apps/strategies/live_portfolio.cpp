@@ -2036,7 +2036,7 @@ int main(int argc, char* argv[]) {
             price_manager->get_all_previous_day_prices(), roll_state.late);
 
         // ========================================
-        // SIZING CAPITAL (T-7b-2 9c; HD 2026-09-25, compounding)
+        // SIZING CAPITAL (half compounding)
         // The book is sized on the account's equity at the close of T-1, the bar the strategies
         // size from, the quantity the futures backtest sizes on (its equity curve's last row).
         // Day T-1 is finalised only in STEP 4, after the rebalance, so it is rebuilt here from
@@ -2393,7 +2393,7 @@ int main(int argc, char* argv[]) {
             // EVERY sleeve is seeded from its OWN stored rows (seed_positions +
             // update_strategy_position per row; see include/trade_ngin/live/sleeve_seeding.hpp), so
             // no sleeve is anchored at zero or at whatever the PM holds.
-            // NOTE (ledger BASE-opposite-sleeve-anchor): two sleeves holding OPPOSITE signs on one
+            // NOTE: two sleeves holding OPPOSITE signs on one
             // symbol are each seeded with their own signed row, so the optimizer's anchor is the
             // net while each sleeve's execution diff is gross.
             {
@@ -2422,7 +2422,7 @@ int main(int argc, char* argv[]) {
             // Disable MarketDataBus to prevent duplicate processing during explicit data feed
             MarketDataBus::instance().set_publish_enabled(false);
             INFO("MarketDataBus publishing DISABLED before process_market_data");
-            // JUNK (T-7a C4): a withheld T-1 bar (K-01) is kept out of the strategy and the
+            // JUNK: a withheld T-1 bar is kept out of the strategy and the
             // portfolio stage, so its signal is not updated today, and it is never fed on a later
             // run either. The price manager already has every bar: the mark uses it.
             // The feed (strategy_feed_bars) is built above the cost feed.
@@ -2518,7 +2518,7 @@ int main(int argc, char* argv[]) {
                 sizing_hold ? Result<void>() : portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
             MarketDataBus::instance().set_publish_enabled(true);
-            // T-RISK-ARCH Q2 (ruled yes): a portfolio-scope risk REFUSE is found here, after
+            // PORTFOLIO RISK REFUSE: a portfolio-scope risk REFUSE is found here, after
             // today's live_run_metadata row was written. That row records a run that did
             // happen, so it is marked, not deleted: the same row is written again with the
             // refusal and the PM's decision record in its portfolio_config JSON. Placed before
@@ -2542,7 +2542,7 @@ int main(int argc, char* argv[]) {
                     INFO("Marked today's live_run_metadata row with the risk refusal");
                 }
             }
-            // T-7a C5 (HD 2026-09-21, option b): a portfolio risk module that could not evaluate
+            // PORTFOLIO RISK MODULE FAILURE: a portfolio risk module that could not evaluate
             // the book refused the scope, so the PM holds every strategy at its seeded T-1 book
             // and no order follows. The run goes on to store the day as it stores any REFUSE day
             // (the row above is marked) and exits non-zero at the end, with the email flagged.
@@ -2556,7 +2556,7 @@ int main(int argc, char* argv[]) {
                       "the day is stored as a REFUSE day and the run exits " +
                       std::to_string(kRiskModuleFailureExitCode));
             }
-            // T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope risk module that could not
+            // SLEEVE RISK MODULE FAILURE: a SLEEVE-scope risk module that could not
             // answer refused its sleeve, as the portfolio rule does for the book: the PM held that
             // sleeve at its seeded T-1 book (no order for it) and the other sleeves traded. The day
             // is flagged as a portfolio failure is (the same exit code and email flag, which the
@@ -2739,7 +2739,7 @@ int main(int argc, char* argv[]) {
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
 
         // ========================================
-        // PREVIOUS DAY PER-STRATEGY BOOKS (Option A)
+        // PREVIOUS DAY PER-STRATEGY BOOKS
         // Loaded once, here, and used by both the book gate below and the execution step
         // (the gate holds against the exact map the executions are diffed against).
         // ========================================
@@ -2773,7 +2773,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // A LATE BAR (HD 2026-10-07: a warning, no catch-up and no refusal). A held symbol's bar
+        // A LATE BAR (a warning, no catch-up and no refusal). A held symbol's bar
         // that arrived after the run that should have settled it: the stored row of its date books
         // 0 and this run settles Day T-1 against its close, so its own move is on no stored row.
         // The run that first consumes it names it once (live/late_bar_warning.hpp). Nothing stored
@@ -2813,7 +2813,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
-        // BOOK GATE (T-7a C4; HD 2026-09-17, STAGE3_PLAN §27; T-4c J1 as re-keyed)
+        // BOOK GATE
         // A symbol whose T-1 verdict is not SESSION is held at its stored T-1 quantity on EVERY
         // per-strategy book: no signal-driven change, no order, marked at its last mark (NO_BAR)
         // or at its T-1 bar (JUNK). The key is the verdict, never membership of the price map:
@@ -3066,7 +3066,7 @@ int main(int argc, char* argv[]) {
         // ========================================
         // PHASE 4: PER-STRATEGY EXECUTIONS GENERATION
         // Generate executions for each strategy based on their position changes
-        // Load previous positions per-strategy (Option A)
+        // Load previous positions per-strategy
         // ========================================
         INFO("PHASE 4: Generating per-strategy executions...");
 
@@ -3080,7 +3080,7 @@ int main(int argc, char* argv[]) {
         // added up in that order, after the netting below.
         std::vector<std::string> sleeves_filled;
 
-        // PricingPolicy::STRICT (T-7a C4): a fill is priced from a real T-1 close or not at
+        // PricingPolicy::STRICT: a fill is priced from a real T-1 close or not at
         // all. With the book gate above every changed symbol has one, so nothing is unpriced
         // by construction; a symbol that still is gets its stored row back (the rollback of
         // LiveDailyCycle::execute_day_t), is logged as a tripwire, and the assertion after the
@@ -3130,7 +3130,7 @@ int main(int argc, char* argv[]) {
                         return o.str();
                     };
                     for (const auto& r : confirmed_rolls) {
-                        if (r.price_source_change) continue;  // R6: no legs, no cost
+                        if (r.price_source_change) continue;  // no legs, no cost
                         const auto held = prev_positions_map.find(r.symbol);
                         if (held == prev_positions_map.end()) continue;
                         const double q = held->second.quantity.as_double();
@@ -3213,7 +3213,7 @@ int main(int argc, char* argv[]) {
                 // This sleeve books no leg today, and the stored state moves on,
                 // so a roll owed to it would never be legged. A STOP, never a loss.
                 for (const auto& r : confirmed_rolls) {
-                    if (r.price_source_change) continue;  // R6: nothing to leg
+                    if (r.price_source_change) continue;  // nothing to leg
                     const auto held = prev_positions_map.find(r.symbol);
                     if (held == prev_positions_map.end() ||
                         std::abs(held->second.quantity.as_double()) < 1e-9) {
@@ -4027,7 +4027,7 @@ int main(int argc, char* argv[]) {
             double yesterday_total_cumulative_return_pct =
                 yesterday_total_cumulative_return;  // Already in %
 
-            // T-8D R21: the four cells of the Day T-1 row that divide by the portfolio value
+            // The four cells of the Day T-1 row that divide by the portfolio value
             // (equity_to_margin_ratio, margin_cushion, net_leverage, portfolio_leverage) are
             // recomputed by the UPDATE below on the finalised value, from the row's own stored
             // margin_posted, gross_notional and net_notional (live/margin_columns.hpp), so the
@@ -4835,7 +4835,7 @@ int main(int argc, char* argv[]) {
                     one_pass_day.stores_detail(), one_pass_day.sizing_capital, !sizing_hold,
                     sizing_capital_read.capital.capital),
                 active_positions, gross_notional, net_notional);
-            // T-7a C4: the day's T-1 classification (counts, feed holes, held symbols).
+            // The day's T-1 classification (counts, feed holes, held symbols).
             report_config_json["t1_classification"] =
                 t1_classification.to_json(held_symbols(book_holds));
 

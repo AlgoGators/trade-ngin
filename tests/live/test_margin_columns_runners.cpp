@@ -143,7 +143,7 @@ TEST(MarginColumnsRunners, TheFuturesRunnersFinalizeTheFourCellsIdentically) {
     if (a.empty() || b.empty()) {
         GTEST_SKIP() << "runner source not found from the test working directory";
     }
-    const char* const kFrom = "// T-8D R21: the four cells of the Day T-1 row";
+    const char* const kFrom = "// The four cells of the Day T-1 row";
     const char* const kTo = "INFO(\"Executing UPDATE query for Day T-1 live_results...\");";
     const auto a0 = a.find(kFrom), a1 = a.find(kTo);
     const auto b0 = b.find(kFrom), b1 = b.find(kTo);

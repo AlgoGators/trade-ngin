@@ -352,7 +352,7 @@ TEST(SleeveSeedingSource, BothTwinsSeedEverySleeveThroughTheHelperBeforeTheRebal
         EXPECT_LT(call, process) << "every sleeve must be seeded BEFORE the day's rebalance";
         const auto loader = src.find("combined_strategy_id, seed_strategy_name,", call);
         EXPECT_NE(loader, npos) << "each sleeve must be read under its own strategy_name";
-        EXPECT_NE(src.find("BASE-opposite-sleeve-anchor", gate), npos)
+        EXPECT_NE(src.find("// NOTE: two sleeves holding OPPOSITE signs", gate), npos)
             << "the opposite-sleeve NOTE belongs at the seed site";
     }
 }

@@ -137,9 +137,9 @@ TEST(SpinoffRefusalBound, TheRefusedSpinoffParentIsInsideTheBasisVsMarkBound) {
     // The bound on refused events iterates ONE list built from both refusal paths, and the
     // spinoff half is in it: a loop over `events` alone would never see a suppressed spinoff
     // parent.
-    const auto guard = src.find("E2-F17 / G3 -- THE SAME BOUND, ON THE EVENTS WE REFUSED.");
+    const auto guard = src.find("THE SAME BOUND, ON THE EVENTS WE REFUSED.");
     ASSERT_NE(guard, std::string::npos) << "the G3 bound is gone entirely";
-    const auto guard_end = src.find("E2-F19 cleanup", guard);
+    const auto guard_end = src.find("// CLEANUP: nothing to persist", guard);
     ASSERT_NE(guard_end, std::string::npos);
     const std::string block = src.substr(guard, guard_end - guard);
 

@@ -457,7 +457,7 @@ TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
         EXPECT_NE(src.find("WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));"),
                   npos)
             << "the line is not printed at WARNING with the symbol's point value";
-        blocks.push_back(between(src, "// A LATE BAR (HD 2026-10-07", "// BOOK GATE (T-7a C4"));
+        blocks.push_back(between(src, "// A LATE BAR (a warning", "// BOOK GATE"));
     }
     ASSERT_EQ(blocks.size(), 2u);
     ASSERT_FALSE(blocks[0].empty());

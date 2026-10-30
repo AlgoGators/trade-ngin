@@ -297,7 +297,7 @@ TEST(ListingRunnerWiring, BothBacktestRunnersStoreOnlyTheRelabelsTheRunRead) {
         const size_t at = src.find(store);
         ASSERT_NE(at, std::string::npos) << runner;
         EXPECT_EQ(src.find(store, at + 1), std::string::npos) << runner << ": one writer of the stored key";
-        const size_t from = src.rfind("            // the relabels the run read (none with per_contract_rolls on, R6)", at);
+        const size_t from = src.rfind("            // the relabels the run read (none with per_contract_rolls on)", at);
         ASSERT_NE(from, std::string::npos) << runner;
         const std::string hunk = src.substr(from, at + store.size() - from);
         EXPECT_NE(hunk.find("const auto read = relabels_read(app_config.instrument_id_relabels, "

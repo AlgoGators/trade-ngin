@@ -1166,9 +1166,9 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     for (int i = 0; i < 2; ++i) {
         const std::string src = read_source(runners[i]);
         ASSERT_FALSE(src.empty()) << runners[i];
-        blocks[i] = between(src, "// SIZING CAPITAL (T-7b-2 9c", "// STORE LIVE RUN METADATA");
+        blocks[i] = between(src, "// SIZING CAPITAL (half compounding)", "// STORE LIVE RUN METADATA");
         ASSERT_FALSE(blocks[i].empty()) << runners[i] << ": no sizing block before the metadata row";
-        const auto block_at = src.find("// SIZING CAPITAL (T-7b-2 9c");
+        const auto block_at = src.find("// SIZING CAPITAL (half compounding)");
         EXPECT_LT(block_at, src.find("portfolio->process_market_data(")) << runners[i];
         // The book is sized on the half-compounded capital the read returns,
         // never on the account's rebuilt value.

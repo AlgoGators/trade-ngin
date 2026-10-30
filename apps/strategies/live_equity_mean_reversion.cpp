@@ -2967,7 +2967,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
-                    // E2-F17 / G3 -- THE SAME BOUND, ON THE EVENTS WE REFUSED.
+                    // THE SAME BOUND, ON THE EVENTS WE REFUSED.
                     //
                     // The bound above iterates `adjustments`, i.e. events that WERE applied, so a
                     // SKIP is invariant-free. That asymmetry is dangerous because a skip is
@@ -3033,7 +3033,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
-                    // E2-F19 cleanup: nothing to persist when no event applied. The
+                    // CLEANUP: nothing to persist when no event applied. The
                     // placeholder rows this block writes are dated today and carry the
                     // loaded book; writing them with zero adjustments would let a
                     // stale book survive an empty day-T write.
@@ -3079,7 +3079,7 @@ int main(int argc, char* argv[]) {
                     // write lost -- would leave the next run free to re-apply every
                     // event, re-multiplying quantities and re-rescaling basis.
                     // Either both land or neither does.
-                    run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)
+                    run_metadata_row.write_once();  // the run's first write
                     auto unit = db->begin_unit_of_work();
                     if (unit.is_error()) {
                         ERROR("Cannot open a unit of work for corp-action persistence: " +
@@ -4810,7 +4810,7 @@ int main(int argc, char* argv[]) {
 
             double yesterday_total_cumulative_return_pct = yesterday_total_cumulative_return;  // Already in %
 
-            // T-8D R21: the four cells of the Day T-1 row that divide by the portfolio value
+            // The four cells of the Day T-1 row that divide by the portfolio value
             // (equity_to_margin_ratio, margin_cushion, net_leverage, portfolio_leverage) are
             // recomputed by the UPDATE below on the finalised value, from the row's own stored
             // margin_posted, gross_notional and net_notional (live/margin_columns.hpp), so the

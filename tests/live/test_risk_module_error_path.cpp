@@ -537,7 +537,7 @@ TEST(RiskModuleErrorPathSource, TheTwinsCarryTheSameErrorPathBlocks) {
     const std::pair<const char*, const char*> blocks[] = {
         {"        // Set when a portfolio risk module could not answer",
          "        // NORMAL TRADING DAY PROCESSING"},
-        {"            // T-7a C5 (HD 2026-09-21, option b)",
+        {"            // PORTFOLIO RISK MODULE FAILURE",
          "            if (port_process_result.is_error())"},
         {"                    // The day's flags, then the body file or the one send",
          "                    if (!delivery.ok) {"},

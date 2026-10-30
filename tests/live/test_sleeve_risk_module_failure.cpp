@@ -346,7 +346,7 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
         EXPECT_LT(sleeve_detect, error_check)
             << "read before the error check, so an unseeded sleeve's failure (exit 1) is logged";
         const std::string block =
-            between(src, "            // T-7b-2 C10b (HD 2026-09-24 ruling 18)",
+            between(src, "            // SLEEVE RISK MODULE FAILURE",
                     "            if (port_process_result.is_error())");
         ASSERT_FALSE(block.empty());
         EXPECT_NE(block.find("if (!risk_module_failure) {"), npos);

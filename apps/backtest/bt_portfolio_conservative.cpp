@@ -632,7 +632,7 @@ int main() {
                 portfolio_config_json, app_config.backtest.lookback_years,
                 app_config.backtest.frozen_end_date, backtest_results.warmup_days,
                 backtest_results.statistics_sessions_per_year);
-            // the relabels the run read (none with per_contract_rolls on, R6)
+            // the relabels the run read (none with per_contract_rolls on)
             const auto read = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);
             if (!read.empty()) {
                 auto relabels = nlohmann::json::array();

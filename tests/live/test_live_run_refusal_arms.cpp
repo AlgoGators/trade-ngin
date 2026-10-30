@@ -406,7 +406,7 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpAction
     }
     // The first write point is the line above the run's first other store, the corp-action unit
     // of work; the second is below the class-1 block and above the lifecycle handlers.
-    EXPECT_NE(src.find("run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)\n"
+    EXPECT_NE(src.find("run_metadata_row.write_once();  // the run's first write\n"
                        "                    auto unit = db->begin_unit_of_work();"),
               npos);
     const auto unit = src.find("auto unit = db->begin_unit_of_work();");

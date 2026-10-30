@@ -151,7 +151,7 @@ TEST(BaseBusOffSource, TheBaseDirectCallIsBracketedByTheSameGuardAsConservative)
     if (base.empty() || cons.empty()) GTEST_SKIP() << "runner source not found";
     const std::string from =
         "            INFO(\"Processing data through portfolio manager (optimization + risk)...\");";
-    const std::string to = "            // T-RISK-ARCH Q2 (ruled yes)";
+    const std::string to = "            // PORTFOLIO RISK REFUSE";
     const std::string base_call = between(base, from, to);
     const std::string cons_call = between(cons, from, to);
     ASSERT_FALSE(cons_call.empty());

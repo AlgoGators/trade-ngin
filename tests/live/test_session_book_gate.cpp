@@ -570,10 +570,10 @@ TEST(SessionBookGateSource, TheTwinsCarryTheSameClassifierGateAndStrictBlocks) {
         {"bool is_yesterday_holiday = holiday_checker.is_holiday(", "// STORE LIVE RUN METADATA"},
         {"if (early_previous_day_close_prices.empty() || no_t1_bar_consumed) {",
          "// UPDATE TRANSACTION COST MANAGER WITH MARKET DATA"},
-        {"// JUNK (T-7a C4):", "// T-RISK-ARCH Q2 (ruled yes)"},
-        {"// PREVIOUS DAY PER-STRATEGY BOOKS (Option A)", "// PHASE 5: PER-STRATEGY DAY T-1"},
-        {"// PricingPolicy::STRICT (T-7a C4)", "// Store executions for each strategy"},
-        {"// T-7a C4: the day's T-1 classification", "// Create SQL insert for live_results"},
+        {"// JUNK:", "// PORTFOLIO RISK REFUSE"},
+        {"// PREVIOUS DAY PER-STRATEGY BOOKS", "// PHASE 5: PER-STRATEGY DAY T-1"},
+        {"// PricingPolicy::STRICT:", "// Store executions for each strategy"},
+        {"// The day's T-1 classification", "// Create SQL insert for live_results"},
     };
     for (const auto& [from, to] : blocks) {
         SCOPED_TRACE(from);
