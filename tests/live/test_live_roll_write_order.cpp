@@ -429,3 +429,26 @@ TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
         EXPECT_NE(block.find("report_tick_size);"), npos) << runner;
     }
 }
+
+// R6 (HD 2026-10-26): both live runners book no ROLL legs and owe none for a micro's change of price
+// source (ConfirmedRoll::price_source_change): the leg loop and the F-3 stop both skip it, and the run
+// logs it as a PRICE_SOURCE_CHANGE line with its gap instead of ROLL_CONFIRMED.
+TEST(LiveRollWriteOrder, AChangeOfPriceSourceIsNeitherLeggedNorOwed) {
+    for (const char* runner : {"apps/strategies/live_portfolio.cpp", "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        EXPECT_NE(src.find("                    for (const auto& r : confirmed_rolls) {\n"
+                           "                        if (r.price_source_change) continue;  // R6: no legs, no cost\n"
+                           "                        const auto held = prev_positions_map.find(r.symbol);"),
+                  std::string::npos)
+            << runner << ": the leg loop skips it";
+        EXPECT_NE(src.find("                for (const auto& r : confirmed_rolls) {\n"
+                           "                    if (r.price_source_change) continue;  // R6: nothing to leg"),
+                  std::string::npos)
+            << runner << ": the F-3 stop does not wait for its legs";
+        const size_t logged = src.find("INFO(\"PRICE_SOURCE_CHANGE \" + r.symbol");
+        const size_t confirmed = src.find("INFO(\"ROLL_CONFIRMED \" + r.symbol");
+        ASSERT_NE(logged, std::string::npos) << runner;
+        EXPECT_LT(logged, confirmed) << runner << ": logged in the same loop, before the rolls' line";
+    }
+}

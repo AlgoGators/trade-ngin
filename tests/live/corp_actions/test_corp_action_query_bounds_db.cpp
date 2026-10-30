@@ -412,10 +412,22 @@ std::vector<SilentClass1Row> scan_silent_class1(const std::string& conn,
 // happened.
 TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUniverse) {
     const auto universe = tripwire_universe(conn_string_);
-    ASSERT_GE(universe.size(), 500u)
+    // R6: the scan set is every symbol of the table's bar era, whatever the copy holds (the reference
+    // clone's ~850; the tuning copy's equity table holds 30), and never only the configured names.
+    size_t in_table = 0;
+    {
+        pqxx::connection c(conn_string_);
+        pqxx::work w(c);
+        in_table = w.exec("SELECT count(DISTINCT symbol) FROM equities_data.ohlcv_1d WHERE time >= $1::date",
+                          pqxx::params{std::string(kBarEraFloor)})[0][0]
+                       .as<size_t>();
+        w.commit();
+    }
+    ASSERT_GE(universe.size(), in_table) << "the scan set misses symbols of the table";
+    ASSERT_GT(universe.size(), 10u)
         << "the scan set is " << universe.size()
         << " symbols; E2-F41 is precisely that the ten configured names hide the class, so a "
-           "small set here proves nothing";
+           "set no larger proves nothing";
 
     const auto silent = scan_silent_class1(conn_string_, universe);
 
@@ -454,9 +466,34 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
            "grow unnoticed -- if the feed has degraded, raise it deliberately and say why; if "
            "a configured symbol is now among them, the run-time E2-F41 cross-check will name "
            "it every session.";
-    EXPECT_GT(silent_dividends, 0u)
-        << "no silent dividends at all means the scan is not reaching the table; E2-F41 "
-           "measured 87 on 2026-09-04";
+    // R6: the scan reaches the table. E2-F41 measured 87 silent dividends on 2026-09-04 on the reference
+    // clone; the tuning copy's 30 symbols have none. So the scan's count must equal the tables' own count
+    // (a direct query of every dividend with a flat bar on its ex-date in the bar era), and the scan must
+    // find at least one silent class-1 row on a bar (LEN's allowlisted spin-off on every copy that holds
+    // LEN's bars).
+    size_t direct_dividends = 0;
+    {
+        pqxx::connection c(conn_string_);
+        pqxx::work w(c);
+        direct_dividends =
+            w.exec("SELECT count(*) FROM equities_data.corporate_action ca JOIN equities_data.ohlcv_1d b "
+                   "ON b.symbol = ca.ticker AND b.time::date = ca.date::date WHERE ca.action = 'dividend' "
+                   "AND ca.date >= $1 AND COALESCE(b.split_factor, 1) = 1 AND COALESCE(b.div_cash, 0) = 0",
+                   pqxx::params{std::string(kBarEraFloor)})[0][0]
+                .as<size_t>();
+        w.commit();
+    }
+    size_t on_a_bar = 0;
+    for (const auto& s : silent) on_a_bar += s.has_bar;
+    EXPECT_GT(on_a_bar, 0u) << "no silent class-1 row on a bar at all means the scan is not reaching the table";
+    // R6 fix round 1 (audit A S3): with no silent dividend in the table the count check compares 0 with
+    // 0 and proves nothing: it is skipped, visibly, after every other check of the test has run.
+    if (direct_dividends == 0) {
+        GTEST_SKIP() << "the silent-dividend check is not judged: the table holds no dividend with a flat bar on "
+                        "its ex-date since "
+                     << kBarEraFloor << " (every other check of this test ran and passed)";
+    }
+    EXPECT_EQ(silent_dividends, direct_dividends) << "the scan is not reaching the table";
 }
 
 // The allowlist must never become a rubber stamp: every entry has to name a row
@@ -471,12 +508,35 @@ TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsSti
     for (const auto& s : silent) {
         if (s.has_bar) observed.insert({s.ticker, s.date, s.action});
     }
+    // R6: an entry whose ticker has a bar on its date in this copy must be a silent class-1 row there,
+    // as before. An entry whose ticker has no bar that day (the tuning copy's equity table holds 30
+    // symbols: TT, MTCH, OXY, AMC, BIDU are not among them) exempts nothing in this copy; it must
+    // still name a corporate_action row that is really there. At least one entry is judged on its bar.
+    pqxx::connection c(conn_string_);
+    pqxx::work w(c);
+    size_t judged = 0;
     for (const auto& entry : allowlisted_silent_class1()) {
-        EXPECT_EQ(observed.count(entry), 1u)
-            << "allowlisted " << entry[0] << " " << entry[1] << " " << entry[2]
-            << " is no longer a silent class-1 row -- remove the exemption rather than "
-               "leaving it to cover a future one";
+        const bool bar = w.exec("SELECT 1 FROM equities_data.ohlcv_1d WHERE symbol = $1 AND time::date = $2::date",
+                                pqxx::params{entry[0], entry[1]})
+                             .size() > 0;
+        if (bar) {
+            ++judged;
+            EXPECT_EQ(observed.count(entry), 1u)
+                << "allowlisted " << entry[0] << " " << entry[1] << " " << entry[2]
+                << " is no longer a silent class-1 row -- remove the exemption rather than "
+                   "leaving it to cover a future one";
+        } else {
+            EXPECT_GT(w.exec("SELECT 1 FROM equities_data.corporate_action WHERE ticker = $1 AND date::date = "
+                             "$2::date AND action = $3",
+                             pqxx::params{entry[0], entry[1], entry[2]})
+                          .size(),
+                      0u)
+                << "allowlisted " << entry[0] << " " << entry[1] << " " << entry[2]
+                << " names no corporate_action row";
+        }
     }
+    w.commit();
+    EXPECT_GT(judged, 0u) << "no allowlisted entry has its bar in this copy: the allowlist is judged on nothing";
 }
 
 // (b) The other shape: no bar at all on the ex-date. The runner is loud about

@@ -256,3 +256,32 @@ TEST_F(ContractRollsApiDbTest, TheMicrosBeforeTheChangeAreWaitingOnData) {
     ASSERT_TRUE(from_change.is_ok()) << from_change.error()->what();
     EXPECT_EQ(from_change.value().days().front().held.raw_symbol, "MESH6");
 }
+
+// R6: with ES contract bars loaded, MES's series runs from the vendor's first bar on ES contracts and
+// rolls once into MES's own on Monday 2026-02-23 (trigger alias), the two contracts of one expiry.
+TEST_F(ContractRollsApiDbTest, TheMicrosReadTheFullSizeContractsBeforeTheChange) {
+    pqxx::read_transaction t(*conn_);
+    const FuturesCalendar& cal = contract_rolls_test::shipped_calendars();
+    auto start = series_start(t, "MES");
+    ASSERT_TRUE(start.is_ok());
+    if (start.value() >= d("2026-02-22")) GTEST_SKIP() << "ES contracts are not loaded on this database";
+    auto s = build_held_series(t, "MES", start.value(), d("2026-03-06"), cal);
+    ASSERT_TRUE(s.is_ok()) << s.error()->what();
+    int alias = 0;
+    for (const auto& day : s.value().days()) {
+        if (day.date < d("2026-02-23")) {
+            EXPECT_EQ(day.held.root, "ES") << ymd(day.date);
+        } else {
+            EXPECT_EQ(day.held.root, "MES") << ymd(day.date);
+        }
+        if (day.trigger == RollTrigger::ALIAS) {
+            ++alias;
+            EXPECT_EQ(ymd(day.date), "2026-02-23");
+            ASSERT_TRUE(day.old.has_value());
+            EXPECT_EQ(day.old->raw_symbol, "ESH6");
+            EXPECT_EQ(day.held.raw_symbol, "MESH6");
+            EXPECT_EQ(day.old->expiration, day.held.expiration);
+        }
+    }
+    EXPECT_EQ(alias, 1);
+}

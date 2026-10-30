@@ -1117,13 +1117,17 @@ int main(int argc, char* argv[]) {
             // (live/live_listing_guard.hpp) judges the symbol list as the database gives it and
             // the stored Day T-1 book: a refusal sits above the live_run_metadata upsert like the
             // other refusals, so a refused run leaves no row.
-            if (!app_config.instrument_id_relabels.empty()) {
-                ListingDates::instance().set_relabels(app_config.instrument_id_relabels);
+            // R6: not read with per_contract_rolls on (the rule rolls each change, trigger alias).
+            const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);
+            if (!relabels.empty()) {
+                ListingDates::instance().set_relabels(relabels);
                 std::string line = "INSTRUMENT_ID_RELABELS in force (not rolls):";
-                for (const auto& r : app_config.instrument_id_relabels) {
+                for (const auto& r : relabels) {
                     line += " " + r.symbol + " from " + r.date + " id " + r.to + " is read as " + r.from + ";";
                 }
                 INFO(line);
+            } else if (!app_config.instrument_id_relabels.empty()) {
+                INFO(relabels_not_read_line(app_config.instrument_id_relabels));
             }
             if (!app_config.listing_dates.empty()) {
                 ListingDates::instance().set(app_config.listing_dates);
@@ -2275,6 +2279,16 @@ int main(int argc, char* argv[]) {
 
         // LOOP_SPEC v6.2 section 6.5: the rolls this run legs (found by state above).
         for (const auto& r : confirmed_rolls) {
+            if (r.price_source_change) {
+                // R6 (HD 2026-10-26): the micros' change of price source: no trade, no legs, no cost.
+                INFO("PRICE_SOURCE_CHANGE " + r.symbol + " date=" + r.confirm_date + " " + r.outgoing_id +
+                     "->" + r.incoming_id + " old_close=" + std::to_string(r.closing_price) +
+                     " new_close=" + std::to_string(r.opening_price) + " gap_points=" +
+                     std::to_string(r.opening_price - r.closing_price) +
+                     ": the micro's price source changes to its own contract; no legs, no cost (the gap "
+                     "is not P&L)");
+                continue;
+            }
             INFO("ROLL_CONFIRMED " + r.symbol + " date=" + r.confirm_date + " " + r.outgoing_id +
                  "->" + r.incoming_id + " closing_px=" + std::to_string(r.closing_price) +
                  " opening_px=" + std::to_string(r.opening_price) +
@@ -3119,6 +3133,7 @@ int main(int argc, char* argv[]) {
                         return o.str();
                     };
                     for (const auto& r : confirmed_rolls) {
+                        if (r.price_source_change) continue;  // R6: no legs, no cost
                         const auto held = prev_positions_map.find(r.symbol);
                         if (held == prev_positions_map.end()) continue;
                         const double q = held->second.quantity.as_double();
@@ -3201,6 +3216,7 @@ int main(int argc, char* argv[]) {
                 // F-3 (section 6.5): this sleeve books no leg today, and the stored state moves on,
                 // so a roll owed to it would never be legged. A STOP, never a loss.
                 for (const auto& r : confirmed_rolls) {
+                    if (r.price_source_change) continue;  // R6: nothing to leg
                     const auto held = prev_positions_map.find(r.symbol);
                     if (held == prev_positions_map.end() ||
                         std::abs(held->second.quantity.as_double()) < 1e-9) {

@@ -183,6 +183,8 @@ struct HeldDay {
     std::string left_id;
     /// Rolls step 4: the date of the roll the contract left was left on (with left_close).
     Day left_roll_date{};
+    /// R6: that roll was the micros' change (trigger ALIAS), a change of price source.
+    bool left_by_alias{false};
 };
 
 /// Counts and messages of one series, for the report and the measures.

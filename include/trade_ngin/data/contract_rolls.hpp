@@ -76,7 +76,7 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  *
  * Errors: a root with no cycle or no futures calendar; a contract the rule needs with no expiration (named); a date
  * outside the calendar; for a micro whose range starts before 2026-02-22, no full-size contract
- * bars before the change ("waiting on data": ES, NQ, YM and RTY are not loaded yet); a database
+ * bars before the change ("waiting on data": a copy without ES, NQ, YM or RTY loaded); a database
  * error.
  */
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
