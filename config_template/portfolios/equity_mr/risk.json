@@ -1,6 +1,6 @@
 {
   "_description": "Risk configuration for EQUITY_MR_PORTFOLIO",
-  "_var_limit_rationale": "0.25 is kept (T-8D R18). No portfolio-risk module runs on this book (modules below: type none, HD 2026-09-18), so this limit scales nothing. It acts only on the reporter (risk_reporting below), whose readings of the stored book are measurements: portfolio_var, max_correlation and jump_risk in live_results, and the risk lines of the email. On the 2026-06-15 to 2026-07-09 chain the reporter's annualised sigma of the stored book read 0.1924 to 0.3093. The earlier text argued from a VaR gate that scaled this book (risk_scale 0.39 at a limit of 0.10); that gate no longer runs here and its figures describe a retired path.",
+  "_var_limit_rationale": "0.25 is kept. No portfolio-risk module runs on this book (modules below: type none), so this limit scales nothing. It acts only on the reporter (risk_reporting below), whose readings of the stored book are measurements: portfolio_var, max_correlation and jump_risk in live_results, and the risk lines of the email. On the 2026-06-15 to 2026-07-09 chain the reporter's annualised sigma of the stored book read 0.1924 to 0.3093. The earlier text argued from a VaR gate that scaled this book (risk_scale 0.39 at a limit of 0.10); that gate no longer runs here and its figures describe a retired path.",
   "schema": 2,
   "modules": [
     {
@@ -21,7 +21,7 @@
     "max_net_leverage": 1,
     "confidence_level": 0.99,
     "lookback_period": 252,
-    "_note": "RA-01: the live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate (HD Q5)."
+    "_note": "The live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate."
   },
   "max_drawdown": 0.3,
   "max_leverage": 1

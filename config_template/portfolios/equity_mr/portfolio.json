@@ -8,7 +8,7 @@
       "enabled_live": true,
       "default_allocation": 1.0,
       "type": "MeanReversionStrategy",
-      "_symbols_note": "ABEV and ABM have NO bars in equities_data.ohlcv_1d (data-owner ask DO-ABEV/ABM). The live runner's freshness guard treats a requested symbol with no bars as absent and refuses a bare live run, so the LIVE runtime config keeps the universe the 2026-09 gate proved (BKNG and DD in their place) until those bars exist; swap back here-to-runtime when they do. var_limit lives in risk.json (0.25, proven).",
+      "_symbols_note": "ABEV and ABM have NO bars in equities_data.ohlcv_1d. The live runner's freshness guard treats a requested symbol with no bars as absent and refuses a bare live run, so the LIVE runtime config keeps BKNG and DD in their place until those bars exist; swap back here-to-runtime when they do. var_limit lives in risk.json (0.25).",
       "symbols": [
         "AAPL",
         "MSFT",
@@ -35,7 +35,7 @@
     }
   },
   "use_optimization": false,
-  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp; HD 2026-09-01) and refuse to start if this says true.",
+  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp) and refuse to start if this says true.",
   "covariance_history_prices": 756,
   "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2. The cap counts each symbol's own dates before the dates are aligned, so the covariance window is the dates every symbol shares inside the span of the densest symbol (the one with the most dates a week): a symbol that prints on fewer days contributes fewer than this many dates to it",
   "covariance_stale_dates": 5,
