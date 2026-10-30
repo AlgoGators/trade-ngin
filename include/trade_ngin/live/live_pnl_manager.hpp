@@ -237,13 +237,6 @@ public:
     }
 
     /**
-     * Get total cumulative PnL
-     */
-    double get_total_pnl() const {
-        return cumulative_total_pnl_;
-    }
-
-    /**
      * Clear all PnL tracking for new day
      */
     void reset_daily_tracking() {

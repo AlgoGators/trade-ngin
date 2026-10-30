@@ -254,13 +254,6 @@ public:
      */
     std::vector<broker_frame::AppliedEvent> basis_chain(const std::string& symbol) const;
 
-    /** Test helper: clear in-memory state (does not touch disk). */
-    void clear_in_memory() {
-        applied_.clear();
-        dividend_events_.clear();
-        recorded_.clear();
-    }
-
     const std::string& state_dir() const { return state_dir_; }
 
     /**

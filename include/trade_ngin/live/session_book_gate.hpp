@@ -128,15 +128,6 @@ struct HeldFeedHole {
     double held_quantity{0.0};
 };
 
-/// The oldest hole among the no-bar verdicts, feed hole or closure (0 when every symbol printed).
-inline int max_no_bar_age_days(const T1Classification& t1) {
-    int age = 0;
-    for (const auto& v : t1.verdicts) {
-        if (!v.has_bar) age = std::max(age, v.hole_age_days);
-    }
-    return age;
-}
-
 /**
  * @brief A no-bar verdict past the tolerance (HD 2026-10-10, T-DATED R2a). A symbol with no bar
  *        anywhere in the loaded history has no age to measure (hole_age_days is -1 and
