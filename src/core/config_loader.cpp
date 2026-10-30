@@ -924,7 +924,7 @@ std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
     if (local_tm != nullptr) anchor_tm = *local_tm;
     Timestamp end_date = now;
 
-    // M-12: the frozen window, taken only when a config explicitly carries the
+    // The frozen window, taken only when a config explicitly carries the
     // key. Anything unparseable is refused rather than silently ignored -- a
     // typo in a test config that quietly reverted to now() would reintroduce the
     // very drift this exists to remove, and it would do it invisibly.

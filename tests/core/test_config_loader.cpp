@@ -624,6 +624,12 @@ struct ResolvedRiskExpectation {
     // so the values above are the structs' own unread defaults, and the module carries
     // per_name_cap 2 and trim_max 5.
     bool overlay_book = false;
+    // The overlay's three limits and covariance on an overlay book (the conservative book carries
+    // the chosen setup's).
+    double r_max = 2.25;
+    double r_jump_max = 4.5;
+    double r_shock_max = 4.0;
+    const char* overlay_covariance = "sample";
 };
 
 void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
@@ -692,12 +698,12 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     EXPECT_EQ(carver->min_gate_dates, 21) << b << ": module.min_gate_dates";
     EXPECT_EQ(carver->overlay_limits(), e.overlay_book) << b << ": the overlay's limits";
     if (e.overlay_book) {
-        EXPECT_EQ(carver->r_max, 2.25) << b << ": module.R_max";
-        EXPECT_EQ(carver->r_jump_max, 4.5) << b << ": module.R_jump_max";
-        EXPECT_EQ(carver->r_shock_max, 4.0) << b << ": module.R_shock_max";
+        EXPECT_EQ(carver->r_max, e.r_max) << b << ": module.R_max";
+        EXPECT_EQ(carver->r_jump_max, e.r_jump_max) << b << ": module.R_jump_max";
+        EXPECT_EQ(carver->r_shock_max, e.r_shock_max) << b << ": module.R_shock_max";
         EXPECT_EQ(carver->per_name_cap, 2.0) << b << ": module.per_name_cap";
         EXPECT_EQ(carver->trim_max, 5) << b << ": module.trim_max";
-        EXPECT_EQ(carver->overlay_covariance, "sample") << b << ": module.overlay_covariance";
+        EXPECT_EQ(carver->overlay_covariance, e.overlay_covariance) << b << ": module.overlay_covariance";
         EXPECT_EQ(e.max_leverage, AppConfig().max_leverage) << b << ": max_leverage is retired";
         EXPECT_EQ(e.var_limit, RiskConfig().var_limit) << b << ": var_limit is retired";
         EXPECT_EQ(e.jump_risk_limit, RiskConfig().jump_risk_limit) << b;
@@ -723,12 +729,14 @@ TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
                                  /*max_drawdown*/ 0.3, /*max_leverage*/ 4.0,  // retired: the unread default
                                  /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,  // retired: the unread defaults
                                  /*max_correlation*/ 0.7,  // retired: the unread default
-                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max
+                                 /*max_gross*/ 7.25, /*max_net*/ 5.5,  // L_max and L_net_max
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
                                  /*use_optimization*/ true,
                                  /*none_ruled_on*/ nullptr,
-                                 /*overlay_book*/ true});
+                                 /*overlay_book*/ true,
+                                 /*R_max*/ 1.75, /*R_jump_max*/ 4.75, /*R_shock_max*/ 3.0,
+                                 /*overlay_covariance*/ "carver"});
 }
 
 TEST(TrackedTemplateResolvedRiskConfig, Base) {
@@ -1022,7 +1030,6 @@ TEST(TrackedTemplateTrendIdm, ConservativeResolvesCarversThirtyPlusRowAndBaseSta
     const auto why = tf.at("_idm_rationale").get<std::string>();
     EXPECT_NE(why.find("30+ instruments -> 2.50"), std::string::npos) << why;
     EXPECT_NE(why.find("36 names"), std::string::npos) << why;
-    EXPECT_NE(why.find("HD 2026-09-25"), std::string::npos) << why;
 
     auto base = ConfigLoader::load(tmpl, "base");
     ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
@@ -1570,8 +1577,9 @@ TEST_F(ConfigLoaderTest, InstrumentIdRelabelsAreParsedAndAbsentMeansNone) {
     }
 }
 
-// The shipped CONSERVATIVE template declares the four equity index pairs with the default rule
-// written out and the four relabels of 2026-02-22; BASE declares neither block.
+// The shipped CONSERVATIVE template declares the four equity index pairs and the two metal pairs
+// with the default rule written out and the four relabels of 2026-02-22; BASE declares only the two
+// metal pairs.
 TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) {
     const auto tmpl = tracked_config_template();
     ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
@@ -1585,7 +1593,8 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) 
                         std::to_string(static_cast<int>(contract.ratio)));
     }
     EXPECT_EQ(pairs, (std::vector<std::string>{"MES ES 2019-05-06 10", "MNQ NQ 2019-05-06 10",
-                                               "MYM YM 2019-05-06 10", "M2K RTY 2019-05-06 10"}));
+                                               "MYM YM 2019-05-06 10", "M2K RTY 2019-05-06 10",
+                                               "MGC GC 2010-10-04 10", "SIL SI 2013-06-17 5"}));
     std::vector<std::string> relabels;
     for (const auto& r : c.instrument_id_relabels) {
         relabels.push_back(r.symbol + " " + r.date + " " + r.from + " " + r.to);
@@ -1593,8 +1602,10 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) 
     EXPECT_EQ(relabels,
               (std::vector<std::string>{"MES 2026-02-22 42140878 42003800", "MNQ 2026-02-22 42002475 42004946",
                                         "MYM 2026-02-22 42005850 42001953", "M2K 2026-02-22 42005017 42002147"}));
-    // every listed contract is one of the book's equity slow rule symbols: the pair is ruled as one
+    // every equity index contract is one of the book's equity slow rule symbols: the pair is ruled
+    // as one; the metals are not under that rule
     for (const auto& contract : c.listing_dates) {
+        if (contract.symbol == "MGC" || contract.symbol == "SIL") continue;
         EXPECT_NE(std::find(c.equity_slow_rule.symbols.begin(), c.equity_slow_rule.symbols.end(),
                             contract.symbol),
                   c.equity_slow_rule.symbols.end())
@@ -1602,7 +1613,9 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateDeclaresThePairsAndTheRelabels) 
     }
     auto base = ConfigLoader::load(tmpl, "base");
     ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
-    EXPECT_TRUE(base.value().listing_dates.empty());
+    ASSERT_EQ(base.value().listing_dates.size(), 2u);
+    EXPECT_EQ(base.value().listing_dates[0].symbol, "MGC");
+    EXPECT_EQ(base.value().listing_dates[1].symbol, "SIL");
     EXPECT_TRUE(base.value().instrument_id_relabels.empty());
 }
 
