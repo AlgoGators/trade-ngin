@@ -27,7 +27,6 @@
 #include <unordered_set>
 
 #include "trade_ngin/core/report_price_text.hpp"
-#include "trade_ngin/data/finite_statement.hpp"
 
 namespace trade_ngin {
 
@@ -143,28 +142,6 @@ inline SettledPriceCells settled_price_cells(std::optional<double> previous,
     cells.previous = previous ? report_price_dollars_places(*previous, places) : std::string("n/a");
     cells.no_bar = !latest.has_value();
     cells.latest = latest ? report_price_dollars_places(*latest, places) : std::string(kSettledNoBar);
-    return cells;
-}
-
-/// The two cells of one row of the file: prior_mark and mark.
-struct SettledCsvCells {
-    std::string prior_mark;
-    std::string mark;
-};
-
-/**
- * @brief The file's two cells of a row, from the same two prices as the report's: each the
- *        shortest text that reads back as the same number; an unknown price is an empty cell, so
- *        the mark of a no-bar row is empty (a 0 would read as a price) and its prior_mark is the
- *        last known close.
- */
-inline SettledCsvCells settled_csv_cells(std::optional<double> previous,
-                                         std::optional<double> latest) {
-    SettledCsvCells cells;
-    if (previous)
-        cells.prior_mark = round_trip_number(*previous);
-    if (latest)
-        cells.mark = round_trip_number(*latest);
     return cells;
 }
 

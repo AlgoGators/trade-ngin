@@ -1095,7 +1095,7 @@ static std::shared_ptr<Instrument> report_instrument_of(const std::string& symbo
     }
 }
 
-// The decimals every price of this symbol prints with (report_price_places).
+// The decimals every price of this symbol prints with: four.
 static int report_places_of(const std::string& symbol) {
     // Every price of the email has four decimals; the files carry the contract's own.
     (void)symbol;

@@ -243,16 +243,12 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     EXPECT_DOUBLE_EQ(booked.at("ES.v.0"), 1000.0);
 
     // ZN printed no bar on T-1: the settle booked 0; the table prints its last known close (day
-    // 2's 112, not day 1's 111) and the words; the file leaves the mark empty.
+    // 2's 112, not day 1's 111) and the words.
     EXPECT_DOUBLE_EQ(booked.at("ZN.v.0"), 0.0);
     EXPECT_EQ(table.latest.count("ZN.v.0"), 0u);
     EXPECT_EQ(cells("ZN.v.0").previous, "$112.0000");
     EXPECT_EQ(cells("ZN.v.0").latest, "\xE2\x80\x93");
     EXPECT_TRUE(cells("ZN.v.0").no_bar);
-    const SettledCsvCells zn_file = settled_csv_cells(settled_price_of(table.previous, "ZN.v.0"),
-                                                      settled_price_of(table.latest, "ZN.v.0"));
-    EXPECT_EQ(zn_file.prior_mark, "112");
-    EXPECT_EQ(zn_file.mark, "");
 
     // NG, a roll's change bar, and 6B, a withheld T-1 print: the table shows the two closes the
     // settle was handed, and the settle booked 0 by rule, so these rows do not multiply out.

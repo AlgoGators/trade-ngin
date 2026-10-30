@@ -15,11 +15,6 @@
 namespace trade_ngin {
 namespace email_netting {
 
-/// The note under the book's footer of a day on which a printed cent differs: the totals are
-/// the exact stored figures, every line prints rounded to the cent.
-inline constexpr const char* kRoundingNote =
-    "Totals are rounded from exact amounts; rows can differ by a cent.";
-
 /// `value` with two decimals, as the stream rounds it, without separators: "-1234.50".
 inline std::string two_decimals(double value) {
     std::ostringstream oss;

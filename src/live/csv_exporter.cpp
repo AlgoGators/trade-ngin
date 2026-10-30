@@ -22,9 +22,9 @@
 namespace trade_ngin {
 
 namespace {
-// One number rule for the email and the files: a price has four decimals, or the decimals of
-// the contract's tick when four cannot show it (report_price_places); a futures quantity has two
-// decimals, a share quantity keeps six (rounding fractional shares loses the holding); money has two.
+// One number rule for the email and the files: a price has four decimals; a futures quantity has
+// two decimals, a share quantity keeps six (rounding fractional shares loses the holding); money
+// has two.
 std::shared_ptr<Instrument> csv_instrument_of(const std::string& symbol) {
     std::string lookup_sym = symbol;
     for (const char* suffix : {".v.", ".c."}) {

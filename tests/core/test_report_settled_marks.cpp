@@ -40,13 +40,6 @@ SettledPriceCells cells_for(const std::string& symbol, const PriceMap& from, con
                                settled_price_of(prices.latest, symbol));
 }
 
-SettledCsvCells csv_for(const std::string& symbol, const PriceMap& from, const PriceMap& to,
-                        const PriceMap& last_known) {
-    const SettledTablePrices prices = settled_table_prices(from, to, last_known);
-    return settled_csv_cells(settled_price_of(prices.previous, symbol),
-                             settled_price_of(prices.latest, symbol));
-}
-
 }  // namespace
 
 // The labels are plain words: no "T-1", no "T-2", no "mark".
@@ -123,30 +116,8 @@ TEST(ReportSettledMarks, ARowWithNoKnownPriceSaysSo) {
 
 
 
-// The file's two cells for the same three inputs: the same prices as numbers, an empty mark on a
-// no-bar row, and prior_mark the last known close there.
-TEST(ReportSettledMarks, TheFilesTwoCellsCarryTheSamePrices) {
-    const SettledCsvCells ordinary =
-        csv_for("KE.v.0", {{"KE.v.0", 679.5}}, {{"KE.v.0", 668.5}}, {});
-    EXPECT_EQ(ordinary.prior_mark, "679.5");
-    EXPECT_EQ(ordinary.mark, "668.5");
-    EXPECT_DOUBLE_EQ(1.0 * (std::stod(ordinary.mark) - std::stod(ordinary.prior_mark)) * 50.0,
-                     -550.0);
-
-    const SettledCsvCells no_bar = csv_for("KE.v.0", {{"KE.v.0", 679.5}}, {}, {{"KE.v.0", 668.5}});
-    EXPECT_EQ(no_bar.prior_mark, "668.5");
-    EXPECT_EQ(no_bar.mark, "") << "the mark of a no-bar row stays empty";
-
-    const SettledCsvCells hole =
-        csv_for("6J.v.0", {{"6J.v.0", 0.006297}}, {}, {{"6J.v.0", 0.006286}});
-    EXPECT_EQ(hole.prior_mark, "0.006286");
-    EXPECT_EQ(hole.mark, "");
-
-    const SettledCsvCells unknown = csv_for("NEW.v.0", {}, {}, {});
-    EXPECT_EQ(unknown.prior_mark, "");
-    EXPECT_EQ(unknown.mark, "");
-    // a 6J price keeps every digit in both forms
-    EXPECT_EQ(settled_csv_cells(0.0062995, 0.0062925).prior_mark, "0.0062995");
+// A 6J price keeps every digit at seven places.
+TEST(ReportSettledMarks, ASixJPriceKeepsEveryDigitAtSevenPlaces) {
     EXPECT_EQ(settled_price_cells(0.0062995, 0.0062925, 7).previous, "$0.0062995");
 }
 
@@ -166,11 +137,9 @@ TEST(ReportSettledMarks, AZeroRowCarriesTheNumberOfItsKindAndNoOtherRowIsNumbere
     EXPECT_EQ(settled_zero_note(false, "6L.v.0", 1.0, 0.2, 0.19, 0.0, kinds), 3);
 }
 
-// A price prints four decimals, or its tick's decimals when four cannot show a tick.
-TEST(ReportSettledMarks, APriceHasFourDecimalsOrItsTicksAndNoBarIsADash) {
-    EXPECT_EQ(report_price_places(0.25), 4);
-    EXPECT_EQ(report_price_places(0.0000005), 7);
-    EXPECT_EQ(report_price_places(0.015625), 6);
+// A price prints at the decimals it is given, with its dollar sign and separators; a no-bar cell is
+// a dash.
+TEST(ReportSettledMarks, APricePrintsAtItsDecimalsAndNoBarIsADash) {
     EXPECT_EQ(report_price_dollars_places(668.5, 4), "$668.5000");
     EXPECT_EQ(report_price_dollars_places(79070.0, 4), "$79,070.0000");
     EXPECT_EQ(report_price_dollars_places(0.006286, 7), "$0.0062860");

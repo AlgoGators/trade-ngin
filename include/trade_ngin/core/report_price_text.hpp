@@ -62,22 +62,6 @@ inline std::string report_dollars(double value, int decimals = 2) {
     return std::string(value < 0 && !zero ? "-$" : "$") + text;
 }
 
-/**
- * @brief The decimals every price of one contract prints with, in every table and file:
- *        four, or the decimals of the contract's tick when four cannot show a tick
- *        exactly (6J 0.0000005 -> 7, ZF 1/64 -> 6), so a row still multiplies out.
- */
-inline int report_price_places(double tick_size) {
-    if (!(tick_size > 0.0) || !std::isfinite(tick_size))
-        return 4;
-    for (int places = 4; places < 10; ++places) {
-        const double scaled = tick_size * std::pow(10.0, places);
-        if (std::fabs(scaled - std::round(scaled)) < 1e-6 * std::max(1.0, scaled))
-            return places;
-    }
-    return 8;
-}
-
 /// A price at a fixed number of decimals, optionally with thousands separators; "n/a" if not finite.
 inline std::string report_price_fixed(double price, int places, bool thousands = false) {
     if (!std::isfinite(price))

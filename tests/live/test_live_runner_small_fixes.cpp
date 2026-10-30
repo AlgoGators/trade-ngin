@@ -186,18 +186,6 @@ TEST(C7bCarriedDay, AClosureCarryNamesTheFirstVerdictsReason) {
     EXPECT_EQ(reason.find("FEED HOLE"), npos);
 }
 
-TEST(C7bCarriedDay, TheEmailBannerCarriesTheSameReasonEscaped) {
-    const std::string body =
-        "<html><body>\n<div class=\"container\">\n<h1>Daily Trading Report</h1>\n</div></body>";
-    const std::string reason = carried_day_reason(dead_sunday_t1()) + " <&>";
-    const std::string flagged = flag_email_body_for_carried_day(body, reason);
-    EXPECT_NE(flagged, body) << "a carried day's email has no banner";
-    EXPECT_NE(flagged.find("FEED HOLE"), npos) << flagged;
-    EXPECT_NE(flagged.find("&lt;&amp;&gt;"), npos) << "the reason is HTML-escaped";
-    EXPECT_LT(flagged.find("id=\"carried-day\""), flagged.find("<h1>"))
-        << "the banner opens the report";
-}
-
 TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFlagTheEmail) {
     std::vector<std::string> blocks;
     for (const char* runner : kFuturesRunners) {
@@ -207,8 +195,7 @@ TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFla
         EXPECT_EQ(src.find("\" (a Saturday)\""), npos)
             << "the note still keys on the weekday, blank on a feed-hole carry";
         EXPECT_NE(src.find("carried_day_reason(t1_classification)"), npos);
-        // The carried-day banner is put on by deliver_email_report (EmailDelivery.*), which is
-        // handed the day's note and whether the day was carried.
+        // The email is handed the day's note and whether the day was carried.
         const std::string email = between(src, "// Send email with CSV attachments",
                                           "email_sender->send_email(mail_subject, mail_body,");
         ASSERT_FALSE(email.empty());

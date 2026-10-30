@@ -87,13 +87,6 @@ inline HalfCompounding backtest_half_compounding(
     return out;
 }
 
-/// The backtest's sizing capital for the cycle about to size: the half-compounded capital of the
-/// equity curve (the initial capital on an empty curve and through warm-up, whose rows are flat).
-inline double backtest_sizing_equity(const std::vector<std::pair<Timestamp, double>>& equity_curve,
-                                     double initial_capital) {
-    return backtest_half_compounding(equity_curve, initial_capital).capital;
-}
-
 /// The live runner's sizing equity and its parts, for the log line.
 struct LiveSizingEquity {
     double equity{0.0};         ///< day_before + t1_settlement - t1_costs (day_before alone without a T-1 row)

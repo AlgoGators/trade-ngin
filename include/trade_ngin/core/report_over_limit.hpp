@@ -22,14 +22,6 @@
 
 namespace trade_ngin {
 
-/// The labels of the report's leverage lines, each naming its denominator in plain words: the text
-/// a reader of the report sees carries no formula symbol. "The
-/// account value" is the day's current portfolio value and nothing else in the report.
-inline constexpr const char* kReportGrossOnAccount = "Gross Leverage (on the account value)";
-inline constexpr const char* kReportNetOnAccount = "Net Leverage (on the account value)";
-inline constexpr const char* kReportGrossOnSizing = "Gross Leverage (on the sizing capital)";
-inline constexpr const char* kReportNetOnSizing = "Net Leverage (on the sizing capital)";
-
 /// What the over-limit lines print for one day.
 struct OverLimitReport {
     /// The day's row carries risk_detail and the two leverage readings. False: no figure and no
@@ -130,57 +122,6 @@ inline std::string over_limit_terms_words(const std::string& terms) {
         begin = end + 1;
     }
     return words;
-}
-
-/**
- * @brief The lines as the report's html, one `metric` div each, in this order: gross leverage on
- *        the sizing capital, net leverage on the sizing capital, the per-name cap, over limit
- *        after rounding, over limit by hold, CAP. With no reading: one line that says so.
- */
-inline std::string over_limit_report_html(const OverLimitReport& report) {
-    auto times = [](double value) {
-        char buf[48];
-        std::snprintf(buf, sizeof(buf), "%.2fx", value);
-        return std::string(buf);
-    };
-    auto line = [](const std::string& label, const std::string& value) {
-        return "<div class=\"metric\"><strong>" + label + ":</strong> " + value + "</div>\n";
-    };
-    if (!report.has_reading) {
-        return line("Leverage on the sizing capital and over-limit marks",
-                    "no reading (no sized rebalance this run: no risk reading was stored for "
-                    "this day)");
-    }
-    std::string html;
-    html += line(kReportGrossOnSizing,
-                 times(report.gross_leverage) + " (limit " + times(report.gross_limit) + ")");
-    html += line(kReportNetOnSizing, times(report.net_leverage) + " (limit " +
-                                         times(report.net_limit) + " in either direction)");
-    html += line("Per-name cap", times(report.per_name_cap) + " of the sizing capital");
-    if (report.over_limit_after_rounding_terms.empty()) {
-        html += line("Over limit after rounding", "no mark");
-    } else {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.4f", report.over_limit_after_rounding_excess);
-        html +=
-            line("Over limit after rounding",
-                 "terms " + over_limit_terms_words(report.over_limit_after_rounding_terms) +
-                     "; excess " + buf + " (in units of the largest stored per-contract weight)");
-    }
-    if (report.over_limit_by_hold_terms.empty()) {
-        html += line("Over limit by hold", "no mark");
-    } else {
-        html += line(
-            "Over limit by hold",
-            "terms " + over_limit_terms_words(report.over_limit_by_hold_terms) + "; symbols " +
-                (report.over_limit_by_hold_symbols.empty() ? std::string("none named")
-                                                           : report.over_limit_by_hold_symbols));
-    }
-    html += line("Held beyond the per-name cap",
-                 over_limit_terms_name_cap(report.over_limit_by_hold_terms)
-                     ? "marked: a held row is beyond the per-name cap " + times(report.per_name_cap)
-                     : std::string("no mark"));
-    return html;
 }
 
 }  // namespace trade_ngin

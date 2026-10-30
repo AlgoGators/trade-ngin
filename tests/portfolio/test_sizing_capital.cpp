@@ -434,7 +434,7 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
     for (int d = 1; d < 5; ++d) {
         // The capital the cycle must size on: the half compounding of the curve as it stands, whose
         // last row is the previous cycle's (LOOP_SPEC section 3.1).
-        const double before = backtest_sizing_equity(equity_, 1'000'000.0);
+        const double before = backtest_half_compounding(equity_, 1'000'000.0).capital;
         const double before_row = equity_.back().second;
         const size_t seen_before = probe_->seen.size();
         cycle(d, closes[d]);
@@ -445,7 +445,7 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
         EXPECT_LE(probe_->seen.back(), 1'000'000.0 * 0.5) << "never above the starting capital";
         if (d >= 2) {
             ASSERT_NE(written, before_row) << "cycle " << d << " holds XX through a price move";
-            const double with_own_row = backtest_sizing_equity(equity_, 1'000'000.0);
+            const double with_own_row = backtest_half_compounding(equity_, 1'000'000.0).capital;
             if (with_own_row != before) {
                 EXPECT_NE(probe_->seen.back(), with_own_row * 0.5)
                     << "cycle " << d << " must not size on the row it writes (look-ahead)";
@@ -725,7 +725,7 @@ TEST_F(LiveSizingCapital, APositionMissingEitherCloseSettlesNothingAsPhase5Books
 // once; row by row the capital follows min(S_0, capital + net).
 TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
     const double s0 = 500'000.0;
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({}, s0), s0);
+    EXPECT_DOUBLE_EQ(backtest_half_compounding({}, s0).capital, s0);
     // the start, a profit, a larger profit, a loss, a loss below the start, a recovery, a new high
     const std::vector<double> rows = {500'000.0, 503'125.5, 507'900.0, 504'000.0,
                                       498'250.25, 501'000.0, 509'100.0};
@@ -734,13 +734,16 @@ TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
     for (size_t k = 0; k < rows.size(); ++k) {
         if (k > 0) capital = std::min(s0, capital + (rows[k] - rows[k - 1]));
         curve.emplace_back(wday(static_cast<int>(k)), rows[k]);
-        EXPECT_NEAR(backtest_sizing_equity(curve, s0), capital, 1e-6) << "row " << k;
+        EXPECT_NEAR(backtest_half_compounding(curve, s0).capital, capital, 1e-6) << "row " << k;
     }
     // A profit is not sized on: after the first two rows the capital is still the starting capital.
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({{wday(0), s0}, {wday(1), 503'125.5}}, s0), s0);
+    EXPECT_DOUBLE_EQ(
+        backtest_half_compounding({{wday(0), s0}, {wday(1), 503'125.5}}, s0).capital, s0);
     // A loss from a high comes off the starting capital, not off the high.
-    EXPECT_NEAR(backtest_sizing_equity({{wday(0), s0}, {wday(1), 507'900.0}, {wday(2), 504'000.0}}, s0),
-                s0 - 3'900.0, 1e-6);
+    EXPECT_NEAR(
+        backtest_half_compounding({{wday(0), s0}, {wday(1), 507'900.0}, {wday(2), 504'000.0}}, s0)
+            .capital,
+        s0 - 3'900.0, 1e-6);
     const auto h = backtest_half_compounding(curve, s0);
     EXPECT_NEAR(h.account, 509'100.0, 1e-6);
     EXPECT_NEAR(h.peak, 9'100.0, 1e-6);
