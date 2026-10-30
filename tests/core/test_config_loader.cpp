@@ -349,7 +349,7 @@ TEST_F(ConfigLoaderTest, StrategyDefaultsConfigJsonRoundTrip) {
     EXPECT_DOUBLE_EQ(r.fdm[2].second, 2.0);
     EXPECT_DOUBLE_EQ(r.max_strategy_allocation, 0.5);
     // Schema 2 deleted both: a block that still serialised them would put a key back into
-    // the merged config that the loader now refuses (S7), and an override round trip
+    // the merged config that the loader refuses (S7), and an override round trip
     // would fail on a key nobody wrote.
     EXPECT_FALSE(j.contains("use_optimization"))
         << "use_optimization moved to portfolio.json in schema 2";
@@ -761,12 +761,12 @@ TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
                                  /*none_ruled_on*/ "2026-09-18"});
 }
 
-// The max_correlation trap, closed. Under schema 1 base/risk.json and equity_mr/risk.json
-// carried NO max_correlation and resolved 0.7 from defaults.json risk_defaults -- a value
-// no book had written, indistinguishable from RiskConfig's struct default (also 0.7), so
-// changing the global silently moved two books' gate. Schema 2 deletes risk_defaults and
-// writes every gating value per book. This is that test, inverted: the value must now come
-// from the book's OWN file, and there must be no global left to move it with.
+// The max_correlation trap. A book's risk.json that carries NO max_correlation and resolves
+// 0.7 from a defaults.json risk_defaults block takes a value no book has written,
+// indistinguishable from RiskConfig's struct default (also 0.7), so changing the global
+// silently moves that book's gate. Schema 2 has no risk_defaults and writes every gating
+// value per book: the value must come from the book's OWN file, and there must be no global
+// left to move it with.
 TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRiskJson) {
     const auto tmpl = tracked_config_template();
     ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
@@ -1286,8 +1286,8 @@ TEST_F(ConfigLoaderTest, ABadSizingModeOrStartingCapitalIsALoadError) {
 }
 
 
-// LOOP_SPEC sections 4, 7.7 and 12: the overlay's three risk limits on the carver module, ratios to
-// tau. All three or none; a futures book requires them.
+// The overlay's three risk limits on the carver module, ratios to tau. All three or none; a
+// futures book requires them.
 TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
     const nlohmann::json keys = {
         {"equity_slow_rule", {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}}},

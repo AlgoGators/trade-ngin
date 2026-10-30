@@ -1,13 +1,13 @@
-// The results writers against the real tables with a value that is not finite (T-8D R12,
-// T-8D-2 R54). Before the guard std::to_string put `nan` or `inf` into the statement unquoted,
-// Postgres read it as a column name, and the whole statement failed: a backtest lost its
-// results row (and with it the run), a live day its row or its Day T-1 refresh. Now a nullable
-// cell is stored NULL and the row is kept; a NOT NULL column that is not finite refuses the row:
+// The results writers against the real tables with a value that is not finite. Unguarded,
+// std::to_string puts `nan` or `inf` into the statement unquoted, Postgres reads it as a column
+// name, and the whole statement fails: a backtest loses its results row (and with it the run),
+// a live day its row or its Day T-1 refresh. So a nullable cell is stored NULL and the row is
+// kept; a NOT NULL column that is not finite refuses the row:
 // no statement is sent, nothing is stored or changed, and the error names the column and the
 // value.
 //
 // The same writers, and the backtest curve, the backtest position rows and the live curve's
-// Day T-1 refresh, store a finite value as the double they were handed (D-16): the cell reads
+// Day T-1 refresh, store a finite value as the double they were handed: the cell reads
 // back bit for bit where the column is double precision, and rounded once, from the full value,
 // where it is numeric(p,s).
 //
@@ -179,8 +179,8 @@ TEST_F(FiniteStatementDbTest, TheNotNullListsOfTheRefusalAreTheNotNullNumberColu
 }
 
 // The live day's INSERT: a NOT NULL column (daily_roll_costs, total_roll_costs) handed NaN,
-// +inf or -inf refuses the row. No row is stored (after 251c7112 one was, with 0 in the cell),
-// and the error is the refusal naming the column and the value.
+// +inf or -inf refuses the row. No row is stored, and the error is the refusal naming the
+// column and the value.
 TEST_F(FiniteStatementDbTest, ALiveRowWithANotNullColumnThatIsNotFiniteIsRefusedAndNoRowIsStored) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
     const std::string where = "strategy_id = '" + std::string(kStrategy) + "'";
@@ -235,8 +235,8 @@ TEST_F(FiniteStatementDbTest,
 }
 
 // The backtest summary: a NOT NULL metric (transaction_costs, roll_costs, total_roll_fills)
-// handed NaN, +inf or -inf refuses the row. No results row is stored (after 251c7112 one was,
-// with 0 in the cell), and the error is the refusal naming the metric and the value.
+// handed NaN, +inf or -inf refuses the row. No results row is stored, and the error is the
+// refusal naming the metric and the value.
 TEST_F(FiniteStatementDbTest,
        ABacktestSummaryWithANotNullMetricThatIsNotFiniteIsRefusedAndNoRowIsStored) {
     const std::string where = "run_id = '" + std::string(kRun) + "'";
@@ -257,7 +257,7 @@ TEST_F(FiniteStatementDbTest,
 }
 
 // The live day's INSERT, the ten nullable columns that default to 0: a value that is not finite
-// is stored NULL, not the default (left out of the statement the cell took the 0).
+// is stored NULL, not the default (left out of the statement the cell would take the 0).
 TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullEvenWhereTheColumnDefaultsToZero) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
     const std::vector<std::string> defaulted = {
@@ -283,7 +283,7 @@ TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullEvenWhereTheColumnD
     EXPECT_EQ(cell("trading.live_results", "total_roll_costs", where), "0.00000000");
 }
 
-// T-8D-2 R54: a backtest statistic that is not finite does not fail the results INSERT. Its
+// A backtest statistic that is not finite does not fail the results INSERT. Its
 // cell is stored NULL (the nineteen nullable metric columns have no default) and the row is
 // kept, with the finite cells, the three NOT NULL ones of migration 018 among them, as handed
 // in. The writer names every such column in one WARN (the names are asserted on the builder in
@@ -333,7 +333,7 @@ TEST_F(FiniteStatementDbTest,
     EXPECT_EQ(cell("backtest.results", "total_roll_fills", where), "0");
 }
 
-// T-8D R12: the live row's INSERT writes NULL in the cell; the Day T-1 UPDATE writes NULL over
+// The live row's INSERT writes NULL in the cell; the Day T-1 UPDATE writes NULL over
 // a stored value.
 TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullOnTheInsertAndOnTheUpdate) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
@@ -356,7 +356,7 @@ TEST_F(FiniteStatementDbTest, ALiveValueThatIsNotFiniteIsNullOnTheInsertAndOnThe
     EXPECT_EQ(cell("trading.live_results", "profit_factor", where), "2.5");
 }
 
-// D-16, backtest.results: every metric cell is the double handed in, not its six decimals.
+// backtest.results: every metric cell is the double handed in, not its six decimals.
 TEST_F(FiniteStatementDbTest, ABacktestSummaryStoresEachMetricAsTheDoubleHandedIn) {
     const double third = 1.0 / 3.0;
     const double tiny = std::numeric_limits<double>::denorm_min();
@@ -378,7 +378,7 @@ TEST_F(FiniteStatementDbTest, ABacktestSummaryStoresEachMetricAsTheDoubleHandedI
     EXPECT_EQ(cell("backtest.results", "transaction_costs", where), "123456789.12345679");
 }
 
-// D-16, backtest.equity_curve: a point's level is the double handed in.
+// backtest.equity_curve: a point's level is the double handed in.
 TEST_F(FiniteStatementDbTest, ABacktestCurvePointStoresTheLevelHandedIn) {
     const std::vector<std::pair<Timestamp, double>> points = {
         {at_utc(2026, 5, 4, 0), 500000.0},
@@ -402,8 +402,8 @@ TEST_F(FiniteStatementDbTest, ABacktestCurvePointStoresTheLevelHandedIn) {
     }
 }
 
-// D-16, backtest.final_positions: a 6J-sized average price keeps every digit the engine held
-// (six decimals kept about four significant digits), and so do the two P&L cells.
+// backtest.final_positions: a 6J-sized average price keeps every digit the engine held
+// (six decimals would keep about four significant digits), and so do the two P&L cells.
 TEST_F(FiniteStatementDbTest, ABacktestPositionRowStoresItsFourNumbersAsHeld) {
     const Position held("6J.v.0", Quantity(3.0), Price(0.00624151), Decimal(1234.56789012),
                         Decimal(-0.33333333), at_utc(2026, 5, 4, 0));
@@ -423,9 +423,9 @@ TEST_F(FiniteStatementDbTest, ABacktestPositionRowStoresItsFourNumbersAsHeld) {
               bits_of(static_cast<double>(held.realized_pnl)));
 }
 
-// D-16, trading.live_results: a double precision cell is the double handed in; a numeric(p,s)
-// cell is that double rounded ONCE to the column's scale (through six decimals 1.23454999 went
-// to 1.234550 and then to 1.2346); the Day T-1 UPDATE writes the same way.
+// trading.live_results: a double precision cell is the double handed in; a numeric(p,s)
+// cell is that double rounded ONCE to the column's scale (through six decimals 1.23454999 would
+// go to 1.234550 and then to 1.2346); the Day T-1 UPDATE writes the same way.
 TEST_F(FiniteStatementDbTest, ALiveRowStoresTheValueHandedInOnTheInsertAndOnTheUpdate) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
     const double third = 1.0 / 3.0;
@@ -458,8 +458,8 @@ TEST_F(FiniteStatementDbTest, ALiveRowStoresTheValueHandedInOnTheInsertAndOnTheU
     EXPECT_EQ(cell("trading.live_results", "total_pnl", where), "-7.0000");
 }
 
-// D-16, trading.equity_curve: the Day T-1 refresh of the curve stores the level handed in, as
-// the day's own INSERT (a bound parameter) always did.
+// trading.equity_curve: the Day T-1 refresh of the curve stores the level handed in, as
+// the day's own INSERT (a bound parameter) does.
 TEST_F(FiniteStatementDbTest, TheLiveCurveRefreshStoresTheLevelHandedIn) {
     const Timestamp day = at_utc(2026, 5, 4, 5);
     auto stored = db_->store_trading_equity_curve(kStrategy, day, 500000.0, kPortfolio);

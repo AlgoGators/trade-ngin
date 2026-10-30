@@ -100,7 +100,7 @@ TEST(MarginColumnsRunners, TheFinalizeRecomputesTheFourCellsOnTheFinalisedValue)
         const auto update = finalize.find("\"UPDATE trading.live_results SET \"");
         const auto fragment = finalize.find("finalize_margin_columns_sql(");
         auto cash = finalize.find("\"cash_available = ");
-        if (cash == std::string::npos) cash = finalize.find("equity_cash_available_sql(");  // the equity runner (section 16.6)
+        if (cash == std::string::npos) cash = finalize.find("equity_cash_available_sql(");  // the equity runner
         ASSERT_NE(update, std::string::npos) << runner;
         ASSERT_NE(cash, std::string::npos) << runner;
         EXPECT_LT(update, fragment) << runner;

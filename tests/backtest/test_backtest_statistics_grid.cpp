@@ -307,7 +307,7 @@ struct Hand {
     double max_drawdown{0.0};
 };
 
-// The statistics of a list of levels (the base first), by the ruled formulas, written out here
+// The statistics of a list of levels (the base first), by the statistics' formulas, written out here
 // so the run is not compared with the calculator's own code.
 Hand hand(const std::vector<double>& levels, double k) {
     Hand h;
@@ -604,8 +604,8 @@ TEST_F(BacktestStatisticsGridRun, AFuturesRunTakesTheStatisticsOfMigration037OnI
 
 // A book that names an overlay sleeve, run through the coordinator's own cycle: the cells of a
 // curve row are the ones the CYCLE stores for it (process_portfolio_day), carried into the
-// results and handed to the curve writer. The expected figures are written out here from the
-// inputs below, by section 5's formulas, so the run is not compared with the overlay's own code.
+// results and handed to the curve writer. The expected figures are worked out here by hand from
+// the inputs below, so the run is not compared with the overlay's own code.
 //
 //   | symbol | N* | close | M    | window return on its date k (150 consecutive dates) | jump sigma, daily |
 //   | G0.v.0 | 4  | 100   | 1000 | +0.020 on even k, -0.020 on odd k                   | 0.020             |

@@ -610,7 +610,7 @@ TEST(RiskSchemaRoundTrip, ToJsonReparsesIntoAnEqualSchemaForEveryModuleType) {
     EXPECT_EQ(second.value().to_json(), emitted);
     EXPECT_EQ(second.value().sleeves_to_json(), first.value().sleeves_to_json());
 
-    // Adversary E3: a module object must not carry capital or version. They are the
+    // A module object must not carry capital or version. They are the
     // runner's to set, and a stored copy of them is a second place they can disagree.
     for (const auto& module : emitted.at("modules")) {
         EXPECT_FALSE(module.contains("capital")) << module.at("id");

@@ -551,7 +551,7 @@ TEST_F(OnePassBookTest, ARefusalOnAnUnseededLiveScopeRefusesTheRun) {
 }
 
 // A symbol the first sleeve has no series for is held at each sleeve's held quantity and named:
-// no silent default for its price, multiplier or cost (section 5.1).
+// no silent default for its price, multiplier or cost.
 TEST_F(OnePassBookTest, ASymbolWithoutASeriesIsHeldAndNamed) {
     make_two_sleeves();
     a_->rows["AAA"] = row(5.0);
@@ -951,7 +951,7 @@ TEST_F(OnePassBookTest, TheDeliveredScaleIsMeasuredOnTheStoredBook) {
     EXPECT_DOUBLE_EQ(pm_->delivered_scale_for_book({}), 1.0) << "as a day with no rebalance stores";
 }
 
-// The overlay columns (migration 036; HD 2026-10-10): the pass copies the overlay's readings of its
+// The overlay columns (migration 036): the pass copies the overlay's readings of its
 // stored book and the window's bars a year into its record, and the accessor reads the book the
 // runner STORES with the overlay's own code on the pass's window. On a day the runner changed no
 // row the accessor's five readings are the pass's to the bit; with a row rolled back they are that
@@ -1146,7 +1146,7 @@ TEST_F(OnePassBookTest, ABacktestRowsOverlayCellsAreTheOverlaysReadingsOfTheBook
                  none.overlay_gross_leverage || none.overlay_net_leverage || none.var_95_1d);
 }
 
-// The sizing capital the pass reads is the one the runner set today (section 3.1): the same
+// The sizing capital the pass reads is the one the runner set today: the same
 // target is fewer contracts' worth of weight on a larger capital, and the record carries E_t.
 TEST_F(OnePassBookTest, ThePassSizesOnTheCapitalSetForTheRebalance) {
     make_pm();

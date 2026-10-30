@@ -153,8 +153,7 @@ TEST(HolidayCalendarCoverage, FullLoadReportsLoaded) {
     EXPECT_TRUE(checker.is_holiday("2026-12-25"));
 }
 
-// A file that cannot be opened at all is also a failed load -- the case the
-// original guard did catch, kept so the fix does not narrow it.
+// A file that cannot be opened at all is also a failed load.
 TEST(HolidayCalendarCoverage, MissingFileReportsNotLoaded) {
     HolidayChecker checker("/nonexistent/path/holidays.json");
 

@@ -190,7 +190,7 @@ TEST_F(BacktestExecutionManagerTest, GetTransactionCostManagerReturnsLiveReferen
     EXPECT_GT(manager_->get_adv("ES"), 0.0);
 }
 
-// E2-F29: the backtest execution path must also charge SEC/TAF on the sell side only.
+// The backtest execution path must also charge SEC/TAF on the sell side only.
 TEST_F(BacktestExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
     transaction_cost::AssetCostConfig cfg;
     cfg.symbol = "TIERD";

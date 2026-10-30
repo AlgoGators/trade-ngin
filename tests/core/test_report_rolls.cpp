@@ -426,7 +426,7 @@ TEST(ReportRolls, ARuledRootPendingItsLegsShowsTheOldContractAndNoLine) {
     q.held_ids = {{"GC.v.0", "q"}};  // the book's and the rule's contract agree
     const auto agree = report_roll_view(q, src, {}).outlook.at("GC");
     EXPECT_TRUE(agree.in_window);
-    // S6: an IB symbol other than the Databento one labels the line and prints the contracts.
+    // An IB symbol other than the Databento one labels the line and prints the contracts.
     EXPECT_EQ(agree.label, "XGC");
     EXPECT_EQ(agree.held, "XGCQ6");
     EXPECT_EQ(agree.held_symbol, "GCQ6");

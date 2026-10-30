@@ -1,8 +1,8 @@
 // tests/data/test_day_signal_replace.cpp
 //
-// OPT-N5/N6. A live re-run of a date rewrites the sleeve's trading.signals rows of that day as a
-// set, in the transaction of the store. The store was an upsert a symbol with no delete, so a
-// symbol the re-run no longer produced kept the earlier run's row.
+// A live re-run of a date rewrites the sleeve's trading.signals rows of that day as a set, in
+// the transaction of the store. An upsert a symbol with no delete would keep the earlier run's
+// row of a symbol the re-run no longer produces.
 //
 // The first tests EXECUTE replace_day_signals_in, the function PostgresDatabase::store_signals
 // runs on its pqxx transaction, against an in-memory stand-in: no database is needed, and the
@@ -124,7 +124,7 @@ std::vector<Row> sorted(std::vector<Row> rows) {
 
 }  // namespace
 
-//   | the sleeve's rows of 04-25 | first run | re-run produces | upsert (parent) | replace      |
+//   | the sleeve's rows of 04-25 | first run | re-run produces | upsert          | replace      |
 //   | A (row 2)                  | 1.0       | 3.0             | 3.0, row 2      | 3.0, row 2   |
 //   | B (row 3)                  | 2.0       | nothing         | 2.0 (stale)     | gone         |
 TEST(DaySignalReplace, ASymbolTheReRunNoLongerProducesIsGoneAndNothingElseIsTouched) {
@@ -147,7 +147,7 @@ TEST(DaySignalReplace, ASymbolTheReRunNoLongerProducesIsGoneAndNothingElseIsTouc
 }
 
 // An earlier run of the day stored its rows at another time of day (a run on the wall clock):
-// the upsert's key holds the timestamp, so the parent kept both rows of the symbol.
+// the upsert's key holds the timestamp, so an upsert keeps both rows of the symbol.
 //
 //   | the sleeve's rows of 04-25 | earlier run at 17:00 | re-run at 05:00 | after              |
 //   | A                          | row 2, 1.0           | 3.0             | one row: 05:00 3.0 |
@@ -293,7 +293,7 @@ protected:
 //   | T3_TEST_PORTFOLIO, other sleeve, 04-25    | A 1, B 2     |          | A 1, B 2 |
 //   | T3_TEST_PORTFOLIO_OTHER, sleeve, 04-25    | A 1, B 2     |          | A 1, B 2 |
 //
-// RED on the parent: the first row keeps B 2 (the upsert deletes nothing).
+// An upsert fails it: the first row keeps B 2 (the upsert deletes nothing).
 TEST_F(DaySignalReplaceDbTest, AReStoreOfADayRemovesTheSymbolItNoLongerProduces) {
     const std::unordered_map<std::string, double> first = {{"T3A", 1.0}, {"T3B", 2.0}};
     const std::map<std::string, double> kept = {{"T3A", 1.0}, {"T3B", 2.0}};
@@ -319,7 +319,7 @@ TEST_F(DaySignalReplaceDbTest, AReStoreOfADayRemovesTheSymbolItNoLongerProduces)
 }
 
 // An earlier run of the day stored at another time of day (17:00Z); the re-run stores at 05:00Z.
-// RED on the parent: three rows (A and B at 17:00Z, A at 05:00Z).
+// An upsert fails it: three rows (A and B at 17:00Z, A at 05:00Z).
 TEST_F(DaySignalReplaceDbTest, AReStoreAtAnotherTimeOfTheDayLeavesOneRowASymbol) {
     ASSERT_TRUE(store({{"T3A", 1.0}, {"T3B", 2.0}}, kTestBook, kTestSleeve, at_utc(2026, 4, 25, 17))
                     .is_ok());
@@ -330,7 +330,7 @@ TEST_F(DaySignalReplaceDbTest, AReStoreAtAnotherTimeOfTheDayLeavesOneRowASymbol)
 
 // The sweep and the store are one transaction: a re-store with a row the writer refuses (a
 // signal that is not finite) returns the error and the day's earlier rows are all still there.
-// A pin: the parent, which deleted nothing, passes it too.
+// A pin: an upsert, which deletes nothing, passes it too.
 TEST_F(DaySignalReplaceDbTest, AReStoreThatFailsLeavesTheEarlierRows) {
     const std::map<std::string, double> kept = {{"T3A", 1.0}, {"T3B", 2.0}};
     const Timestamp day = at_utc(2026, 4, 25, 5);

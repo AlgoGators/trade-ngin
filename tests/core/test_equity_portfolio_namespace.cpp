@@ -4,14 +4,14 @@
 #include <nlohmann/json.hpp>
 
 // The live equity runner writes positions, executions and live results under the
-// portfolio id its config declares. It previously passed the literal
-// "BASE_PORTFOLIO" at every storage site while its config said
-// EQUITY_MR_PORTFOLIO, so equity rows landed in the futures book's namespace.
+// portfolio id its config declares. The literal "BASE_PORTFOLIO" at a storage site,
+// while its config says EQUITY_MR_PORTFOLIO, would land equity rows in the futures
+// book's namespace.
 //
 // The runner is a main(), so it cannot be linked here. What is testable -- and
-// what actually guards the fix -- is the config contract the runner now depends
-// on: the equity portfolio must declare its own namespace, distinct from the
-// futures book. If that ever drifts back, the collision returns.
+// what actually guards it -- is the config contract the runner depends on: the
+// equity portfolio must declare its own namespace, distinct from the futures book.
+// If that ever drifts, the two books collide.
 namespace {
 
 std::filesystem::path find_repo_file(const std::string& relative) {
@@ -61,11 +61,11 @@ TEST(EquityPortfolioNamespace, EquityAndFuturesPortfolioIdsAreDistinct) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-5 / C-1 D3 -- real pins for 9b0d293c.
+// Real pins for the equity runner's portfolio namespace.
 //
-// The two tests above read config_template JSON only. They pass with the fix
-// reverted, because reintroducing the "BASE_PORTFOLIO" literal at the runner's
-// storage sites does not change any config file. What follows pins the two
+// The two tests above read config_template JSON only. They would pass with the
+// "BASE_PORTFOLIO" literal at the runner's storage sites, because that literal
+// does not change any config file. What follows pins the two
 // things that can actually regress: the loader must REFUSE a config with no
 // portfolio_id (rather than defaulting to the futures book), and the equity
 // runner must not carry the literal at all.
@@ -106,7 +106,7 @@ std::string read_repo_text(const std::string& relative) {
 }  // namespace
 
 // An absent portfolio_id must be an ERROR, never a silent fall back to the
-// futures namespace. This is the half of 9b0d293c that links.
+// futures namespace. This is the half of the pin that links.
 TEST(EquityPortfolioNamespace, MissingPortfolioIdIsRejectedRatherThanDefaulted) {
     auto ok = ConfigLoader::validate_config(config_with_portfolio_id("EQUITY_MR_PORTFOLIO"));
     EXPECT_TRUE(ok.is_ok()) << "a declared portfolio id must validate";
@@ -118,10 +118,10 @@ TEST(EquityPortfolioNamespace, MissingPortfolioIdIsRejectedRatherThanDefaulted) 
     EXPECT_EQ(missing.error()->code(), ErrorCode::INVALID_DATA);
 }
 
-// Source-level pin, because apps/ is not linked into this binary (C-1 F7) and
-// the 10 storage sites live in main(). The literal is what regressed; its
-// absence from the file is therefore the thing to assert. Comments are stripped
-// first so the file may still EXPLAIN the defect it no longer contains.
+// Source-level pin, because apps/ is not linked into this binary and the 10
+// storage sites live in main(). The literal is what can regress; its absence
+// from the file is therefore the thing to assert. Comments are stripped first so
+// the file may still EXPLAIN why it must not carry the literal.
 TEST(EquityPortfolioNamespace, EquityRunnerCarriesNoBasePortfolioLiteral) {
     const std::string src = read_repo_text("apps/strategies/live_equity_mean_reversion.cpp");
     if (src.empty()) {

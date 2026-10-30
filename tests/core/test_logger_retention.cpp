@@ -84,9 +84,9 @@ LoggerConfig file_config(const std::filesystem::path& dir, const std::string& pr
 
 TEST(LoggerRetention, RotationNeverDeletesAnotherRunnersLogs) {
     TempLogDir dir;
-    // Four foreign files, well over this logger's budget of 3. Before the fix the oldest of
-    // these was deleted on every initialize(), which is how a futures run evicted an equity
-    // replay's log out of the shared `logs/` directory.
+    // Four foreign files, well over this logger's budget of 3. A budget over every file would
+    // delete the oldest of these on every initialize(), which is how a futures run would evict
+    // an equity replay's log out of the shared `logs/` directory.
     for (const auto* name : {"live_portfolio_conservative_20260101_000000_part1.log",
                              "live_portfolio_20260101_000001_part1.log",
                              "bt_equity_mr_20260101_000002_part1.log",
@@ -140,7 +140,7 @@ TEST(LoggerRetention, ABaseRunnerDoesNotEvictItsConservativeNamesake) {
 
 // The same pair the other way round, and the backtest pair too. A conservative session must
 // not evict the base runner either -- the nesting only runs one way, but the ownership test
-// has to be exact in both directions or the fix is half a fix.
+// has to be exact in both directions or it guards only half the pairs.
 TEST(LoggerRetention, NeitherHalfOfANestedPrefixPairTouchesTheOther) {
     TempLogDir dir;
     const std::vector<std::string> base = {"bt_portfolio_20260101_000000_part1.log",
@@ -331,7 +331,7 @@ TEST(LoggerRetention, PartNumbersOrderNumericallyNotLexically) {
     // session timestamp. Without this the test is a FALSE PASS: touch() creates
     // the files in part order and APFS mtimes are nanosecond-resolution and
     // strictly increasing, so an mtime sort happens to evict part2 as well and
-    // the test stays green with the fix reverted. Giving part2 the NEWEST mtime
+    // the test could not tell the two sorts apart. Giving part2 the NEWEST mtime
     // means only a numeric read of the part number can evict it.
     const auto base = std::filesystem::file_time_type::clock::now();
     for (size_t i = 0; i < parts.size(); ++i) {

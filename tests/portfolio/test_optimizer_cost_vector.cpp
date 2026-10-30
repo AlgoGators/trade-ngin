@@ -71,7 +71,7 @@ namespace {
 constexpr auto npos = std::string::npos;
 constexpr double kCapital = 500'000.0;
 
-// Two real contracts at their 2026-05-01 closes (OPTIMIZER_CLAIMS_VERIFICATION_2026-09-23 section 6):
+// Two real contracts at their 2026-05-01 closes:
 // MES 5 x 7,252.5 = $36,262.50 of notional, ZF 1,000 x 107.85 = $107,850.
 const std::string kMes = "MES.v.0";
 const std::string kZf = "ZF.v.0";
@@ -165,7 +165,7 @@ class OptimizerCostVector : public TestBase {
 protected:
     void SetUp() override {
         TestBase::SetUp();
-        // CM1: the cost model prices MES and ZF with their metadata rows.
+        // The cost model prices MES and ZF with their metadata rows.
         trade_ngin::testing::register_session_metadata_futures();
         StateManager::reset_instance();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -254,7 +254,7 @@ TEST_F(OptimizerCostVector, TheK2FeedPricesThePortfolioManagersCostModelOffTheFe
     EXPECT_DOUBLE_EQ(tcm.get_adv(kMes), 12'000.0) << "the fill day's own volume";
     EXPECT_DOUBLE_EQ(tcm.get_volatility_multiplier(kMes), vm) << "the last 20 returns";
 
-    // The manager's cost of one contract is now priced off the fed state: what the one pass reads
+    // The manager's cost of one contract is priced off the fed state: what the one pass reads
     // for its cost vector and prices its fills with.
     const double fed_cost =
         tcm.calculate_costs(kMes, 1.0, t1_close, 12'000.0, vm).total_transaction_costs;
@@ -290,7 +290,7 @@ TEST(OptimizerCostPenaltyScalarConfig, AnIntegerScalarIsUnchangedAndTheDefaultIs
     EXPECT_DOUBLE_EQ(c.cost_penalty_scalar, 0.0);
 }
 
-// LOOP_SPEC sections 5.2 and 12 (D38): the search's cost multiplier is 100.
+// The search's cost multiplier is 100.
 TEST(OptimizerCostPenaltyScalarConfig, TheTrackedTemplateCarriesOneHundred) {
     const std::string src = read_source("config_template/defaults.json");
     if (src.empty()) GTEST_SKIP() << "config_template/defaults.json not found";

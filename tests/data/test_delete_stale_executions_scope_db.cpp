@@ -192,9 +192,9 @@ TEST_F(DeleteStaleExecutionsScopeTest, DeleteThenReinsertSucceedsForTheSameKey) 
     EXPECT_EQ(count_for(kPortfolioA), 1) << "Re-insert should leave exactly one row, not two.";
 }
 
-// F-C: the cleanup is keyed on order_id, strategy_name and portfolio -- never on the
-// calendar date of execution_time. A run at 19:00 EDT stores a Monday-UTC instant; a re-run
-// at 21:00 EDT asked for "Tuesday" and never matched it, so the re-run duplicated the row.
+// The cleanup is keyed on order_id, strategy_name and portfolio -- never on the calendar
+// date of execution_time. A run at 19:00 EDT stores a Monday-UTC instant; a re-run at 21:00
+// EDT asks for "Tuesday", which never matches it, so a date key would duplicate the row.
 TEST_F(DeleteStaleExecutionsScopeTest, CleanupIgnoresTheCalendarDateOfExecutionTime) {
     std::vector<ExecutionReport> execs{make_exec("F4PROBE")};
     ASSERT_FALSE(

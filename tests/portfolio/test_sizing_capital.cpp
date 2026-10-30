@@ -433,7 +433,7 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
     bool below_start = false;
     for (int d = 1; d < 5; ++d) {
         // The capital the cycle must size on: the half compounding of the curve as it stands, whose
-        // last row is the previous cycle's (LOOP_SPEC section 3.1).
+        // last row is the previous cycle's.
         const double before = backtest_half_compounding(equity_, 1'000'000.0).capital;
         const double before_row = equity_.back().second;
         const size_t seen_before = probe_->seen.size();
@@ -526,10 +526,10 @@ TEST_F(LiveSizingCapital, TheRowBeforeDayT1PlusTheSettlementMoveLessDayT1Costs) 
     EXPECT_EQ(r.unpriced, 0);
 }
 
-// D-B (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 sections 2.1, 3.1, 6.6): the book is sized on the settlement PHASE 5
-// finalises Day T-1 with, the one on the CONSUMED bars. T-1 = 2026-05-01. MES is held 2 and its T-1 bar is a change
-// bar (the vendor switched contract: 7,230.00 on A, 7,252.50 on B); ZN is held 1 and its T-2 print (111.500000) is a
-// corrupt print the K-01 feed withheld, so its previous consumed close is T-3's 110.906250:
+// The book is sized on the settlement PHASE 5 finalises Day T-1 with, the one on the CONSUMED bars.
+// T-1 = 2026-05-01. MES is held 2 and its T-1 bar is a change bar (the vendor switched contract: 7,230.00 on A,
+// 7,252.50 on B); ZN is held 1 and its T-2 print (111.500000) is a corrupt print the consumed feed withheld, so its
+// previous consumed close is T-3's 110.906250:
 //   MES  change bar                                 =     0.000   (raw: 2 x (7,252.50 - 7,230.00) x 5 = 225.00)
 //   ZN   1 x (110.703125 - 110.906250) x 1,000      =  -203.125   (raw: 1 x (110.703125 - 111.500000) x 1,000 = -796.875)
 // The runner passes the settlement's maps and zero set to the sizing read and to finalize_previous_day: both book
@@ -578,7 +578,7 @@ TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) 
     EXPECT_EQ(sized.priced, 2);
 }
 
-// Rolls step 4 (the live account-value rebuild, plan section 5 step 4): with per_contract_rolls on, a stored roll
+// The live account-value rebuild: with per_contract_rolls on, a stored roll
 // day is not 0. Day T-1's net, which the sizing read rebuilds and PHASE 5 finalises, books the old contract's own move
 // on a roll bar, from the target's close on the bar that confirms a vendor switch, the old contract's move up to the
 // first consumed bar after a withheld roll bar, and the held contract's own move on a switch bar and on a switch the
@@ -632,7 +632,7 @@ TEST_F(LiveSizingCapital, APerContractRollDayIsSizedAndFinalisedOnTheRealMove) {
           bar("MES.v.0", 3, 7230.00, "A", RollFrom{7290.00, "B", RollFromKind::AWAITS_NEXT, ""}),
           bar("MES.v.0", 4, 7240.00, "A")},
          2.0, 100.0},
-        // Ruling 19 "vendor": the switch bar is the target's own bar; the same moves are booked.
+        // The "vendor" setting: the switch bar is the target's own bar; the same moves are booked.
         {"vendor setting: switch bar on T-1",
          {bar("MES.v.0", 3, 7230.00, "A"),
           bar("MES.v.0", 4, 7300.00, "B", RollFrom{7240.00, "A", RollFromKind::AWAITS_NEXT_VENDOR, ""})},
@@ -720,7 +720,7 @@ TEST_F(LiveSizingCapital, APositionMissingEitherCloseSettlesNothingAsPhase5Books
     EXPECT_EQ(r.unpriced, 1);
 }
 
-// LOOP_SPEC section 3.1 (D19): the backtest sizes on the half-compounded capital of its own curve.
+// The backtest sizes on the half-compounded capital of its own curve.
 // A profit is never sized on (the capital stays at the starting capital); a loss comes off at
 // once; row by row the capital follows min(S_0, capital + net).
 TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
@@ -779,9 +779,9 @@ TEST(HalfCompounding, TheClosedFormIsTheRecursionInDateOrder) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// (4b) T-7b-3 R-3: the sizing reads. "Nothing stored" sizes as before. A database error holds the
+// (4b) the sizing reads. "Nothing stored" sizes as in (4). A database error holds the
 // book (the books loaded, the equity or previous-row read failed: exit 3, mark, email flag) or
-// refuses the run (a sleeve book failed to load: exit 1, no row); HD 2026-09-27 ruling 5.
+// refuses the run (a sleeve book failed to load: exit 1, no row).
 // The runner helper is fed the REAL LiveDataLoader over a mock database, so load_live_results
 // answers exactly as it does in production (its "No live results found" for an empty result, its
 // "Failed to load live results" for a failed query).
@@ -966,9 +966,9 @@ TEST_F(LiveSizingReads, EveryReadAnsweredSizesOnStep4sArithmetic) {
     EXPECT_EQ(db_->book_loads, 2);
 }
 
-// The brief's case: the database drops for the run (every read fails). On f2932054 every failure
-// read as "nothing stored" and the whole book sized on 500,000 and traded on it. The positions did
-// not load, so there is no book to hold: the run refuses (exit 1, no row).
+// The database drops for the run (every read fails). Read as "nothing stored", every failure would
+// size the whole book on 500,000 and trade on it. The positions did not load, so there is no book
+// to hold: the run refuses (exit 1, no row).
 TEST_F(LiveSizingReads, TheDatabaseDownRefusesTheRunInsteadOfSizingOnTheInitialCapital) {
     db_->t1 = SizingReadDatabase::T1::kError;
     db_->previous_error = true;
@@ -1070,7 +1070,7 @@ TEST_F(LiveSizingReads, NoLiveResultsFoundIsStillNoDayT1Row) {
 }
 
 // A first day (nothing stored at all) and sleeves with no stored book (OK and empty) size on the
-// initial capital, as on f2932054.
+// initial capital.
 TEST_F(LiveSizingReads, NothingStoredAnywhereSizesOnTheInitialCapital) {
     db_->t1 = SizingReadDatabase::T1::kNoRow;
     db_->previous_value.reset();
@@ -1574,7 +1574,7 @@ TEST_F(LiveHalfCompounding, TheCapitalDoesNotStepWhenANoBarDayLeavesTheLoadedWin
 }
 
 // The three failure paths of Day T-1 still keep the last settled capital for their one run, and
-// that capital now holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
+// that capital holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
 TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
     // 2026-04-18 is a Saturday: held, 40.00 of costs, no bar; the week after it printed.
     const std::vector<std::tuple<std::string, double, int>> history = {
@@ -1604,7 +1604,7 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Migration 035 (T-8a commit (12)): a stored day counts in the sizing capital when its settled_at
+// Migration 035: a stored day counts in the sizing capital when its settled_at
 // is set OR the no-bar-day rule calls it settled. The stamp is written after STEP 4, so the run
 // after a no-prices day sizes before its own stamp exists.
 // ------------------------------------------------------------------------------------------------
@@ -1613,7 +1613,7 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
 // (2025-10-05 .. 2026-04-25). Saturday's run stamped everything through Friday 04-24; Sunday's run
 // had no closes for the held Saturday (the no-prices skip) and stamped nothing, so the Saturday
 // row is still NULL. Monday loads Sunday's bar: the Saturday row counts, settled_rows is 204 and
-// earlier_unsettled 0, the figures of the run before the column existed.
+// earlier_unsettled 0, the figures of the calendar rule alone.
 TEST_F(LiveHalfCompounding, TheMondayAfterAHeldSaturdayCountsTheSaturdayRowBeforeItsStamp) {
     LiveSizingCalendar calendar;
     db_->history.clear();
@@ -1658,11 +1658,11 @@ TEST_F(LiveHalfCompounding, TheMondayAfterAHeldSaturdayCountsTheSaturdayRowBefor
     EXPECT_NE(line.find(" settled_rows=204 earlier_unsettled=0 "), std::string::npos) << line;
 }
 
-// The Monday case both ways (the lead and HD, 2026-10-10). The Monday run reads the held Saturday
+// The Monday case both ways. The Monday run reads the held Saturday
 // row with settled_at NULL (Sunday's no-prices run stamped nothing and Monday's own stamp is
 // written after this read); when the Monday run ends the row is stamped, which is what Tuesday's
 // run reads. The predicate counts the row either way, and the Monday capital is the same on both
-// and equal to the capital of the rule before the column existed (the calendar rule alone).
+// and equal to the capital of the calendar rule alone.
 TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAndSet) {
     // The predicate, on the Saturday row itself.
     LiveSizingCalendar week;
@@ -1705,7 +1705,7 @@ TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAnd
     calendar.first_bar_date = *calendar.bar_dates.begin();
     ASSERT_EQ(db_->history.size(), 203u);
 
-    // The capital of the rule before the column existed: the half compounding of every row the
+    // The capital of the calendar rule alone: the half compounding of every row the
     // calendar rule alone calls settled, then Day T-1's rebuilt net.
     double calendar_rule_capital = 500'000.0;
     int calendar_rule_rows = 0;
@@ -1767,7 +1767,7 @@ TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAnd
     EXPECT_EQ(stamp_alone_rows, 203);
 }
 
-// LOOP_SPEC section 15 erratum 1: a row that carries a stamp counts whatever the calendar says.
+// A row that carries a stamp counts whatever the calendar says.
 // 2026-04-25 is a held Saturday with no later bar loaded, the day the no-bar-day rule alone calls
 // unsettled; with the migration's backfill on it (the row had a later row at migration) it counts.
 TEST_F(LiveHalfCompounding, AStampedRowCountsWhereTheCalendarAloneWouldNot) {

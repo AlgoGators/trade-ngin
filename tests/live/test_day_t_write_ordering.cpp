@@ -1,20 +1,20 @@
 // tests/live/test_day_t_write_ordering.cpp
 //
-// E2-F44 / BA-18 -- a fatal in-run identity must not leave a half-written day.
+// A fatal in-run identity must not leave a half-written day.
 //
 // The equity runner asserts protocol L5 twice inside the day, and both assertions are
 // FATAL: realized (`Σ positions.daily_realized_pnl == live_results.daily_realized_pnl`) and
 // unrealized (`Σ positions.daily_unrealized_pnl == live_results.total_unrealized_pnl`).
-// Both used to run AFTER the unconditional `DELETE FROM trading.positions ... DATE(last_update)
-// = today` that R-3 added, so a violated identity exited 1 having already removed today's
-// rows -- the day ended up empty as well as unwritten, and the previous run's rows, which a
-// re-run would simply have overwritten, were gone.
+// Both must run BEFORE the unconditional `DELETE FROM trading.positions ... DATE(last_update)
+// = today`. Run after it, a violated identity exits 1 having already removed today's rows --
+// the day ends up empty as well as unwritten, and the previous run's rows, which a re-run
+// would simply overwrite, are gone.
 //
-// The fix is an ORDERING one: the clear-then-write pair belongs together, immediately before
+// The rule is an ORDERING one: the clear-then-write pair belongs together, immediately before
 // save_all_results, with every fatal check ahead of it. The runner is a `main()` and cannot
 // be linked into this binary, so what is tested is that ordering in the source -- the same
 // approach tests/core/test_equity_portfolio_namespace.cpp takes for the same reason. It
-// fails the moment the DELETE drifts back above either assertion.
+// fails the moment the DELETE moves above either assertion.
 
 #include <gtest/gtest.h>
 

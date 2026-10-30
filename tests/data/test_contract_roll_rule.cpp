@@ -402,7 +402,7 @@ TEST(ContractRollRule, TheTargetSkipsAMissingCycleFrontWithAWarn) {
 }
 
 TEST(ContractRollRule, ANeverListedFrontIsNotCountedAsSkipped) {
-    // Audit B 6: the cycle front after GCQ6 is GCZ6; when the table never lists it, rolling to GCG7
+    // The cycle front after GCQ6 is GCZ6; when the table never lists it, rolling to GCG7
     // does not skip a listed front and is not flagged.
     World w({{"GCQ6", "q", "2026-08-27"}, {"GCZ6", "z", "2026-12-29"}, {"GCG7", "g", "2027-02-24"}});
     for (const auto& dt : kDates) w.print("GCQ6", dt, 80000).print("GCG7", dt, 400).vendor(dt, "GCQ6");
@@ -606,7 +606,7 @@ TEST(ContractRollRule, ACarriedCloseKeepsTheCarriedRowsId) {
     EXPECT_FALSE(carry.tentative.has_value());
 }
 
-// Ruling 11 (plan 11b): the window ends at the last actionable bar. GCQ6: LAB Wed 07-29, D* Fri 07-31.
+// The window ends at the last actionable bar. GCQ6: LAB Wed 07-29, D* Fri 07-31.
 // With a bar on the LAB the deadline rolls there first, so the window's end shows only when the
 // vendor's grid lacks the LAB's bar: Z out-trades Q on Thu 07-30, after the LAB, and the roll there
 // is the deadline's (late), not a crossover. The roll's date is the same either way.

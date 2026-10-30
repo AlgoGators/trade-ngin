@@ -91,7 +91,7 @@ protected:
     void SetUp() override {
         InstrumentRegistry::instance().instruments_["MNQ.v.0"] = make_mnq_futures();
         // The P&L manager looks the contract up by its metadata key, the symbol without the
-        // ".v.0" suffix; with no fallback table any more (CM1) the row must be there.
+        // ".v.0" suffix; with no fallback table the row must be there.
         InstrumentRegistry::instance().instruments_["MNQ"] = make_mnq_futures();
     }
     void TearDown() override {
