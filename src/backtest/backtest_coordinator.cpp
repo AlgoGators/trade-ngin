@@ -1075,7 +1075,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         const auto start_of_bar_book = confirmed_now.empty() && source_changes_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
                                            : portfolio->get_filled_strategy_positions();
-        // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
+        // The rolls owed from here until the legs are booked below (the tracker has
         // consumed their confirming bars); the day's catch and the run loop's read it.
         if (!is_warmup) {
             for (const auto& [symbol, confirm_date] : confirmed_now) {
@@ -1237,7 +1237,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
             }
         }
-        cycle_rolls_owed_.clear();  // booked (or none owed): a later failure of the cycle is not F-3's
+        cycle_rolls_owed_.clear();  // booked (or none owed): a later failure of the cycle owes no roll
 
         // WARMUP HANDLING: keep equity flat, no executions
         if (is_warmup) {
@@ -1389,7 +1389,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
 
-        // Phase 4 §1.14: build per-strategy PnL accounting method lookup so
+        // Build a per-strategy PnL accounting method lookup so
         // we can branch on REALIZED_ONLY (futures: daily MTM IS realized) vs
         // MIXED/UNREALIZED_ONLY (equities: realized_pnl only on actual close,
         // written by on_execution -- coordinator must NOT stamp realized_pnl
@@ -1555,7 +1555,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
-                    // Phase 4 §1.14: only stamp realized_pnl with daily MTM
+                    // Only stamp realized_pnl with daily MTM
                     // when the strategy uses REALIZED_ONLY accounting
                     // (futures). For equities (MIXED / UNREALIZED_ONLY),
                     // leave realized_pnl untouched -- on_execution writes
@@ -1566,9 +1566,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
                                                      ? pnl_method_it->second
                                                      : PnLAccountingMethod::REALIZED_ONLY;
-                    // The §1.14 branch itself lives in BacktestPnLManager::realized_for_row
-                    // so it can be asserted; the pin 7e3d07c2 claimed for it tested only the
-                    // accessor and passed with this file reverted (C-5 §9-A2).
+                    // The branch itself lives in BacktestPnLManager::realized_for_row
+                    // so it can be asserted.
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
                             method, pnl_result.daily_pnl, 0.0));
@@ -1646,7 +1645,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             pnl_manager_->update_previous_closes(consumed_closes);
         }
 
-        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // Accrue overnight borrow fees on open short equity
         // positions. Per-strategy attribution: iterate strategy_positions,
         // compute each strategy's borrow fee on its own shorts, both add to
         // today's transaction costs (equity curve) AND emit a synthetic
@@ -1684,7 +1683,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     borrow_exec.total_transaction_costs = Decimal(fee);
                     borrow_exec.is_partial = false;
                     portfolio->append_synthetic_execution(strategy_id, borrow_exec);
-                    // X-4: the row reaches the run's executions too (the period's fills were
+                    // The row reaches the run's executions too (the period's fills were
                     // collected before this block), so 018's transaction_costs and the metrics
                     // carry the borrow cost the equity curve charged.
                     executions.push_back(borrow_exec);
@@ -2014,7 +2013,7 @@ void BacktestCoordinator::load_equity_cost_retier(const std::vector<std::string>
     equity_cost_retier_.reset();
     equity_cost_retier_cycles_ = 0;
     equity_cost_retier_changes_ = 0;
-    // The first window is the cost warm-up's (equity_cost_warmup.hpp, H-13): the 30 calendar
+    // The first window is the cost warm-up's (equity_cost_warmup.hpp): the 30 calendar
     // days before start_date, ending strictly before it, so the first cycle's tier is set from
     // bars that existed when the backtest starts.
     const auto window = equity_cost_warmup_window(start_date);

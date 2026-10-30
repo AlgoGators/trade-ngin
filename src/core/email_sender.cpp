@@ -850,9 +850,9 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h2>Charts</h2>\n";
     core::ChartLedger chart_ledger;
     if (db) {
-        // E2-F11: the caller names the book the charts query. This overload IS used in
-        // production (the live equity runner); with the old hardcoded trend-following
-        // strategy id and empty portfolio every chart query returned no rows.
+        // The caller names the book the charts query. This overload IS used in
+        // production (the live equity runner); a hardcoded strategy id and an empty
+        // portfolio would return no rows for every chart query.
         const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
@@ -1381,14 +1381,14 @@ std::string EmailSender::format_positions_table(
                 // multiplied internally by FuturesInstrument's new override).
                 const double signed_qty = position.quantity.as_double();
 
-                // BA-16: one row without a price must not abort the report.
+                // One row without a price must not abort the report.
                 //
-                // This read average_price only. On the equity path that column is a
+                // On the equity path average_price is a
                 // cost basis, and 0 is its documented "no basis known" value
                 // (AVERAGE_PRICE_LIFECYCLE rule 5) -- reachable for a held position
                 // whose basis could not be resolved, which the runner already reports
-                // as an ERROR. get_margin_requirement(0, qty) then returns 0, this
-                // threw, and the bare `throw;` below aborted the WHOLE daily email:
+                // as an ERROR. get_margin_requirement(0, qty) then returns 0, and a
+                // throw would reach the bare `throw;` below and abort the WHOLE daily email:
                 // one unpriceable row and nobody gets a report at all. A row with no
                 // basis therefore falls back to the current close.
                 //
@@ -1692,7 +1692,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        // T-8D-2 R61: the block is the settled day's.
+        // The block is the settled day's.
         html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
              << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
@@ -1947,7 +1947,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        // T-8D-2 R61: the block is the settled day's.
+        // The block is the settled day's.
         html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
              << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
@@ -2555,31 +2555,24 @@ std::string EmailSender::format_single_strategy_table(
                 // per-contract margin, after the FuturesInstrument override).
                 const double signed_qty = position.quantity.as_double();
 
-                // FUT-email-zero-basis (C-5 B5). Margin is priced from a MARK, not from a
+                // Margin is priced from a MARK, not from a
                 // cost basis, and one row without a basis must not suppress the whole
                 // report.
                 //
-                // This read average_price only. Zero is that column's documented "no basis
+                // Zero is average_price's documented "no basis
                 // known" value (AVERAGE_PRICE_LIFECYCLE rule 5) and is reachable for a held
                 // position whose basis could not be resolved, which the runner already
                 // reports as an ERROR of its own. get_margin_requirement(0, qty) then
-                // returns 0, this threw, and the `throw;` below carried it out of
+                // returns 0; a throw here would carry out of
                 // format_single_strategy_table, out of format_strategy_positions_tables and
-                // out of generate_trading_report_body: one unpriceable row and NOBODY got a
-                // daily report at all. The catch(...) in the portfolio-total loop below
-                // then swallowed the same failure silently, so the margin line understated
-                // without saying so.
+                // out of generate_trading_report_body: one unpriceable row and NOBODY gets a
+                // daily report at all.
                 //
-                // This is the fix 9348920d made to the single-table equity overload
-                // (format_positions_table, above), applied to the per-strategy futures
-                // overload it missed. The price preference is kept EXACTLY as this
-                // overload always had it: the row's own average_price first, and the
+                // The price preference: the row's own average_price first, and the
                 // current close only as the fallback when the basis is missing. Preferring
                 // the close here would re-price every equity row's margin (a basis of 50
-                // against a close of 52 moves the line from 2,500 to 2,600) on a stream
-                // this change promises to leave byte-identical; the single-table equity
-                // overload above prefers the close, and that inconsistency is recorded
-                // for the statistics pass rather than resolved by a side effect here.
+                // against a close of 52 moves the line from 2,500 to 2,600). The single-table
+                // equity overload above (format_positions_table) prefers the close.
                 double price_for_margin = 0.0;
                 if (position.average_price.as_double() > 0.0) {
                     price_for_margin = position.average_price.as_double();
@@ -2783,12 +2776,12 @@ std::string EmailSender::format_strategy_positions_tables(
                         // Required for equities to get account-mode-aware
                         // margin instead of the legacy 0.0 sentinel.
                         //
-                        // FUT-email-zero-basis: priced from the same mark the per-strategy
+                        // Priced from the same mark the per-strategy
                         // table above uses, basis first and the current close only as the
                         // fallback, so the portfolio total equals the sum of the per-strategy
                         // tables printed immediately above it whether or not a basis exists.
-                        // Reading average_price alone here dropped a no-basis row from the
-                        // total, and the catch(...) below meant nothing said so.
+                        // Reading average_price alone would drop a no-basis row from the
+                        // total, and the catch(...) below would hide it.
                         const double signed_qty = position.quantity.as_double();
                         double price_for_margin = 0.0;
                         if (position.average_price.as_double() > 0.0) {

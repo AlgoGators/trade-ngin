@@ -4,7 +4,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/types.hpp"
 #include <memory>
-#include <optional>  // std::optional t1_date (E2-F14)
+#include <optional>  // std::optional t1_date
 
 namespace trade_ngin {
 
@@ -26,14 +26,8 @@ public:
     /**
      * Constructor.
      *
-     * C-04: this used to take and hold a PostgresDatabase. The only members that
-     * ever read it were load_close_prices (a stub returning an empty map),
-     * get_settlement_price (a stub returning DATA_NOT_FOUND) and the two loaders
-     * that wrapped the first -- all removed here, none of them reachable from
-     * any runner. Every price this class actually serves arrives through
-     * update_from_bars, which never touched the database. Keeping the handle
-     * would go on advertising a database-backed price source that does not
-     * exist.
+     * It holds no database handle: every price this class serves arrives through
+     * update_from_bars, which never touches the database.
      */
     LivePriceManager() = default;
 

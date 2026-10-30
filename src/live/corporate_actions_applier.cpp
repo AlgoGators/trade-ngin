@@ -151,16 +151,16 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 const double ratio = 1.0 + ev.value / ev.close_at_ex_date;
                 const double avg_after = avg_before > 0.0 ? avg_before / ratio : 0.0;
                 // Dividend doesn't change quantity; only rescales avg_price into
-                // the post-dividend adjusted-price frame (audit §1.15).
+                // the post-dividend adjusted-price frame.
                 if (avg_before > 0.0) {
                     pos.average_price = Decimal(avg_after);
                 }
                 // For the audit log's cash-flow figure, the basis is the
-                // qty held on ex_date - 1 (ultrareview bug_021). When the
+                // qty held on ex_date - 1. When the
                 // caller supplied that, record it; otherwise fall back to
-                // the live position qty (same as before).
+                // the live position qty.
                 //
-                // Design note (ultrareview PR #39 follow-up): the `> 0`
+                // Design note: the `> 0`
                 // sentinel uses zero, not -1 / NaN, because:
                 //   (a) `CorpActionEvent::qty_at_ex_date` defaults to 0.0
                 //       (legacy callers that don't populate it get the
@@ -205,14 +205,14 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 break;
             }
             case CorpActionType::TERMINATION:
-                // E2-F13: class-3 lifecycle events are CorporateActionsLifecycle's business,
+                // Class-3 lifecycle events are CorporateActionsLifecycle's business,
                 // not the applier's. A TERMINATION reaching here means an event was mis-typed
                 // upstream; skip it rather than apply price-restating logic to it.
                 WARN("CorporateActionsApplier: TERMINATION is a lifecycle class, not a "
                      "price-restating action -- skipping " + ev.symbol + " on " + ev.ex_date);
                 continue;
             case CorpActionType::SPINOFF:
-                // E2-F31, same reason and a sharper edge: `value` on a spinoff is the CHILD
+                // Same reason for a spinoff, with a sharper edge: `value` on a spinoff is the CHILD
                 // RATIO (0.25, 0.33333), so restating a parent by it as if it were a split
                 // factor would cut the share count to a quarter. apply_spinoffs owns this.
                 WARN("CorporateActionsApplier: SPINOFF is a lifecycle class, not a "

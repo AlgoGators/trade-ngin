@@ -52,8 +52,8 @@ public:
     /**
      * @brief Resolve the holidays.json path with a fallback chain.
      *
-     * Phase 6 §6a -- cron-triggered apps used to fail silently when their
-     * CWD didn't match the dev-time `include/trade_ngin/core/` layout,
+     * A cron-triggered app whose CWD does not match the dev-time
+     * `include/trade_ngin/core/` layout would otherwise fail silently,
      * leaving HolidayChecker with an empty map and every `is_holiday`
      * returning false. This helper tries (in order):
      *
@@ -107,8 +107,8 @@ public:
      * False means the file was missing, unreadable, or threw part way through.
      * A caller whose correctness depends on the calendar must refuse to run on
      * false rather than proceed: `is_holiday` cannot distinguish "open" from
-     * "never loaded", and a half-loaded file used to advertise coverage it did
-     * not have (BA-1).
+     * "never loaded", and a half-loaded file must not advertise coverage it does
+     * not have.
      */
     bool loaded() const {
         return loaded_;
@@ -158,7 +158,7 @@ public:
      * `coverage_description()` prints the FIRST and LAST year, which reads as a range and is
      * not one: a file that lost its middle years advertises "2020-2030" while covering two.
      * The count is the only figure that distinguishes them, and callers that refuse to run on
-     * a partial load (the three live runners, BA-1) need it in their own log line rather than
+     * a partial load (the three live runners) need it in their own log line rather than
      * in a string a human has to read.
      */
     size_t coverage_years() const { return covered_years_.size(); }
@@ -294,17 +294,14 @@ private:
      * @return true if successful, false otherwise
      */
     bool load_holidays() {
-        // BA-1: stage into locals and swap only on FULL success.
+        // Stage into locals and swap only on FULL success.
         //
-        // This used to clear the live maps up front and fill them in place, and
-        // it inserted each year key BEFORE parsing that year's entries. A file
-        // that threw part way through therefore left the object advertising
-        // coverage for years whose closures were missing -- and the outer catch
-        // returned false without undoing any of it. `covers_date` then answered
-        // true, every fail-closed caller passed, `is_holiday` returned false
-        // with no warning because the year WAS covered, and
-        // `find_previous_trading_day` walked onto a closed day. The guard only
-        // fired when the load failed TOTALLY, which is the easy case.
+        // Filling the live maps in place, with each year key inserted BEFORE that
+        // year's entries are parsed, would leave a file that threw part way through
+        // advertising coverage for years whose closures are missing. `covers_date`
+        // would then answer true, every fail-closed caller would pass, `is_holiday`
+        // would return false with no warning because the year WAS covered, and
+        // `find_previous_trading_day` would walk onto a closed day.
         //
         // Staging also makes a failed reload() non-destructive: the calendar
         // already in force survives.

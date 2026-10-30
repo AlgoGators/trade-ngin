@@ -197,7 +197,7 @@ inline std::string risk_scale_console(double risk_scale, bool overlay_answered,
     return out;
 }
 
-/// The same line on a book that runs no overlay (the equity runner): the stored value with R14's
+/// The same line on a book that runs no overlay (the equity runner): the stored value with its
 /// meaning in the label, and no request, since none exists.
 inline std::string risk_scale_console_no_overlay() {
     char buf[64];

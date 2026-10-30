@@ -290,8 +290,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_stale_dates = v.get<size_t>();
         }
 
-        // Rolls step 2: the per-contract roll switch. Optional, boolean, off when absent; read by
-        // nothing yet (steps 3 and 4 wire it).
+        // The per-contract roll switch. Optional, boolean, off when absent.
         if (merged.contains("per_contract_rolls")) {
             const auto& v = merged.at("per_contract_rolls");
             if (!v.is_boolean()) {
@@ -304,7 +303,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             }
             config.per_contract_rolls = v.get<bool>();
         }
-        // Rolls step 4, ruling 19: the switch-bar setting, "held" (absent) or "vendor".
+        // The switch-bar setting, "held" (absent) or "vendor".
         if (merged.contains("per_contract_switch_bar")) {
             const auto& v = merged.at("per_contract_switch_bar");
             if (!v.is_string() ||
@@ -1205,9 +1204,9 @@ Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
                                 "portfolio.json only",
                                 "ConfigLoader");
     }
-    // Rejoin R-17: the per-contract blocks are the engine's data about the contracts (when each
+    // The per-contract blocks are the engine's data about the contracts (when each
     // micro listed, its renamed ids, the rules each contract drops), not desk settings. The
-    // settings check (D-17) does not run their meaning checks, so a changed block would pass it
+    // settings check does not run their meaning checks, so a changed block would pass it
     // and then stop every later run of the portfolio.
     for (const char* engine_data :
          {"listing_dates", "instrument_id_relabels", "trading_rule_removals", "carry"}) {

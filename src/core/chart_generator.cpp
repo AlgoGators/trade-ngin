@@ -174,8 +174,8 @@ std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
            portfolio_id +
            "' "
            "AND portfolio_type = '" + chart_book() + "' "
-           // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
-           // report used to read Sunday's carried rows.
+           // The previous SESSION, not the previous calendar day -- a Monday
+           // report must not read Sunday's carried rows.
            "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
            "                         WHERE strategy_id = '" +
            strategy_id +

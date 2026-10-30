@@ -102,7 +102,7 @@ struct ConditionModuleConfig {
 struct RiskModuleConfig {
     std::string id;
     /// "carver", "none", "constant_scale", "warn", "refuse" -- the type() strings of the
-    /// modules commit 4 shipped, so a config names a module by the name the module
+    /// shipped modules, so a config names a module by the name the module
     /// answers to.
     std::string type;
     std::variant<CarverModuleConfig, NoneModuleConfig, ConstantScaleModuleConfig,

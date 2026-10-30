@@ -1268,7 +1268,7 @@ Result<size_t> PostgresDatabase::execute_direct_query(const std::string& query) 
         pqxx::work txn(*connection_);
         auto result = txn.exec(query);
         txn.commit();
-        // S-4: report what the statement touched. Zero is a successful statement that matched
+        // Report what the statement touched. Zero is a successful statement that matched
         // nothing; the caller decides what that means (the runners' Day T-1 UPDATE warns). A
         // statement whose tag carries no count (DDL, SET, ...) reports 0 and is never asked
         // (statement_reports_row_count above).
@@ -2953,8 +2953,8 @@ PostgresDatabase::get_corporate_actions(
         // Parameter arrays rather than concatenated IN-lists: at the full
         // 852-symbol universe the string form built a 5 kB literal per call.
         //
-        // G6-4: equities_data.corporate_action stores `date` as TEXT, and this
-        // compared it as `date::date BETWEEN $3::date AND $4::date`. The cast
+        // equities_data.corporate_action stores `date` as TEXT. A cast
+        // (`date::date BETWEEN $3::date AND $4::date`)
         // is evaluated per row and throws on the first value that is not a
         // parseable date, taking the whole query -- and the run -- with it; it
         // also makes the predicate non-sargable, so the (ticker, date) index

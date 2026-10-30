@@ -31,8 +31,7 @@
 namespace trade_ngin {
 
 /// One held futures root's roll outlook on the settled day (contract_rolls::ContractRollSeries::outlook).
-/// The contracts print as the removed box printed them (git show c00dd1d6^:src/core/email_sender.cpp,
-/// get_front_month_symbol): the IB symbol, the month code and the year's last digit ("JPYZ5").
+/// The contracts print as the IB symbol, the month code and the year's last digit ("JPYZ5").
 struct ReportRollOutlook {
     std::string root;            ///< "6J": the Databento symbol (the Symbols Reference's key)
     std::string label;           ///< "JPY": the IB symbol the box prints (the root when not known)

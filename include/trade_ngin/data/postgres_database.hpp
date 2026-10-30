@@ -87,7 +87,7 @@ private:
     friend class PostgresDatabase;
 
     // `owner` is the PostgresDatabase whose connection this transaction holds.
-    // C4-DbTransaction: the scope marks that database as busy for as long as it
+    // The scope marks that database as busy for as long as it
     // lives, so a self-opening method called in between refuses instead of
     // throwing pqxx::usage_error. May be null in tests that build a scope
     // straight from a connection.
@@ -166,7 +166,7 @@ public:
         DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") override;
 
     /**
-     * @brief The vendor instrument id of each futures bar the loader keeps (T-7b-2 C10a)
+     * @brief The vendor instrument id of each futures bar the loader keeps
      *
      * For the session classifier's instrument-id continuity limb. The window and the symbol
      * filter are get_market_data's (FUTURES, daily); a bar whose futures_data.ohlcv_1d_raw row
@@ -1089,7 +1089,7 @@ private:
     std::string component_id_;
 
     /**
-     * @brief Is a DbTransaction currently open on this connection? (C4-DbTransaction)
+     * @brief Is a DbTransaction currently open on this connection?
      *
      * pqxx allows ONE transaction per connection. Every self-opening method here
      * constructs its own `pqxx::work` on `connection_`, so calling any of them

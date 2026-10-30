@@ -52,8 +52,8 @@ inline std::string carried_forecast_label(const std::string& run_date) {
 
 /// The futures runners' log line for one sleeve's carried forecasts on a day with no session:
 /// how many were read and, in the carried file's own words (carried_forecast_label), which run
-/// computed them and the last bar date that run read. The stored date is a RUN date: the line
-/// used to end "from <date>", which read as the date of the bars.
+/// computed them and the last bar date that run read. The stored date is a RUN date, so the
+/// line does not end "from <date>", which would read as the date of the bars.
 inline std::string carried_forecasts_log_line(const std::string& sleeve, std::size_t count,
                                               const std::string& run_date) {
     const std::string label = carried_forecast_label(run_date);

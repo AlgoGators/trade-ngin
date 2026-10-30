@@ -18,7 +18,7 @@ namespace trade_ngin {
  *   best_day, worst_day) are in percentage points, consistent with daily_return.
  * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
  * - profit_factor has no value (kNoRatio, a NaN) while the series has no losing session; its
- *   cell of trading.live_results is then NULL (T-8D R12).
+ *   cell of trading.live_results is then NULL.
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
@@ -51,7 +51,7 @@ struct HistoricalMetrics {
     int total_trades = 0;       // count of executions since inception
 
     // ((1 + R)^(K / n) - 1) x 100 on the statistics grid, R from the base to the last grid level
-    // and K the grid's sessions a year; computed for every n (T-8D-2 R74). Not one of the sixteen
+    // and K the grid's sessions a year; computed for every n. Not one of the sixteen
     // columns of historical_metrics_*_columns: the runner writes it beside them.
     double total_annualized_return = 0.0;
 };
@@ -224,7 +224,7 @@ std::unordered_map<std::string, double> historical_metrics_double_columns(
 
 /**
  * @brief The columns of the block that have no value on some rows and are then stored NULL
- *        (T-8D R12): profit_factor, with no losing session. The day-T INSERT leaves such a
+ *        (profit_factor, with no losing session). The day-T INSERT leaves such a
  *        column out (historical_metrics_double_columns does not name it); the Day T-1 UPDATE
  *        must overwrite what the row holds, so historical_metrics_update_columns carries it as
  *        kNoRatio and the writer assigns NULL (null_cells_of_statistics_without_value).

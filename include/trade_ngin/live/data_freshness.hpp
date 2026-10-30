@@ -37,10 +37,10 @@ struct FeedFreshness {
     std::string stalest_symbol;
     /// Calendar days from `stalest_date` to the as-of date. 0 when !any_data.
     long days_behind{0};
-    /// How many symbols were assessed. B-ii: this is the size of the REQUESTED
+    /// How many symbols were assessed: the size of the REQUESTED
     /// universe when one is supplied, not the number that answered.
     std::size_t symbols{0};
-    /// B-ii: requested symbols with no bar at all. A symbol that never printed
+    /// Requested symbols with no bar at all. A symbol that never printed
     /// cannot set `stalest_date` -- it is not "a few days behind", it is absent,
     /// which is a different and worse condition. Counted separately so the
     /// threshold policy on `days_behind` is unchanged.
@@ -112,7 +112,7 @@ inline FeedFreshness assess_feed_freshness(
     FeedFreshness f;
     f.symbols = requested.empty() ? last_bar_date.size() : requested.size();
 
-    // B-ii: absence first, and named deterministically.
+    // Absence first, and named deterministically.
     for (const auto& symbol : requested) {
         auto it = last_bar_date.find(symbol);
         if (it != last_bar_date.end() && freshness_parse_ymd_utc(it->second) > 0) continue;

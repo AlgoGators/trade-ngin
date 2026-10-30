@@ -67,10 +67,10 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
             Position finalized_pos = position;
             result.position_realized_pnl[symbol] = 0.0;
             if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
-                // E2-F19 R-1 / R-2 (cash book): a symbol with no T-1 print -- a halt, a
+                // Cash book: a symbol with no T-1 print -- a halt, a
                 // thin name, a feed gap -- realized nothing today (its trade flow is what
                 // the day's own run recorded, kept as-is) and is still worth its last
-                // known mark. Writing 0/0 here erased a real level for a day and had it
+                // known mark. Writing 0/0 here would erase a real level for a day and have it
                 // reappear the next session as a phantom jump in daily unrealized.
                 finalized_pos.realized_pnl = position.realized_pnl;
                 finalized_pos.unrealized_pnl = position.unrealized_pnl;
@@ -100,7 +100,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
             result.position_realized_pnl[symbol] = 0.0;
             if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
                 // Cash book with a T-1 close but no T-2 close: the mark IS computable from
-                // the cost basis, and realized is the day's trade flow (R-1 / R-2).
+                // the cost basis, and realized is the day's trade flow.
                 double avg_price = position.average_price.as_double();
                 finalized_pos.realized_pnl = position.realized_pnl;
                 finalized_pos.unrealized_pnl =
@@ -147,7 +147,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
 
         // Create finalized position with realized PnL.
         //
-        // E2-F19 R-1: what lands in the ROW's realized_pnl follows the settlement model.
+        // What lands in the ROW's realized_pnl follows the settlement model.
         // SETTLED (futures): the settlement move IS the day's realized. MARK_TO_MARKET
         // (equities): the row keeps the trade realized the day's own run recorded; the
         // move is a mark and belongs in unrealized_pnl below. The aggregate fields
@@ -165,7 +165,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // being settled here at close(T); that whole move is booked as realized just
         // above, so there is no unrealized component. Writing one would record the same
         // settlement move twice, because on a futures row average_price IS day_t2_close
-        // and the expression below reduces exactly to the realized formula (E2-F3).
+        // and the expression below reduces exactly to the realized formula.
         //
         // MARK_TO_MARKET (equities): average_price is a true weighted cost basis, so the
         // expression is the genuine unrealized P&L.
@@ -175,7 +175,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
                 (avg_price > 0.0 && quantity != 0.0)
                     ? Decimal(quantity * (day_t1_close - avg_price) * point_value)
                     : Decimal(0.0);
-            // E2-F1: carry the same figure into the aggregate so the row-sums-to-aggregate
+            // Carry the same figure into the aggregate so the row-sums-to-aggregate
             // invariant (protocol L5) holds by construction. Deliberately accumulated inside
             // the MARK_TO_MARKET branch only -- under SETTLED this stays 0.0 for futures
             // without needing a second guard anywhere.
@@ -351,7 +351,7 @@ double LivePnLManager::get_point_value(const std::string& symbol) const {
         }
     }
 
-    // E2-F38 / BA-7: a share is a share: one unit, point value 1.0. There is nothing to guess.
+    // A share is a share: one unit, point value 1.0. There is nothing to guess.
     if (asset_type_ != AssetType::FUTURE) {
         WARN("No registry entry for " + symbol + "; it is not a futures symbol, so its "
              "point value is 1.0.");

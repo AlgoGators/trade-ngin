@@ -166,7 +166,7 @@ public:
             }
             out.params = none;
         } else if (type == "carver") {
-            // C-2: make_risk_module hands every module the PORTFOLIO's capital, and the Carver
+            // make_risk_module hands every module the PORTFOLIO's capital, and the Carver
             // module ignores RiskContext::capital by design (RiskModule) and keeps the
             // RiskConfig::capital its gate divides by. A carver on a 30 % sleeve would therefore
             // measure that sleeve's leverage against 100 % of the book's money, so

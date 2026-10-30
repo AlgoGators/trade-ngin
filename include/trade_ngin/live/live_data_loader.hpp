@@ -86,7 +86,7 @@ struct LiveResultsRow {
 };
 
 /**
- * @brief The report's statistics and return lines from a day's stored row (T-8D-2 R58, R61): the
+ * @brief The report's statistics and return lines from a day's stored row: the
  *        metric names the daily report reads, each from its stored column. The statistics are the
  *        settled series' (they run through the day before the row's date); the cumulative return
  *        is the row's own level. Flat days are total less winning less losing.

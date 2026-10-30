@@ -1493,7 +1493,7 @@ int main(int argc, char* argv[]) {
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
-        coordinator_config.strategy_id = combined_strategy_id;  // From config (Phase 1)
+        coordinator_config.strategy_id = combined_strategy_id;  // From config
         coordinator_config.portfolio_id = portfolio_id;         // From loaded config
         coordinator_config.schema = "trading";
         coordinator_config.initial_capital = initial_capital;
@@ -1527,12 +1527,12 @@ int main(int argc, char* argv[]) {
         }
         ChartGenerator::set_book(qt_write_book);
 
-        // Create Phase 3 managers
+        // Create the execution and margin managers
         INFO("Creating ExecutionManager and MarginManager for Phase 3");
         auto execution_manager = std::make_unique<ExecutionManager>();
         auto margin_manager = std::make_unique<MarginManager>(registry);
 
-        // Create Phase 4 CSV exporter with portfolio-specific directory
+        // Create the CSV exporter with portfolio-specific directory
         INFO("Creating CSVExporter for Phase 4");
         std::string csv_output_dir = "apps/strategies/results/" + portfolio_id +
                                      (qt_sends ? (qt_desk_editable ? "/qt" : "/sent")
@@ -3012,7 +3012,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
-                    // The Day T-1 rows of this strategy, written after the executions (commit 5).
+                    // The Day T-1 rows of this strategy, written after the executions.
                     if (!finalized_positions.empty()) {
                         t1_position_rewrites.emplace_back(strategy_name,
                                                           std::move(finalized_positions));
@@ -4136,7 +4136,7 @@ int main(int argc, char* argv[]) {
                       "unfinalized row on " + yesterday_date_ss.str() + ".");
                 return 1;
             } else if (update_result.value() == 0) {
-                // S-4: the statement succeeded and matched no row, so nothing was finalized.
+                // The statement succeeded and matched no row, so nothing was finalized.
                 WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_ss.str() +
                      ": no live_results row exists for that date, so its finalized PnL and "
                      "metrics were NOT stored");
@@ -4953,7 +4953,7 @@ int main(int argc, char* argv[]) {
             ERROR("Exception while saving trading results: " + std::string(e.what()));
         }
 
-        // Phase 4: Use CSVExporter for position export
+        // Use CSVExporter for position export
         INFO("Using CSVExporter to save positions to file...");
 
         // All real transaction-cost data flows from cost_manager_->calculate_costs() at

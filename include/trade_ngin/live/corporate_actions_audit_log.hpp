@@ -25,7 +25,7 @@ namespace trade_ngin {
  *
  * The DB-backed constructor is what the live app uses, and the only one safe
  * for deciding whether an event has been applied. trading.corp_action_applied
- * (migration 002) survives the redeploys that used to wipe the state file, and
+ * (migration 002) survives redeploys, which wipe a state file, and
  * it is the only backing that can bridge ticker renames: that bridge needs
  * equities_data.ticker_aliases, which requires a database handle. A file-backed
  * log therefore cannot tell that an event applied under AA is the same event now
@@ -35,10 +35,6 @@ namespace trade_ngin {
  * applied_corp_actions.json once (migrate_state_file_to_db), and tests that
  * exercise file semantics directly. bridges_renames() reports which backing is
  * in force, and the live runner refuses to adjust positions without it.
- *
- * (Superseded note, kept for context: this class was originally file-only
- * because the Phase 4 scope constraint forbade new schema. Migration 002 lifted
- * that, and the DB table the audit originally asked for now exists.)
  *
  * File format:
  * {
@@ -145,7 +141,7 @@ public:
     /**
      * @brief The latest ex-date recorded as applied, "" when none.
      *
-     * E2-F23: a row whose ex-date is on or after the run date cannot have been
+     * A row whose ex-date is on or after the run date cannot have been
      * written by an earlier session of a forward-only book -- it came from a later
      * pass (a replay, or a same-day re-run). A run that sees one must refuse rather
      * than skip the event and finalize the T-1 book in the wrong frame.
@@ -194,12 +190,12 @@ public:
      *
      * Used by the live equity app to populate
      * trading.live_results.total_dividend_income at daily finalization
-     * (Phase 4.5). Splits do not contribute (only DIVIDEND events are
+     * Splits do not contribute (only DIVIDEND events are
      * captured in dividend_events_).
      *
      * Informational ONLY: the equity price series is total-return adjusted,
      * so dividend value is ALREADY in mark-to-market P&L via price
-     * continuity. Post Phase 4.2 that adjustment is computed in-engine from
+     * continuity. That adjustment is computed in-engine from
      * per-bar div_cash/split_factor rather than read from the vendor's
      * closeadj column, but the accounting consequence is unchanged: do NOT
      * add this value to P&L totals -- it would double-count.
@@ -234,7 +230,7 @@ public:
                                    std::vector<std::string>* recorded_quantity_used = nullptr) const;
 
     /**
-     * @brief F-8 -- every recorded class-1 event for one symbol, as broker_frame input.
+     * @brief Every recorded class-1 event for one symbol, as broker_frame input.
      *
      * The lifetime chain of `basis_ratio` factors (migration 006) for this
      * portfolio/strategy/name, spanning both the rows loaded at startup and the rows
@@ -260,7 +256,7 @@ public:
      * @brief Dividend detail as the legacy state file carried it.
      *
      * Public because `dividend_detail_for` below takes and returns it, and that
-     * rule has to be testable without a database (E2-F39 / BA-15). Note there is
+     * rule has to be testable without a database. Note there is
      * no action_type here: every entry in this list IS a dividend, which is
      * precisely why the import needs the type passed in alongside.
      */
@@ -275,13 +271,13 @@ public:
     /**
      * @brief Which legacy dividend detail belongs to an applied event, if any.
      *
-     * E2-F39 / BA-15. The legacy state file records applied events keyed on
+     * The legacy state file records applied events keyed on
      * (symbol, ex_date, action_type) but carries dividend detail keyed only on
      * (symbol, ex_date) -- DividendEvent has no action_type, because every entry
-     * in it IS a dividend. The import matched on (symbol, ex_date) alone, so when
-     * a symbol had a SPLIT and a DIVIDEND on the SAME ex-date, the SPLIT row also
-     * inherited the dividend's qty_held, dividend_per_share and total_cash. The
-     * cash then appears twice in cumulative dividend income: once on the dividend
+     * in it IS a dividend. Matching on (symbol, ex_date) alone would, when
+     * a symbol had a SPLIT and a DIVIDEND on the SAME ex-date, give the SPLIT row
+     * the dividend's qty_held, dividend_per_share and total_cash, and the
+     * cash would appear twice in cumulative dividend income: once on the dividend
      * row, once on the split row that never paid anything.
      *
      * Returns nullptr when the event is not a dividend, or when no detail matches.
@@ -308,7 +304,7 @@ private:
     std::string state_dir_;
     std::set<AppliedKey> applied_;
     std::vector<DividendEvent> dividend_events_;
-    // F-8: every applied row with its basis_ratio, loaded rows and this run's alike,
+    // Every applied row with its basis_ratio, loaded rows and this run's alike,
     // so basis_chain() can answer for a symbol adjusted today. Not a dedup structure --
     // applied_ remains the only thing is_applied() consults.
     std::vector<PostgresDatabase::AppliedCorpActionRow> recorded_;
@@ -319,7 +315,7 @@ private:
     std::string portfolio_id_;
     std::string strategy_id_;
     std::string strategy_name_;
-    // The run's as-of date (E2-F23). Empty disables stamping and the staleness
+    // The run's as-of date. Empty disables stamping and the staleness
     // check; see set_run_date.
     std::string run_date_;
     bool enforce_run_date_{true};

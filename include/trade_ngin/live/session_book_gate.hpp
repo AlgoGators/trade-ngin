@@ -337,7 +337,7 @@ struct ConsumedT1Settlement {
     /// a WITHHELD bar. Their union is zero_pnl_symbols; nothing settles from these two.
     std::unordered_set<std::string> roll_zero_symbols;
     std::unordered_set<std::string> withheld_zero_symbols;
-    /// Rolls step 4 (R4b): the symbols whose T-1 bar is a per-contract roll bar (it books the old
+    /// The symbols whose T-1 bar is a per-contract roll bar (it books the old
     /// contract's move, to its close on the bar), for the report's roll footnote; empty with the
     /// switch off, and without a symbol whose roll this run legs late.
     std::unordered_set<std::string> per_contract_roll_symbols;
@@ -576,7 +576,7 @@ struct StrictExecutionOutcome {
  * (or is dropped if it was never held). With the hold above, every symbol that reaches the
  * execution step with a change has a positive T-1 price, so `unpriced` is empty by construction;
  * this is the belt, and a non-empty `unpriced` is a tripwire the caller logs as an ERROR.
- * MARK_FALLBACK (a fill at the position's own last mark) is no longer used by the futures runners.
+ * The futures runners do not use MARK_FALLBACK (a fill at the position's own last mark).
  */
 inline Result<StrictExecutionOutcome> execute_strategy_day_strict(
     ExecutionManager& execution_manager, std::unordered_map<std::string, Position>& current,

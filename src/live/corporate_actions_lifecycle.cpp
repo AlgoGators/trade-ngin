@@ -25,7 +25,7 @@ const char* CorporateActionsLifecycle::outcome_to_string(LifecycleOutcome o) {
 
 SpinoffChildPolicy spinoff_child_policy_from_string(const std::string& s) {
     // Unknown text takes the DEFAULT, not HOLD: a typo in a config file must not strand an
-    // unpriceable child position in the book (F-4). The runner logs which policy is in force.
+    // unpriceable child position in the book. The runner logs which policy is in force.
     if (s == "hold") return SpinoffChildPolicy::HOLD;
     return SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE;
 }
@@ -78,7 +78,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             continue;
         }
 
-        // B-iii: a spinoff cannot be allocated off a basis the book does not have.
+        // A spinoff cannot be allocated off a basis the book does not have.
         //
         // Every basis expression below is written `basis > 0.0 ? ... : 0.0`, so a parent
         // whose average_price is 0 produces parent_basis_after = 0 and pool_per_share = 0,
@@ -92,7 +92,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
         // not be resolved (AVERAGE_PRICE_LIFECYCLE rule 5 and the rule-5 residual, which
         // writes 0 with a BASIS TRACE | UNRESOLVED error). That is precisely the book a
         // corporate action must not be applied to. Refuse it whole, the same shape as the
-        // E2-F17 provenance skip: no dedup row, so the event is retried next run once the
+        // basis-provenance skip: no dedup row, so the event is retried next run once the
         // basis is repaired rather than being silently consumed.
         if (!(basis > 0.0)) {
             adj.outcome = LifecycleOutcome::SKIPPED_NO_PARENT_BASIS;
@@ -113,14 +113,14 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
         // from magnitude -- both arrive from named columns -- so a bad value here is a data
         // fault, not a judgement call, and it must not be worked around.
         //
-        // E2-F48: the test is `F > 1`, which is what this comment always said and what the
-        // arithmetic below requires; the code tested `F > 0`. A distribution takes value OUT
+        // The test is `F > 1`, which is what the
+        // arithmetic below requires. A distribution takes value OUT
         // of the parent, so the factor the price series steps by is strictly greater than 1
         // and `1 - 1/F` -- the fraction of the basis that leaves -- is strictly positive.
         // An F below 1 is a REVERSE SPLIT that fell on the spinoff's ex-date (DD 2019-06-03
-        // with CTVA, HLT 2017-01-04, LDOS 2013-09-30). Accepting it made `1 - 1/F` negative
-        // and handed the child a NEGATIVE cost basis, while suppressing a real split that
-        // applied correctly before this path existed. The caller decomposes the bar and
+        // with CTVA, HLT 2017-01-04, LDOS 2013-09-30). Accepting it would make `1 - 1/F` negative
+        // and hand the child a NEGATIVE cost basis, while suppressing a real split that
+        // the class-1 path applies correctly. The caller decomposes the bar and
         // sends the reverse split to class 1; this guard is the backstop.
         const double F = ev.parent_restatement_factor;
         bool terms_usable = (F > 1.0) && std::isfinite(F) && !ev.children.empty();
@@ -148,8 +148,8 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
         // WEIGHTED either, so a missing close on ONE child makes the allocation across all of
         // them unknowable. Refusing whole is the only honest outcome: the alternative is to
         // invent a price from the parent's basis, which fabricates the one number a broker
-        // statement would be compared against. (E2-F49: this was already all-or-nothing per
-        // event; with several children it is now all-or-nothing across the set.)
+        // statement would be compared against. With several children it is all-or-nothing
+        // across the set.
         double fmv_total = 0.0;  // sum(r_i * P_i) -- the allocation denominator
         std::string unpriceable;
         for (const auto& c : ev.children) {
@@ -196,7 +196,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             // basis_i = pool * P_i / sum(r_j P_j); with one child this is pool / r exactly.
             d.avg_price = pool_per_share > 0.0 ? pool_per_share * c.first_close / fmv_total
                                                : 0.0;
-            // BA-25: floor, but not through floating-point dust.
+            // Floor, but not through floating-point dust.
             //
             // `qty` is reloaded from `trading.positions.quantity`, which is numeric(20,6).
             // A retried reverse-split spinoff therefore arrives as 33.333333 rather than the
@@ -204,8 +204,8 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             // 59.9999994: floor gives 59 whole shares plus a 0.9999994 "fraction", so the
             // holder is one share short and the book emits a cash-in-lieu SELL for very
             // nearly a whole share that no broker ever paid. The same-run path, working from
-            // an unrounded quantity, delivers 60 and no CIL -- so the two paths disagreed
-            // about the same event because of the storage precision between them.
+            // an unrounded quantity, delivers 60 and no CIL -- so a plain floor would make the
+            // two paths disagree about the same event because of the storage precision between them.
             //
             // A real fractional entitlement is nowhere near an integer (100 x 0.33333 is
             // 33.333, a third of a share out), so rounding to the nearest share when the
@@ -232,7 +232,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             deliveries.push_back(std::move(d));
         }
 
-        // E2-F48: never a negative basis on any side. `F > 1` above makes this unreachable --
+        // Never a negative basis on any side. `F > 1` above makes this unreachable --
         // which is exactly why it is asserted rather than assumed. A negative child basis is
         // not a small error: under liquidate_at_first_close the child's whole first close
         // PLUS the negative basis is booked as realized gain on the parent's row, and the
@@ -310,7 +310,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
         }
 
         // LIQUIDATE_AT_FIRST_CLOSE. Each child is received and sold in one step, so none of
-        // them becomes an unpriceable holding the next run has to carry (F-4). The realized
+        // them becomes an unpriceable holding the next run has to carry. The realized
         // figure is struck against that child's own allocated basis, so a child that opened
         // exactly at its allocated value books zero -- the distribution itself is not a P&L
         // event.
@@ -395,7 +395,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
     std::vector<LifecycleAdjustment> log;
 
     // One rename map, shared with LiveDailyCycle::effective_universe so the universe
-    // the run loads bars for and the re-keying done here cannot drift apart (E2-F34).
+    // the run loads bars for and the re-keying done here cannot drift apart.
     const RenameMap renames = build_rename_map(aliases);
     if (renames.empty()) return log;
 
@@ -521,7 +521,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
         }
 
         // Stock-for-stock rollover is DISABLED. Two independent reasons, both measured
-        // against equities_data.corporate_action (E2-F9):
+        // against equities_data.corporate_action:
         //
         // 1. `contraticker` carries the sentinel "N/A" on 546,662 rows -- the dominant
         //    value in the table. An `!empty()` test passes it, and the successor position
@@ -541,8 +541,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
         // last real close, which is conservative, correct, and reconcilable with a broker:
         // the position was held, the symbol stopped trading, the holder is out at the last
         // price. Re-enabling this requires a verified deal-terms source, not a code change.
-        // Same root cause as NEW-5 (spinoff child-share receipt), which stays data-blocked.
-        const bool contra_is_usable =
+                const bool contra_is_usable =
             !ev.contra_ticker.empty() && ev.contra_ticker != "N/A" &&
             ev.contra_ticker != ev.symbol &&
             std::all_of(ev.contra_ticker.begin(), ev.contra_ticker.end(),

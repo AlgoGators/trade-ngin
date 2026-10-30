@@ -156,10 +156,10 @@ ExecutionReport ExecutionManager::generate_execution(
     // Keep fill_price as pure reference price (no embedded slippage).
     exec.fill_price = market_price;
 
-    // E2-F29: pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
+    // Pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
     // term except the SEC/TAF regulatory fees, which are sell-side only and are gated on
-    // `quantity < 0`. Passing |quantity_change| made that gate unreachable, so a config with
-    // apply_regulatory_fees charged a sell exactly what it charged a buy.
+    // `quantity < 0`. Passing |quantity_change| would make that gate unreachable, so a config
+    // with apply_regulatory_fees would charge a sell exactly what it charges a buy.
     auto cost_result = cost_manager_->calculate_costs(
         symbol, quantity_change, market_price);
 

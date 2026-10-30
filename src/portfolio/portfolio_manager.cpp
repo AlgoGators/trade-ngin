@@ -341,8 +341,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // the sleeve still holds the previous rebalance's targets, and everything
                         // after this loop in the same call reads it (the optimizer, the risk
                         // steps, the rounding, the book copy and execution generation). Empty it,
-                        // so the stopped sleeve contributes no target (ledger row
-                        // DA96324A-stopped-sleeve-map). Unreachable in every runner today: each
+                        // so the stopped sleeve contributes no target. Unreachable in every runner: each
                         // starts its strategies before the first call and stops them after the
                         // last.
                         info.target_positions.clear();
@@ -1297,7 +1296,7 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     //    without the extra bar. It is the Carver gate's F5 rule (carver_risk_module.cpp: a date
     //    survives only if every symbol printed on it, returns between consecutive survivors);
     //  * a symbol with fewer than two usable closes gets an EMPTY series and does not shrink D;
-    //    calculate_covariance_matrix's empty-series and C-20 guards handle it.
+    //    calculate_covariance_matrix's empty-series and short-series guards handle it.
     //
     // Every returned non-empty series has the same length, |D| - 1, so the count alignment in
     // calculate_covariance_matrix is the identity on them and its min_periods is |D| - 1. The
@@ -1320,7 +1319,7 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     //    returns sends the WHOLE matrix to calculate_covariance_matrix's 0.01 diagonal).
     //
     // A participant left out gets an EMPTY series, so calculate_covariance_matrix gives it the
-    // guarded column (the C-20 path: 0.01 variance, zero covariances) and every other entry is what
+    // guarded column (the short-series path: 0.01 variance, zero covariances) and every other entry is what
     // it is without that symbol.
     std::unordered_map<std::string, std::vector<double>> out;
     std::vector<std::string> participants;
@@ -1390,8 +1389,8 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     // participant with FEWER usable dates than the most-dated participant can be left out (the
     // floor is there to stop a short participant shrinking everyone's window; leaving out a
     // most-dated one cannot lengthen the others'), and nobody is left out unless that reaches
-    // the floor: when it cannot, every participant stays and the matrix takes the 0.01 diagonal
-    // exactly as under S3, rather than a symbol's data being thrown away for nothing.
+    // the floor: when it cannot, every participant stays and the matrix takes the 0.01 diagonal,
+    // rather than a symbol's data being thrown away for nothing.
     if (participants.size() > 1 && dates.size() < kCovarianceMinReturns + 1) {
         size_t most_dates = 0;
         for (const auto& symbol : participants) {
@@ -1543,7 +1542,7 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
     std::vector<std::vector<double>> aligned_returns(min_periods,
                                                      std::vector<double>(num_assets, 0.0));
 
-    // The columns the C-20 guard below skipped, so their diagonal can be
+    // The columns the short-series guard below skipped, so their diagonal can be
     // restored after the covariance is built. Empty whenever the guard does not fire.
     std::vector<size_t> covguard_rows;
 
@@ -1551,7 +1550,7 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
         const auto& symbol = ordered_symbols[i];
         const auto& returns = returns_by_symbol.at(symbol);
 
-        // C-20: a symbol whose return series is shorter than min_periods was
+        // A symbol whose return series is shorter than min_periods was
         // skipped by the scan above (the empty case `continue`s there)
         // but is still in ordered_symbols, so the unsigned subtraction below
         // wraps and the copy reads far outside `returns`. Leave its column at
@@ -1602,7 +1601,7 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
         }
     }
 
-    // A symbol the C-20 guard skipped
+    // A symbol the short-series guard skipped
     // keeps the all-zero column aligned_returns was built with, so its VARIANCE is
     // zero too: the greedy's s^2 * Sigma_ii / 2 penalty vanishes and the name looks
     // like free risk (DynamicOptimizer's greedy search), and correlation_multiplier's
@@ -1824,7 +1823,7 @@ Result<void> PortfolioManager::optimize_positions() {
                     // Copy the data under lock. historical_returns_[symbol] is computed from
                     // closes_by_date_[symbol], so the entry exists whenever the returns do; a
                     // symbol without one enters with no closes and is handled as an empty
-                    // series (the C-20 guard in calculate_covariance_matrix).
+                    // series (the short-series guard in calculate_covariance_matrix).
                     auto closes = closes_by_date_.find(symbol);
                     closes_by_symbol[symbol] = closes != closes_by_date_.end()
                                                    ? closes->second
@@ -1884,7 +1883,7 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const std::string& symbol = symbols[i];
 
-                // Aggregate across strategies, in account weight (ledger N2): a sleeve sizes its
+                // Aggregate across strategies, in account weight: a sleeve sizes its
                 // contracts on its own capital slice (capital x allocation), so each of its
                 // contracts is one contract of the account's book and weighs w; the account
                 // holds the sum of the sleeves' contracts, which is the book apply_risk_management
@@ -1965,7 +1964,7 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const auto& symbol = symbols[i];
 
-                // The optimizer's answer in account contracts, UNROUNDED (ledger N2: the
+                // The optimizer's answer in account contracts, UNROUNDED (the
                 // aggregate is the sum of the sleeves' contracts, the account's book).
                 double raw_contracts = optimized_positions[i] / weights_per_contract[i];
 
@@ -2017,8 +2016,8 @@ Result<void> PortfolioManager::optimize_positions() {
                 double original_position = 0.0;
                 double optimized_position = 0.0;
 
-                // Sum up positions across all strategies: the account's contracts (ledger N2;
-                // a sleeve's contracts already carry its allocation)
+                // Sum up positions across all strategies: the account's contracts
+                // (a sleeve's contracts already carry its allocation)
                 for (const auto& [_, info] : strategies_) {
                     if (info.target_positions.count(symbol) > 0) {
                         optimized_position +=
@@ -3840,7 +3839,7 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
 
                 // Scale positions in all strategies under lock. A pinned strategy is
                 // skipped, so the book the modules measured is cut by less than `scale`; the
-                // count travels to on_applied so a module keeping a level can say so (A-5).
+                // count travels to on_applied so a module keeping a level can say so.
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     for (auto& [id, info] : strategies_) {
