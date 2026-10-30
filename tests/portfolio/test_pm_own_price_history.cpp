@@ -1,18 +1,14 @@
-// The PortfolioManager keeps its own price history (T-6c commit B).
+// The PortfolioManager keeps its own price history.
 //
-// The optimiser's covariance used to be built from price histories BORROWED from the
-// strategies (each strategy's get_price_history()), and when two strategies offered different
-// series for one symbol an interim rule kept the first-registered one (PM_HISTORY_MERGE). The
-// series therefore depended on which sleeve was registered first and on what each sleeve chose
-// to keep: a mean-reversion sleeve trims to 40 prices, a trend sleeve keeps up to 756, a fast
-// trend sleeve that never clears splices a replayed window onto itself (T-BASE_ADVERSARIAL
-// finding 4, T-BASE_DECISION section 3.3).
+// The optimiser's covariance is not built from price histories BORROWED from the strategies
+// (each strategy's get_price_history()): those depend on which sleeve is registered first and on
+// what each sleeve chooses to keep: a mean-reversion sleeve trims to 40 prices, a trend sleeve
+// keeps up to 756, a fast trend sleeve that never clears splices a replayed window onto itself.
 //
-// Now the PM records one close per symbol per date from the bars process_market_data is fed,
+// The PM records one close per symbol per date from the bars process_market_data is fed,
 // capped at PortfolioConfig::covariance_history_prices (756 unless configured), oldest date
 // dropped first, and builds the returns from that. These tests observe the PM only through
-// historical_returns_ and calculate_covariance_matrix, which exist before and after the change,
-// so the same file shows RED on the parent source and GREEN on the fix.
+// historical_returns_ and calculate_covariance_matrix.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -71,8 +67,7 @@ PortfolioConfig plain_config(const nlohmann::json& extra = nlohmann::json::objec
     c.opt_config.capital = 1'000'000.0;
     c.risk_config.capital = 1'000'000.0;
     c.risk_modules = {test_none_module()};
-    // Through from_json, so this file compiles against the parent source too, where the key
-    // has no reader (and the tests that need it fail there, which is their RED).
+    // Through from_json, the way a book's config reaches the key.
     if (!extra.empty()) c.from_json(extra);
     return c;
 }
@@ -129,7 +124,7 @@ private:
 };
 
 // A sleeve whose history is fabricated: every close it has been fed, twice over (the shape of
-// the fast trend sleeve's uncleared replay, T-BASE_DECISION section 3.2).
+// the fast trend sleeve's uncleared replay).
 class DoubledHistorySleeve : public TrendHistorySleeve {
 public:
     using TrendHistorySleeve::TrendHistorySleeve;
@@ -240,8 +235,8 @@ protected:
 // Mean reversion (trims to 40 prices) beside a trend sleeve (keeps up to 756) on the same two
 // symbols: the PM's history length and covariance are the same whichever sleeve is registered
 // first, and the same as either sleeve alone would give, because no sleeve's history is read.
-// At the parent source the first-registered sleeve's series is kept: 39 returns with mean
-// reversion first, 59 with trend first.
+// Keeping the first-registered sleeve's series would give 39 returns with mean reversion first,
+// 59 with trend first.
 TEST_F(PmOwnPriceHistoryTest, MeanReversionBesideTrendGivesOneHistoryWhicheverIsRegisteredFirst) {
     const std::vector<std::string> symbols{"AAPL", "MSFT"};
     std::vector<std::vector<std::vector<double>>> covariances;
@@ -311,7 +306,7 @@ TEST_F(PmOwnPriceHistoryTest, ASleeveWithAFabricatedDoubledHistoryChangesNothing
 
 // A repeated date does not lengthen the series: a duplicate bar inside one call, and the same
 // date fed again in a later call, each overwrite that date's close. The trend sleeve beside it
-// appends both, so at the parent source the PM's series is two prices longer.
+// appends both, so a series taken from it would be two prices longer.
 TEST_F(PmOwnPriceHistoryTest, ARepeatedDateDoesNotLengthenTheSeries) {
     auto pm = make_pm();
     ASSERT_TRUE(pm->add_strategy(make_sleeve<TrendHistorySleeve>("TREND_FOLLOWING", {"AAPL"}), 1.0).is_ok());
@@ -336,8 +331,8 @@ TEST_F(PmOwnPriceHistoryTest, ARepeatedDateDoesNotLengthenTheSeries) {
     EXPECT_EQ(pm->historical_returns_.at("AAPL"), expected_returns(closes));
 }
 
-// The overwrite is the second line of defence behind the loader's de-duplication (T-6c commit
-// B0), so it is logged: the same date twice in one call, or a later call bringing a different
+// The overwrite is the second line of defence behind the loader's de-duplication, so it is
+// logged: the same date twice in one call, or a later call bringing a different
 // close for a stored date, prints PM_HISTORY_REPEATED_DATE; a later call re-feeding a stored date
 // with the same close (the bar replay followed by the final feed) is silent.
 TEST_F(PmOwnPriceHistoryTest, AnOverwrittenDateIsLoggedAndASameCloseRefeedIsNot) {
@@ -383,7 +378,7 @@ TEST_F(PmOwnPriceHistoryTest, AnOverwrittenDateIsLoggedAndASameCloseRefeedIsNot)
 }
 
 // The cap: 756 prices by default, the oldest date dropped first at the 757th. The sleeve beside
-// it keeps everything (cap 0), so at the parent source the PM keeps 757 prices.
+// it keeps everything (cap 0), so a series taken from it would keep 757 prices.
 TEST_F(PmOwnPriceHistoryTest, TheDefaultCapDropsTheOldestPriceAt757) {
     auto pm = make_pm();
     ASSERT_TRUE(pm->add_strategy(make_sleeve<TrendHistorySleeve>("KEEPS_ALL", {"AAPL"}, 0), 1.0).is_ok());
@@ -418,7 +413,7 @@ TEST_F(PmOwnPriceHistoryTest, ACapBelowTwoIsRefusedByTheConstructor) {
 }
 
 // A symbol that leaves the feed keeps its series, which stops growing; the covariance still
-// truncates to the shortest symbol by count, from the tail, exactly as before.
+// truncates to the shortest symbol by count, from the tail.
 TEST_F(PmOwnPriceHistoryTest, ASymbolThatLeavesTheFeedKeepsItsSeriesAndStopsGrowing) {
     auto pm = make_pm();
     ASSERT_TRUE(pm->add_strategy(make_sleeve<TrendHistorySleeve>("TREND_FOLLOWING", {"AAPL", "MSFT"}), 1.0)

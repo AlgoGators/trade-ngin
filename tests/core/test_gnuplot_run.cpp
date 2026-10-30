@@ -1,6 +1,6 @@
 // tests/core/test_gnuplot_run.cpp
 //
-// T-EMAIL P2-1: a chart is drawn in a folder of its own, a hang is started once more, and the
+// A chart is drawn in a folder of its own, a hang is started once more, and the
 // result says Drawn / Failed with the reason. The chart program is a stand-in that reads the
 // script it is given and writes (or does not write) the image the script names.
 

@@ -6,7 +6,7 @@
 namespace trade_ngin {
 
 /**
- * @brief F-8 -- the arithmetic that relates the BOOK frame to the BROKER frame.
+ * @brief The arithmetic that relates the BOOK frame to the BROKER frame.
  *
  * `trading.positions.average_price` for an equity is an ADJUSTED cost basis: every
  * class-1 ex-date the book held through restates it (split by F, dividend by
@@ -87,7 +87,7 @@ inline bool basis_is_known(double v) { return v > 0.0; }
  *
  *     U_book - (U_broker + D) = q * B_broker * (1 - 1 / PRODUCT r_i) - q * SUM (d_i / S_i)
  *
- * where `S_i` is the product of the SPLIT factors applied after event i (BA-23). Per-share
+ * where `S_i` is the product of the SPLIT factors applied after event i. Per-share
  * cash may not be summed across a split: a dividend paid before a 4:1 split was paid on a
  * quarter of today's shares, and charging it at today's count over-states the cash by the
  * split factor -- which is the size of error this comparison exists to detect.

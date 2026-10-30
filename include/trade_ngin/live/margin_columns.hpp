@@ -79,7 +79,7 @@ inline std::string finalize_gross_leverage_sql(const std::string& finalised_valu
 }
 
 
-/// cash_available of an equity row (HD 2026-10-14, EMAIL_FEEDBACK section 16.6). A cash account's
+/// cash_available of an equity row. A cash account's
 /// cash is the portfolio value less the unrealized P&L (the shares at the day's close) less the
 /// margin posted (what the shares cost): value - unrealized - margin. The unrealized gain is not
 /// cash. A margin account keeps value - margin; it is decided when margin trading is turned on.

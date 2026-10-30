@@ -106,7 +106,7 @@ private:
         out_.report.warnings.push_back(msg);
     }
 
-    /// Rolls step 4 (plan 5c): every bar a fallback stands in for, one WARN in the run's log naming
+    /// Every bar a fallback stands in for, one WARN in the run's log naming
     /// the symbol, the grid date and the fallback used: "<root>.v.0 <date> fallback <kind>: ...".
     std::string fallback(const std::string& kind, const std::string& detail) {
         const std::string msg =
@@ -195,9 +195,10 @@ HeldSeries Rule::run() {
     Day pending_since{};
     bool pending_off_cycle = false;
 
-    // Rolls step 3: the contract the last roll left (until the next roll), and (step 4) its date.
+    // The contract the last roll left (until the next roll), and its date.
     const Contract* just_left = nullptr;
     Day just_left_on{};
+    bool just_left_alias = false;
     for (size_t i = 0; i < grid.size(); ++i) {
         const VendorBar& vb = grid[i];
         const Day d = vb.date;
@@ -209,7 +210,9 @@ HeldSeries Rule::run() {
             if (const ContractBar* lb = just_left->bar_on(d)) {
                 day.left_close = lb->close;
                 day.left_id = lb->instrument_id;
+                day.left_volume = lb->volume;
                 day.left_roll_date = just_left_on;
+                day.left_by_alias = just_left_alias;
             }
         }
         if (vendor) {
@@ -225,7 +228,7 @@ HeldSeries Rule::run() {
             // (a) The vendor's confirmed forward switch: a new vendor contract, later than the held
             // one, kept by the next bar. Detected on any bar; it rolls on a trading-day bar.
             // `vendor_candidate` is the switch as this bar alone shows it, before the next bar's
-            // confirmation (rolls step 3: a run whose bars end here sees only that).
+            // confirmation (a run whose bars end here sees only that).
             const bool vendor_candidate = vendor && vendor != last_known_vendor && !vendor_pending &&
                                           key_of(*held).expiration < key_of(*vendor).expiration;
             if (vendor_candidate && vendor_on(i + 1) == vendor) {
@@ -245,6 +248,13 @@ HeldSeries Rule::run() {
                             micro = c;
                         }
                     }
+                    // A micro that lists no contract of the held one's expiry (SIL on
+                    // 2013-06-17 lists from September, SI holds July) changes into its cycle target.
+                    if (!micro && in_.alias->full_size_grid) {
+                        auto target = cycle_target(book_, in_.root, in_.cycle, hk, d);
+                        if (target.is_error()) throw RuleRefusal(target.error()->what());
+                        micro = target.value();
+                    }
                     if (micro && held->bar_on(d)) {
                         day.roll = true;
                         day.old = hk;
@@ -259,6 +269,7 @@ HeldSeries Rule::run() {
                         if (day.deferred) ++out_.report.deferred;
                         just_left = held;
                         just_left_on = d;
+                        just_left_alias = true;
                         held = micro;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;
@@ -272,7 +283,7 @@ HeldSeries Rule::run() {
             } else if (cal_.is_trading_day(d)) {
                 const ContractKey& hk = key_of(*held);
                 const ContractDates& hd = dates_of(hk);
-                // Rolls step 3: whether (b) or (c) rolls on this bar on its own, whatever (a) says.
+                // Whether (b) or (c) rolls on this bar on its own, whatever (a) says.
                 // Only a vendor switch on this very bar that neither would roll here needs the next
                 // bar to be known (awaits_next_bar, TentativeRoll).
                 bool own_bar_trigger = false;
@@ -317,7 +328,7 @@ HeldSeries Rule::run() {
                                                         " is due and no cycle contract after it "
                                                         "prints: it is held and the roll waits");
                     } else if (!hb && !fallback) {
-                        // Ruling 3: the held contract has no bar here; the roll waits for the next
+                        // The held contract has no bar here; the roll waits for the next
                         // trading-day bar where both print (never later than the LAB).
                         this->fallback("deferred", "a roll from " + hk.raw_symbol + " to " +
                                                        target->raw_symbol + " is due and " +
@@ -360,7 +371,7 @@ HeldSeries Rule::run() {
                                                " has no bar; rolled to " + target->raw_symbol);
                         }
                         if (day.late) {
-                            // Ruling 12: the LAB is not on the vendor's grid, so the deadline rolls
+                            // The LAB is not on the vendor's grid, so the deadline rolls
                             // on the next grid bar; or no target printed until this bar.
                             const bool lab_on_grid = std::any_of(
                                 grid.begin(), grid.end(),
@@ -381,6 +392,7 @@ HeldSeries Rule::run() {
                         if (day.late) ++out_.report.late;
                         just_left = held;
                         just_left_on = d;
+                        just_left_alias = false;
                         held = target;
                         pending = RollTrigger::NONE;
                         vendor_pending = false;
@@ -392,6 +404,16 @@ HeldSeries Rule::run() {
         if (vendor) last_known_vendor = vendor;
         day.held = key_of(*held);
         fill_bar(day, *held, vendor, vb);
+        // An equity micro before its change holds the full-size contract; its own contract of the
+        // same expiry, where it prints, prices its listing legs (Bar::own_contract_volume).
+        if (in_.alias && !in_.alias->full_size_grid && held->root == in_.alias->full_root) {
+            for (const Contract* c : book_.printing_on(in_.root, d)) {
+                if (key_of(*c).expiration == day.held.expiration &&
+                    key_of(*c).delivery_month == day.held.delivery_month) {
+                    day.micro_volume = c->bar_on(d)->volume;
+                }
+            }
+        }
         out_.days.push_back(std::move(day));
     }
     return out_;
@@ -400,11 +422,17 @@ HeldSeries Rule::run() {
 }  // namespace
 
 std::optional<MicroAlias> micro_alias(const std::string& root) {
-    static const std::map<std::string, std::string> full = {
-        {"MES", "ES"}, {"MNQ", "NQ"}, {"MYM", "YM"}, {"M2K", "RTY"}};
-    auto it = full.find(root);
-    if (it == full.end()) return std::nullopt;
-    return MicroAlias{it->second, parse_ymd("2026-02-22")};
+    static const std::map<std::string, MicroAlias> table = {
+        {"MES", {"ES", parse_ymd("2026-02-22"), false}},
+        {"MNQ", {"NQ", parse_ymd("2026-02-22"), false}},
+        {"MYM", {"YM", parse_ymd("2026-02-22"), false}},
+        {"M2K", {"RTY", parse_ymd("2026-02-22"), false}},
+        // The listing dates (CME SER-5391, SER-6658).
+        {"MGC", {"GC", parse_ymd("2010-10-04"), true}},
+        {"SIL", {"SI", parse_ymd("2013-06-17"), true}}};
+    auto it = table.find(root);
+    if (it == table.end()) return std::nullopt;
+    return it->second;
 }
 
 const char* to_string(RollTrigger trigger) {

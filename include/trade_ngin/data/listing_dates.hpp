@@ -58,6 +58,14 @@ struct InstrumentIdRelabel {
     std::string to;
 };
 
+/// The relabels a run reads: `declared` with portfolio.json's per_contract_rolls off; none with it
+/// on, where the per-contract rule names each change as one roll between the two contracts of one expiry
+/// (trigger alias, contract_roll_rule.hpp MicroAlias), so no id is read as another.
+std::vector<InstrumentIdRelabel> relabels_read(const std::vector<InstrumentIdRelabel>& declared,
+                                               bool per_contract_rolls);
+/// The line a run logs when it declares relabels and does not read them (the switch on).
+std::string relabels_not_read_line(const std::vector<InstrumentIdRelabel>& declared);
+
 /// How the book moves from the predecessor to the listed contract on the switch rebalance.
 ///   kCloseReenter  the predecessor is closed by the engine's close-out and the pass opens the
 ///                  listed contract from a held position of zero
@@ -82,13 +90,13 @@ struct ListingSwitch {
     double trade_to{0.0};
     double new_to{0.0};
 };
-/// The BOOK's switch (LOOP_SPEC section 5.4: the pass runs on the portfolio book and its whole
+/// The BOOK's switch (the pass runs on the portfolio book and its whole
 /// numbers are split to the sleeves afterwards). `held_from` and `held_to` are the book's net
 /// holdings; `target_to` is the listed contract's SCALED target in contracts (the capped target
-/// times the overlay's scalar, section 4) and `cap_to` the per-name cap
+/// times the overlay's scalar) and `cap_to` the per-name cap
 /// in contracts (0 = none); both are read by kOpenAtTarget and kCarryToTarget only. kCloseReenter plans nothing.
 /// `in_deferral_band`: the held predecessor is on the other side of a forecast weaker than the
-/// deferral band (LOOP_SPEC 5.2, D39), a holding the pass would HOLD. The two target rules then
+/// deferral band, a holding the pass would HOLD. The two target rules then
 /// carry it as kConvert does (the pass holds the carried position) instead of trading it to a
 /// target the band says not to trade to yet.
 ListingSwitch plan_listing_switch(ListingSwitchRule rule, double ratio, double held_from,
@@ -159,8 +167,47 @@ public:
     /// `symbols` without the predecessors (they have no stored rows of their own), order kept.
     std::vector<std::string> stored_symbols(const std::vector<std::string>& symbols) const;
 
+    /// The run's universe from the database's symbol list: `symbols` without
+    /// each predecessor whose listed contract is in `symbols` too, order kept. GC.v.0 and SI.v.0
+    /// keep stored rows of their own (the gold and silver micros' grid before their listing), but
+    /// while MGC.v.0 and SIL.v.0 are stored the pair is one instrument, the listed contract; a
+    /// window that starts before the listing adds the predecessor back (predecessor_symbols). A
+    /// predecessor whose listed contract is not stored stays. `dropped` (optional) receives the
+    /// symbols left out. With no contract set: `symbols` itself.
+    std::vector<std::string> run_universe(const std::vector<std::string>& symbols,
+                                          std::vector<std::string>* dropped = nullptr) const;
+
+    /// The declared pairs a run must refuse, one line each, on the database's stored symbol list
+    /// (before run_universe): (1) a pair whose predecessor's .v.0 is stored and its listed
+    /// contract's is not (MGC and SIL without their own rows loaded: the predecessor would
+    /// read the listed contract's rows, which are not there, and get no bars); (2) a pair of the
+    /// full-size grid kind (contract_roll_rule.hpp MicroAlias: MGC, SIL) with per_contract_rolls
+    /// off (the history before the listing is the alias's, which only the per-contract source
+    /// reads; without it the stored listed rows start at the listing). Empty: nothing refused.
+    std::vector<std::string> refusals(const std::vector<std::string>& stored_symbols,
+                                      bool per_contract_rolls) const;
+
+    /// The reverse of refusals(). For every micro of the code's
+    /// own alias table (contract_roll_rule.hpp micro_alias: MGC/GC, SIL/SI, MES/ES, MNQ/NQ, MYM/YM,
+    /// M2K/RTY) whose .v.0 is stored beside its full-size root's .v.0 while `declared` (portfolio.json's
+    /// listing_dates) has no pair for the two, one line naming both and what to add: the run would
+    /// trade the full-size contract and the micro side by side. Read on the database's stored symbol
+    /// list, with or without listing_dates. Empty: nothing refused.
+    static std::vector<std::string> unpaired_micro_refusals(
+        const std::vector<std::string>& stored_symbols, const std::vector<ListedContract>& declared);
+
     /// For every predecessor in `symbols`: a copy of each row stored under its listed contract's
     /// symbol, appended under the predecessor's symbol. Rows already there are not touched.
+    /// Each copy's cost_volume (the volume the cost feed prices the predecessor's
+    /// legs on) is the full-size contract's own volume. Before the listed root's micro change
+    /// (contract_roll_rule.hpp MicroAlias) the copied bar is the full-size contract's, so none is
+    /// set; from the change on it is the change marker's (RollFrom::volume), and on a copy with no
+    /// marker volume (the contract left printed nothing that day) the last full-size volume of
+    /// this load, stale by a bar or more (logged once per predecessor). A listed root with no
+    /// micro alias: none set. And the listed contract's own rows of its listing date's session (the
+    /// listing date's bar, and a weekend stub right before a weekday listing) take their
+    /// own_contract_volume as cost_volume, where set (the equity micros: their series carries the
+    /// full-size contract's bar, the volume their own contract's), so its LO- leg pays on its own.
     void add_predecessor_bars(const std::vector<std::string>& symbols, std::vector<Bar>& bars) const;
     void add_predecessor_ids(const std::vector<std::string>& symbols,
                              std::vector<market_data_utils::FuturesInstrumentId>& ids) const;

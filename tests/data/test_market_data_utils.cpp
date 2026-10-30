@@ -1,15 +1,15 @@
 // Coverage for market_data_utils.cpp. Targets:
 // - get_market_data_columns(AssetClass::EQUITIES) returns the RAW per-bar
 //   columns plus the corporate-action primitives (div_cash, split_factor).
-//   Phase 4.2 moved equity adjustment in-engine: the loader computes the
+//   Equity adjustment is in-engine: the loader computes the
 //   backward cumulative factor itself instead of reading the vendor's derived
 //   adj_*/adjusted_close columns, which can go stale when the vendor's
-//   restating job stalls (it did, 2026-08-06). Behavioural coverage of the
+//   restating job stalls. Behavioural coverage of the
 //   adjustment maths lives in test_bar_close_uses_adjusted.cpp.
 // - get_market_data_columns(AssetClass::FUTURES) returns plain columns,
 //   no adj_* columns mentioned
 // - All other asset classes return plain columns
-// - Correctness of column names per ADR-000 C-2 contract
+// - Correctness of column names per the loader's column contract
 
 #include <gtest/gtest.h>
 #include <string>

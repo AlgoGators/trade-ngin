@@ -1,14 +1,14 @@
-// CM1 / migration 014: the contract metadata loader carries metadata.contract_metadata's
+// Migration 014: the contract metadata loader carries metadata.contract_metadata's
 // "Fee Per Contract" column into the table the instrument registry reads, by name, when the
-// database has it, and loads exactly as before when it does not.
+// database has it, and loads without it when it does not.
 //
 // Read-only: one SELECT on information_schema and the loader's own SELECT on
 // metadata.contract_metadata. Nothing is written.
 //
 // Which branch runs depends on the database behind TRADE_NGIN_TEST_DSN: with migration 014 applied
 // the loaded table must carry the column with the stored value on every row; without it the
-// loaded table must not carry it. The RED/GREEN evidence runs against a throwaway database
-// holding a copy of the metadata table with 014 applied.
+// loaded table must not carry it. A test database holding a copy of the metadata table with 014
+// applied runs the first branch.
 //
 // Reachability gate as tests/storage/test_live_results_key_roundtrip_db.cpp:
 //   * TRADE_NGIN_REQUIRE_DB=1 -- unreachable database FAILS rather than skips.

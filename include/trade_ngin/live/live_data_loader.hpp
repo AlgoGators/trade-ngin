@@ -1,7 +1,7 @@
 // include/trade_ngin/live/live_data_loader.hpp
 // Data loading component for live trading - encapsulates all SELECT queries.
 //
-// Timezone contract (Phase 5 §5c):
+// Timezone contract:
 //   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
 //   module are UTC. Provider date columns (e.g. `equities_data.corporate_action.date`)
 //   are interpreted as calendar dates with no timezone shift -- they are
@@ -13,7 +13,7 @@
 //   direct `std::gmtime` / `std::put_time` use is forbidden (non-thread-safe
 //   and locale-dependent).
 //
-// Decoding contract (Phase 5 §1.17a + §5d):
+// Decoding contract:
 //   Numeric columns from `convert_generic_to_arrow` are stored as utf8.
 //   Implementations use `DataConversionUtils::safe_get_*` which dispatches
 //   on the actual Arrow type, falls back to `std::stod`/`std::stoll` for
@@ -59,8 +59,8 @@ struct LiveResultsRow {
     double margin_posted = 0.0;
     double cash_available = 0.0;
     double daily_transaction_costs = 0.0;
-    double daily_roll_costs = 0.0;  // T-ROLLX (017): the ROLL subset of daily_transaction_costs
-    double total_roll_costs = 0.0;  // T-ROLLX (017): cumulative
+    double daily_roll_costs = 0.0;  // migration 017: the ROLL subset of daily_transaction_costs
+    double total_roll_costs = 0.0;  // migration 017: cumulative
     Timestamp date;
     std::string strategy_id;
 
@@ -86,7 +86,7 @@ struct LiveResultsRow {
 };
 
 /**
- * @brief The report's statistics and return lines from a day's stored row (T-8D-2 R58, R61): the
+ * @brief The report's statistics and return lines from a day's stored row: the
  *        metric names the daily report reads, each from its stored column. The statistics are the
  *        settled series' (they run through the day before the row's date); the cumulative return
  *        is the row's own level. Flat days are total less winning less losing.
@@ -203,7 +203,7 @@ public:
 
     // ========== Historical Series Methods (since inception, as-of date) ==========
 
-    /// One stored day of a book's P&L history, for the sizing capital (LOOP_SPEC section 3.1).
+    /// One stored day of a book's P&L history, for the sizing capital.
     struct PnlHistoryRow {
         std::string date;         ///< YYYY-MM-DD
         double daily_pnl{0.0};    ///< the row's stored net P&L
@@ -285,9 +285,9 @@ public:
      * @brief The dates of a futures book's statistics grid from its start through
      *        `through_date`, ascending: the Sunday-to-Friday dates on which at least
      *        kStatisticsGridMinSymbols DISTINCT symbols of `symbols` printed a bar in
-     *        futures_data.ohlcv_1d (T-8D R3).
+     *        futures_data.ohlcv_1d.
      *
-     * Computed from the bars alone. T-8D-2 R81: this count is the grid the STATISTICS read and
+     * Computed from the bars alone. This count is the grid the STATISTICS read and
      * the predicate the sessions a year were measured with; it is not the trading session test.
      * Trading decides per symbol with the session classifier, with a quarter of the universe only
      * as its book-level fallback, so the two can disagree on a date by design (a Saturday print
@@ -353,7 +353,7 @@ public:
      * @brief A sleeve's last computed forecasts: its <schema>.signals rows of the latest stored
      *        run date strictly before `date`'s UTC calendar date.
      *
-     * T-7a C3 (HD 2026-09-18): on a day with no session the positions file carries the previous
+     * On a day with no session the positions file carries the previous
      * session's forecasts instead of the unfed strategies' empty ones. Rows are matched on
      * portfolio_id, strategy_id AND strategy_name, so each sleeve of a multi-sleeve book reads
      * its own. A sleeve with no stored signals returns an empty result (session_date empty).

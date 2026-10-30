@@ -29,7 +29,7 @@
     "max_net_leverage": 6.0,
     "confidence_level": 0.99,
     "lookback_period": 252,
-    "_note": "RA-01: the live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate (HD Q5)."
+    "_note": "The live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate."
   },
   "max_drawdown": 0.4
 }

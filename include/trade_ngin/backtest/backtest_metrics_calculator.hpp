@@ -18,8 +18,8 @@ struct BacktestResults;
 }
 
 /**
- * @brief The grid a run's statistics are taken on and its sessions a year (T-8D R1, R2, R3;
- *        T-8D-2 R76). The calculator holds no factor of its own: every annualised figure uses
+ * @brief The grid a run's statistics are taken on and its sessions a year. The calculator
+ *        holds no factor of its own: every annualised figure uses
  *        `sessions_per_year`, which must be the row frequency of this grid.
  *
  * A statistics construct only: every row of the equity curve stays. A futures run's grid is the
@@ -224,8 +224,8 @@ public:
         /// The account's STRATEGY fills (account_fills): a contract-day the sleeves cross in full
         /// is none, a partial offset or two sleeves the same side is one.
         int strategy_fills{0};
-        int roll_fills{0};          ///< T-ROLLX-FIX: ROLL legs seen (not trades)
-        double roll_costs{0.0};     ///< T-ROLLX-FIX: their cost (never inside a trade's P&L)
+        int roll_fills{0};          ///< ROLL legs seen (not trades)
+        double roll_costs{0.0};     ///< their cost (never inside a trade's P&L)
     };
 
     /**
@@ -278,7 +278,7 @@ public:
         const PointValueSource& point_value) const;
 
     /**
-     * @brief The three counts of a book's executions, each its own total (LOOP_SPEC section 10)
+     * @brief The three counts of a book's executions, each its own total
      *
      * The counts calculate_trade_statistics reaches on the same rows, by the same netting
      * (account_fills) and the same pairing, without the dollars: round trips (an account fill

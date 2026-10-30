@@ -2,16 +2,16 @@
 //
 // The futures backtest's stored position row on a day the symbol prints no bar. The row's realized
 // P&L is the day's booked P&L, and a day with no bar books nothing: 0, quantity and average price
-// kept. The loop that stamps the row used to skip a symbol with no close before the stamp, so the
-// row the PortfolioManager rebuilt that cycle kept the sleeve's own figure (its unrounded position
-// times its last bar's move): KE 2025-05-18 stored 552.62 on a Sunday. The same holds on a bar with
-// no previous close to book against. The equity curve never read the cell and is not changed.
+// kept. The loop that stamps the row reaches a symbol with no close; skipping it before the stamp
+// would leave the row the PortfolioManager rebuilt that cycle with the sleeve's own figure (its
+// unrounded position times its last bar's move). The same holds on a bar with no previous close to
+// book against. The equity curve does not read the cell.
 //
 // XA (M = 50) is held at 2 contracts; the sleeve's own target row carries a realized figure of
 // 552.62, as a trend sleeve's does. XB is another symbol's bar, so a day XA does not print is still
 // a cycle.
 //
-// Migration 038 (T-8D-2 R50): the row of such a day is stored with row_mark = 'NO_BAR' ("no bar:
+// Migration 038: the row of such a day is stored with row_mark = 'NO_BAR' ("no bar:
 // held, marked at last close") and every other row with NULL. The mark is set where the row is
 // zeroed, travels to the writer beside the day's rows, and is read back here from the writer's
 // arguments (no database) and from backtest.final_positions (TRADE_NGIN_TEST_DSN).
@@ -242,7 +242,7 @@ TEST_F(BacktestNoBarRowTest, TheWriterIsHandedTheMarkOfANoBarRowAndOfNoOtherRow)
 }
 
 // A cash book's row on a day its symbol prints no bar is not written here (its realised flow waits
-// for the next written row, E2-F59), so it is not zeroed and carries no mark: the mark says "this
+// for the next written row), so it is not zeroed and carries no mark: the mark says "this
 // row books 0 because no bar printed", which is true of a futures row only.
 TEST_F(BacktestNoBarRowTest, ACashBooksRowOfANoBarDayCarriesNoMark) {
     for (const auto& s : pm_->get_strategies()) {

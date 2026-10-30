@@ -31,7 +31,7 @@ namespace trade_ngin {
 
 namespace {
 // The positions in symbol order. The map hands them out in hash order, which moves with the
-// build; the rows and every running total are walked in this order instead (T-EMAIL P2-3).
+// build; the rows and every running total are walked in this order instead.
 std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
     const std::unordered_map<std::string, Position>& positions) {
     std::vector<std::pair<std::string, const Position*>> ordered;
@@ -42,7 +42,7 @@ std::vector<std::pair<std::string, const Position*>> positions_by_symbol(
               [](const auto& a, const auto& b) { return a.first < b.first; });
     return ordered;
 }
-// The numbered footnotes of the report (HD 10-13/14): a small number at the top right of a value; the
+// The numbered footnotes of the report: a small number at the top right of a value; the
 // line for it sits right below the block it belongs to. The numbers follow the order the notes first
 // appear in the email (1, 2, 3 ...), whatever their kind; a kind is numbered when first used.
 //   kind 1 no price that day, 2 contract roll, 3 price rejected, 4 no price bar (last price shown),
@@ -52,7 +52,7 @@ thread_local std::set<int> g_note_flushed;       // kinds whose line was already
 thread_local std::string g_netting_note;         // the text of kind 5, set by the executions tables
 thread_local std::string g_single_title;   // an equity book's one strategy: its name, as a futures sleeve has
 thread_local bool g_single_sleeve = false;       // one strategy: its summary line would repeat the book block
-// Rolls step 4 (R4b): the report's roll view while a report body is built (null outside one, and empty
+// The report's roll view while a report body is built (null outside one, and empty
 // with per_contract_rolls off): the roll lines, the Front Month column. Set by RollsScope.
 thread_local const ReportRolls* g_rolls = nullptr;
 struct RollsScope {
@@ -595,18 +595,7 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
     }
 }
 
-// DEAD-email-ag-filter: an anonymous namespace holding is_agricultural_future()
-// and filter_non_agricultural_positions() stood here. The filter was
-// [[maybe_unused]] and had no caller anywhere in the tree; the predicate had no
-// caller except the filter. Both are deleted.
-//
-// The agricultural-symbol logic that IS live is not this one: the two futures
-// runners each define their own is_agricultural_future lambda
-// (live_portfolio.cpp and live_portfolio_conservative.cpp, around the Monday
-// carry-forward block) and use it there. This copy in the email layer was a
-// second, divergent definition of the same idea that nothing consulted -- the
-// worst kind to leave lying about, because it reads like the email report
-// filters agricultural positions, and it does not.
+// The report filters no position by asset class.
 
 // The footer note by asset class (defined with the other report helpers below).
 static std::string report_footer_note_html(const EmailReportContext& context);
@@ -628,7 +617,7 @@ std::string EmailSender::generate_trading_report_body(
     reset_notes();
     const RollsScope rolls_scope(context.rolls);
     {
-        // An equity book is one strategy: its name and kind as a futures sleeve has them (HD 10-14).
+        // An equity book is one strategy: its name and kind as a futures sleeve has them.
         std::string name = chart_strategy_id;
         for (const char* prefix : {"LIVE_", "EQUITY_"})
             if (name.rfind(prefix, 0) == 0) name = name.substr(std::string(prefix).size());
@@ -672,19 +661,18 @@ std::string EmailSender::generate_trading_report_body(
         yesterday_date_str = "Previous Day";
     }
 
-    // T-8D-2 R61: the day the settled table, its block and the statistics are for is the runner's
+    // The day the settled table, its block and the statistics are for is the runner's
     // own T-1 when it names one.
     const std::string settled_date =
         context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
-    // T-8D-2 R59: what the report says about the day before comes from the runner's own
+    // What the report says about the day before comes from the runner's own
     // classification of it, never from the weekday. A futures runner that carried its book found
     // no session (context.prior_day_no_session): the settled table is then not shown, and the
     // calendar adds the holiday's name when that day is one. The equity runner's day before is
     // its previous session by construction. The runner's carried-day banner, put at the top of
     // the body by the runner, states the reason.
-    // An equity book's banners come from the calendar of today and of the day before (HD 10-14,
-    // section 17).
+    // An equity book's banners come from the calendar of today and of the day before.
     EquityDayBanner equity_day;
     if (context.equities) {
         const std::string today_holiday = holiday_checker_.is_holiday(date)
@@ -755,16 +743,15 @@ std::string EmailSender::generate_trading_report_body(
     html << "<div class=\"header-text\">\n";
     html << "<span class=\"fund-branding\">AlgoGators</span><br>\n";
     html << "<h1>Daily Trading Report</h1>\n";
-    // T-8D-2 R59: the book's own name, as the per-strategy overload prints it (the literal
-    // "Trend Following Strategy" stood here, on the equity book's report).
+    // The book's own name, as the per-strategy overload prints it.
     // An equity book is named by its strategy, "Mean Reversion", with its kind in the small grey line
-    // under it, as a futures sleeve is (HD 2026-10-14, section 16.3).
+    // under it, as a futures sleeve is.
     html << "<div class=\"header-info\">" << date << " | " << g_single_title << "</div>\n";
     html << "<div style=\"font-size: 11px; color: #999;\">Equities</div>\n";
     html << "</div>\n";
     html << "</div>\n";
 
-    // The holiday banner (T-8D-2 R59: no banner is derived from the weekday)
+    // The holiday banner (no banner is derived from the weekday)
     if (holiday_banner) {
         html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); "
                 "border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 "
@@ -812,7 +799,7 @@ std::string EmailSender::generate_trading_report_body(
             yesterday_date_str, settled_date, context.equities);
         html << notes_html();
     } else if (!show_yesterday_pnl) {
-        // The runner found no session on the day before (T-8D-2 R59): no settled table. The two
+        // The runner found no session on the day before: no settled table. The two
         // notes say why in the runner's terms, never from the weekday.
         if (context.equities) {
             if (!equity_day.red_box_text.empty())
@@ -840,7 +827,7 @@ std::string EmailSender::generate_trading_report_body(
         }
     } else {
         // A session, and no row to print: nothing was held on the settled day and nothing closed
-        // on it. The table is not left out silently (HD ruling Q11).
+        // on it. The table is not left out silently.
         html << "<h2>Yesterday's Finalized Position Results</h2>\n";
         html << "<p>No position was held on " << settled_date
              << ", and none closed on it.</p>\n";
@@ -863,9 +850,9 @@ std::string EmailSender::generate_trading_report_body(
     html << "<h2>Charts</h2>\n";
     core::ChartLedger chart_ledger;
     if (db) {
-        // E2-F11: the caller names the book the charts query. This overload IS used in
-        // production (the live equity runner); with the old hardcoded trend-following
-        // strategy id and empty portfolio every chart query returned no rows.
+        // The caller names the book the charts query. This overload IS used in
+        // production (the live equity runner); a hardcoded strategy id and an empty
+        // portfolio would return no rows for every chart query.
         const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
@@ -898,7 +885,7 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            // An equity book: the bars are the settled table's Day's PnL column (HD 2026-10-14).
+            // An equity book: the bars are the settled table's Day's PnL column.
             std::vector<ChartPoint> days_pnl;
             for (const auto& [symbol, position] : yesterday_positions) {
                 const auto from = two_days_ago_close_prices.find(symbol);
@@ -1022,7 +1009,7 @@ std::string EmailSender::generate_trading_report_body(
         INFO(chart_ledger.summary());
     }
 
-    // Symbols Reference (moved after Portfolio Snapshot). T-8D-2 R59: it is a table of futures
+    // Symbols Reference, after Portfolio Snapshot. It is a table of futures
     // contract metadata (and the rollover notice below reads the same table), so an equity
     // book's report carries neither.
     if (context.equities) {
@@ -1061,13 +1048,13 @@ std::string EmailSender::generate_trading_report_body(
     return html.str();
 }
 
-// T-8D-2 R59: the footer note by asset class, with the book's start date from the runner (the
+// The footer note by asset class, with the book's start date from the runner (the
 // live_start_date of its strategy_trading_days_metadata row) in place of a literal. A futures
 // book keeps its data sentence and its universe note; an equity book has the data sentence
 // without the front-month contract and no futures universe. With no start date handed, no start
 // date sentence is printed.
 static std::string report_footer_note_html(const EmailReportContext& context) {
-    // HD 10-13: the one note of the email, after the numbered footnotes.
+    // The one note of the email, after the numbered footnotes.
     std::string html = notes_html();
     html += "<strong>Note:</strong> This strategy is based on daily OHLCV data for ";
     html += context.equities ? "equity assets."
@@ -1083,11 +1070,11 @@ static std::string report_footer_note_html(const EmailReportContext& context) {
     return html + "\n";
 }
 
-// T-8D-2 R59: a share quantity prints to six decimals (an equity book holds fractional shares; at
+// A share quantity prints to six decimals (an equity book holds fractional shares; at
 // no decimals 0.193729 shares read 0); a contract count stays whole.
 static std::string report_quantity_text(const std::shared_ptr<Instrument>& instrument,
                                         double quantity) {
-    (void)instrument;  // HD 10-13: every quantity of the email prints to two decimals
+    (void)instrument;  // every quantity of the email prints to two decimals
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.2f", quantity);
     return buf;
@@ -1108,14 +1095,14 @@ static std::shared_ptr<Instrument> report_instrument_of(const std::string& symbo
     }
 }
 
-// The decimals every price of this symbol prints with (report_price_places).
+// The decimals every price of this symbol prints with: four.
 static int report_places_of(const std::string& symbol) {
-    // HD 10-14: every price of the email has four decimals; the files carry the contract's own.
+    // Every price of the email has four decimals; the files carry the contract's own.
     (void)symbol;
     return 4;
 }
 
-// T-NETTING: how the netting figures are printed (one rounding, the adjustment as it acts on the
+// How the netting figures are printed (one rounding, the adjustment as it acts on the
 // cost and as the difference of its two printed neighbours) is email_netting_text.hpp.
 using email_netting::netting_effect_text;
 using email_netting::netting_money;
@@ -1132,7 +1119,7 @@ struct NettingFooter {
     }
 };
 
-// T-ROLLX (LOOP_SPEC v6.1 section 6.5): the ROLL legs of a day as their own block (the two contract
+// The ROLL legs of a day as their own block (the two contract
 // ids, the price of each leg, the cost: an upper bound, two outright legs), never inside the
 // strategy's trade count or its traded notional; their cost inside every cost total.
 static std::string format_roll_legs_block(const std::vector<ExecutionReport>& executions) {
@@ -1161,8 +1148,8 @@ static std::string format_roll_legs_block(const std::vector<ExecutionReport>& ex
         html << "</table>\n";
     }
     if (legs > 0 && rolls_on()) {
-        // Rolls step 4 (ruling 18): one plain line per roll, from its closing leg: the split, or for a
-        // roll of the vendor's series (no split, the micros) the cost only (R4B fix round 1).
+        // One plain line per roll, from its closing leg's split (every
+        // root's, the micros' included; a leg with no split prints no line).
         for (const auto& closing : executions) {
             const bool is_closing = closing.exec_id.size() >= 3 &&
                                     closing.exec_id.compare(closing.exec_id.size() - 3, 3, "_RC") == 0;
@@ -1203,13 +1190,13 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     double total_notional_traded = 0.0;
     size_t strategy_trades = 0;
     NettingFooter netting;
-    email_netting::RoundingCheck cost_rows, notional_rows, own_rows;  // HD ruling Q3
+    email_netting::RoundingCheck cost_rows, notional_rows, own_rows;  // the rounding note's checks
 
     for (const auto& exec : executions) {
         netting.add(exec);
         cost_rows.add(transaction_cost::net_cost(exec).as_double());
         own_rows.add(exec.total_transaction_costs.as_double());
-        // T-ROLLX: every row's cost counts; a ROLL leg is listed in its own block below, never
+        // Every row's cost counts; a ROLL leg is listed in its own block below, never
         // as a trade and never in the traded notional. The total is what the account was charged:
         // each row's cost after netting (the row's own cost stays in its cell).
         total_transaction_cost += transaction_cost::net_cost(exec).as_double();
@@ -1327,7 +1314,7 @@ std::string EmailSender::format_positions_table(
 
     html << single_heading_html();
     html << "<table>\n";
-    // An equity book (HD 2026-10-14, section 16): the average cost the shares were bought at and what
+    // An equity book: the average cost the shares were bought at and what
     // they have gained since, beside the quantity and the price.
     const bool equity_table = !g_single_title.empty();
     html << "<tr><th>Symbol</th><th>Quantity</th>";
@@ -1394,18 +1381,18 @@ std::string EmailSender::format_positions_table(
                 // multiplied internally by FuturesInstrument's new override).
                 const double signed_qty = position.quantity.as_double();
 
-                // BA-16: one row without a price must not abort the report.
+                // One row without a price must not abort the report.
                 //
-                // This read average_price only. On the equity path that column is a
+                // On the equity path average_price is a
                 // cost basis, and 0 is its documented "no basis known" value
                 // (AVERAGE_PRICE_LIFECYCLE rule 5) -- reachable for a held position
                 // whose basis could not be resolved, which the runner already reports
-                // as an ERROR. get_margin_requirement(0, qty) then returns 0, this
-                // threw, and the bare `throw;` below aborted the WHOLE daily email:
+                // as an ERROR. get_margin_requirement(0, qty) then returns 0, and a
+                // throw would reach the bare `throw;` below and abort the WHOLE daily email:
                 // one unpriceable row and nobody gets a report at all. A row with no
                 // basis therefore falls back to the current close.
                 //
-                // T-8D D3 (a): the margin line is priced at the row's cost basis and the
+                // The margin line is priced at the row's cost basis and the
                 // current close is the fallback when no basis is known, the preference
                 // MarginManager applies to the stored margin_posted and the per-strategy
                 // tables below apply, so the email's margin and the database's agree. The
@@ -1464,7 +1451,7 @@ std::string EmailSender::format_positions_table(
                 rows_without_close.insert(symbol);
             }
 
-            // T-8D-2 R60 (T-8D D9): one price per row. The notional is the quantity at the price
+            // One price per row. The notional is the quantity at the price
             // the row prints (the Day T-1 close; the basis only when the row has no close), so
             // the row multiplies out and the total is the close-priced figure the stored
             // gross_notional and the leverage lines are on.
@@ -1540,7 +1527,7 @@ std::string EmailSender::format_positions_table(
 
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
 
-    // The expected risk is in the performance metrics, the VaR in the account detail file (HD 10-13).
+    // The expected risk is in the performance metrics, the VaR in the account detail file.
 
     html << "<strong>Total Notional:</strong> " << report_dollars(total_notional) << "<br>\n";
     html << "<strong>Total Margin Posted:</strong> " << report_dollars(total_margin_posted)
@@ -1550,7 +1537,7 @@ std::string EmailSender::format_positions_table(
     return html.str();
 }
 
-// The two price columns of the settled day's table (report_settled_marks.hpp, HD 2026-10-12): the
+// The two price columns of the settled day's table (report_settled_marks.hpp): the
 // price the day was settled from and the price it was settled at, the pair the settle's own P&L
 // arithmetic used for the row, as the runner hands them. A symbol the "settled at" map does not
 // hold printed no bar that day: its cell reads "no bar" and one footnote under the table says so.
@@ -1705,7 +1692,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        // T-8D-2 R61: the block is the settled day's.
+        // The block is the settled day's.
         html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
              << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
@@ -1960,7 +1947,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
     // Add daily metrics section
     if (!strategy_metrics.empty() && !yesterday_date.empty()) {
-        // T-8D-2 R61: the block is the settled day's.
+        // The block is the settled day's.
         html << "<h2>Previous trading day (" << (settled_date.empty() ? yesterday_date : settled_date)
              << ")</h2>\n";
         html << "<div class=\"metrics-category\">\n";
@@ -2140,7 +2127,7 @@ std::string EmailSender::format_strategy_metrics(
         return result.str();
     };
 
-    // HD 10-14: ONE block, "Performance Metrics", in four groups separated by a blank line.
+    // ONE block, "Performance Metrics", in four groups separated by a blank line.
     html << "<h2>Performance Metrics</h2>\n";
     html << "<div class=\"metrics-category\">\n";
     auto show = [&](const char* key, const char* label) {
@@ -2151,7 +2138,7 @@ std::string EmailSender::format_strategy_metrics(
     show("Total Realized PnL", "Realized PnL");
     show("Total Transaction Costs", "Transaction Costs");
     show("Total PnL", "Total PnL (Net)");
-    // The equity book's cumulative dividend income (T-8D-2 R44 (c)): informational.
+    // The equity book's cumulative dividend income: informational.
     {
         const auto dividend_income = strategy_metrics.find(kReportDividendIncome);
         if (dividend_income != strategy_metrics.end()) {
@@ -2169,7 +2156,7 @@ std::string EmailSender::format_strategy_metrics(
     html << "<br>\n";
     show("Cash Available", "Cash Available");
     show("Margin Posted", "Margin Posted");
-    if (!context.equities) {  // meaningless on a cash account (HD 2026-10-14, section 16.7)
+    if (!context.equities) {  // meaningless on a cash account
         show("Equity-to-Margin Ratio", "Equity-to-Margin Ratio");
         show("Margin Cushion", "Margin Cushion");
     }
@@ -2422,7 +2409,7 @@ std::string EmailSender::format_strategy_display_name(const std::string& strateg
     return result;
 }
 
-// T-8D D1: one label for the margin figure on every book ("Margin Posted"); what differs is the
+// One label for the margin figure on every book ("Margin Posted"); what differs is the
 // rule that produced it, and that is named in the sleeve's sub-header: the kind of instrument the
 // sleeve holds and, for equities, the account mode its margin follows. "futures"; "equities, cash
 // account"; "equities, Reg T account"; a sleeve holding more than one names each, in that order.
@@ -2502,7 +2489,7 @@ std::string EmailSender::format_single_strategy_table(
     };
 
     // Strategy sub-header with styled left border accent; the kind of instrument and the account
-    // mode the sleeve's margin follows beside the name (T-8D D1).
+    // mode the sleeve's margin follows beside the name.
     std::string display_name = format_strategy_display_name(strategy_name);
     const std::string margin_kind = sleeve_margin_kind(positions);
     html << "<h3 style=\"margin-top: 20px; margin-bottom: 2px; color: #333; "
@@ -2568,31 +2555,24 @@ std::string EmailSender::format_single_strategy_table(
                 // per-contract margin, after the FuturesInstrument override).
                 const double signed_qty = position.quantity.as_double();
 
-                // FUT-email-zero-basis (C-5 B5). Margin is priced from a MARK, not from a
+                // Margin is priced from a MARK, not from a
                 // cost basis, and one row without a basis must not suppress the whole
                 // report.
                 //
-                // This read average_price only. Zero is that column's documented "no basis
+                // Zero is average_price's documented "no basis
                 // known" value (AVERAGE_PRICE_LIFECYCLE rule 5) and is reachable for a held
                 // position whose basis could not be resolved, which the runner already
                 // reports as an ERROR of its own. get_margin_requirement(0, qty) then
-                // returns 0, this threw, and the `throw;` below carried it out of
+                // returns 0; a throw here would carry out of
                 // format_single_strategy_table, out of format_strategy_positions_tables and
-                // out of generate_trading_report_body: one unpriceable row and NOBODY got a
-                // daily report at all. The catch(...) in the portfolio-total loop below
-                // then swallowed the same failure silently, so the margin line understated
-                // without saying so.
+                // out of generate_trading_report_body: one unpriceable row and NOBODY gets a
+                // daily report at all.
                 //
-                // This is the fix 9348920d made to the single-table equity overload
-                // (format_positions_table, above), applied to the per-strategy futures
-                // overload it missed. The price preference is kept EXACTLY as this
-                // overload always had it: the row's own average_price first, and the
+                // The price preference: the row's own average_price first, and the
                 // current close only as the fallback when the basis is missing. Preferring
                 // the close here would re-price every equity row's margin (a basis of 50
-                // against a close of 52 moves the line from 2,500 to 2,600) on a stream
-                // this change promises to leave byte-identical; the single-table equity
-                // overload above prefers the close, and that inconsistency is recorded
-                // for the statistics pass rather than resolved by a side effect here.
+                // against a close of 52 moves the line from 2,500 to 2,600). The single-table
+                // equity overload above (format_positions_table) prefers the close.
                 double price_for_margin = 0.0;
                 if (position.average_price.as_double() > 0.0) {
                     price_for_margin = position.average_price.as_double();
@@ -2607,8 +2587,7 @@ std::string EmailSender::format_single_strategy_table(
                 // the price alone that the row is unpriceable. FuturesInstrument's margin
                 // is |qty| x initial_margin and ignores the price entirely, so a futures
                 // row with no basis still HAS a margin and must keep contributing it. Only
-                // a non-positive answer FROM THE INSTRUMENT means there is nothing to add,
-                // and that is what used to throw.
+                // a non-positive answer FROM THE INSTRUMENT means there is nothing to add.
                 margin_for_position =
                     instrument->get_margin_requirement(price_for_margin, signed_qty);
                 if (margin_for_position <= 0) {
@@ -2783,7 +2762,7 @@ std::string EmailSender::format_strategy_positions_tables(
                     auto instrument = registry.get_instrument(lookup_sym);
                     if (instrument) {
                         double contract_multiplier = instrument->get_multiplier();
-                        // T-8D-2 R60: at the price the sleeve's row prints.
+                        // At the price the sleeve's row prints.
                         double market_price = position.average_price.as_double();
                         auto price_it = current_prices.find(symbol);
                         if (price_it != current_prices.end()) {
@@ -2797,12 +2776,12 @@ std::string EmailSender::format_strategy_positions_tables(
                         // Required for equities to get account-mode-aware
                         // margin instead of the legacy 0.0 sentinel.
                         //
-                        // FUT-email-zero-basis: priced from the same mark the per-strategy
+                        // Priced from the same mark the per-strategy
                         // table above uses, basis first and the current close only as the
                         // fallback, so the portfolio total equals the sum of the per-strategy
                         // tables printed immediately above it whether or not a basis exists.
-                        // Reading average_price alone here dropped a no-basis row from the
-                        // total, and the catch(...) below meant nothing said so.
+                        // Reading average_price alone would drop a no-basis row from the
+                        // total, and the catch(...) below would hide it.
                         const double signed_qty = position.quantity.as_double();
                         double price_for_margin = 0.0;
                         if (position.average_price.as_double() > 0.0) {
@@ -2828,7 +2807,7 @@ std::string EmailSender::format_strategy_positions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
-    // T-8D-2 R60: the count is of sleeve rows (a symbol two sleeves hold is two), and the two
+    // The count is of sleeve rows (a symbol two sleeves hold is two), and the two
     // dollar lines below are the ACCOUNT's figures when the runner hands them (its gross notional
     // and its posted margin, which net sleeves holding one symbol on opposite sides); the sum
     // over the sleeves' tables otherwise.
@@ -2843,7 +2822,7 @@ std::string EmailSender::format_strategy_positions_tables(
         portfolio_total_margin = account_margin->second;
     }
 
-    // The expected risk is in the performance metrics, the VaR in the account detail file (HD 10-13).
+    // The expected risk is in the performance metrics, the VaR in the account detail file.
 
     html << "<div class=\"metric\"><strong>Total Notional:</strong> "
          << report_dollars(portfolio_total_notional) << "</div>\n";
@@ -2916,7 +2895,7 @@ std::string EmailSender::format_single_strategy_executions_table(
         netting.add(exec);
         // Every row's cost after netting: the sleeve's share of what the account was charged.
         total_transaction_costs += transaction_cost::net_cost(exec).as_double();
-        if (exec.execution_type != ExecutionType::STRATEGY) continue;        // T-ROLLX
+        if (exec.execution_type != ExecutionType::STRATEGY) continue;        // ROLL legs: own block
         ++strategy_trades;
         double contract_multiplier = 1.0;
         bool has_multiplier = true;
@@ -3057,10 +3036,10 @@ std::string EmailSender::format_strategy_executions_tables(
     int portfolio_total_trades = 0;
     double portfolio_total_notional = 0.0;
     double portfolio_total_transaction_costs = 0.0;
-    double portfolio_total_roll_costs = 0.0;  // T-ROLLX
+    double portfolio_total_roll_costs = 0.0;  // the ROLL legs' share of the costs
     int portfolio_total_roll_fills = 0;
     NettingFooter netting;
-    // A printed cent that differs from the footer under it (HD ruling Q3): a column of rows
+    // A printed cent that differs from the footer under it: a column of rows
     // against its sleeve's footer, and the sleeves' footers against the book's.
     bool printed_cent_differs = false;
     email_netting::RoundingCheck book_cost_of_sleeves, book_notional_of_sleeves,
@@ -3079,7 +3058,7 @@ std::string EmailSender::format_strategy_executions_tables(
         html << format_single_strategy_executions_table(strategy_name, executions,
                                                         several_sleeves);
 
-        // Accumulate portfolio totals (T-ROLLX: trades and notional over STRATEGY rows; costs over
+        // Accumulate portfolio totals (trades and notional over STRATEGY rows; costs over
         // every row, the ROLL part shown beside)
         email_netting::RoundingCheck sleeve_cost, sleeve_notional, sleeve_own;
         for (const auto& exec : executions) {
@@ -3093,7 +3072,7 @@ std::string EmailSender::format_strategy_executions_tables(
             }
             if (exec.execution_type != ExecutionType::STRATEGY) continue;
             ++portfolio_total_trades;
-            // The sleeve table's rule (T-8D-2 R62): a symbol that is not in the registry has no
+            // The sleeve table's rule: a symbol that is not in the registry has no
             // notional (its cell reads n/a) and is left out of the total, never counted at a
             // multiplier of 1.
             double contract_multiplier = 1.0;
@@ -3219,7 +3198,7 @@ std::string EmailSender::generate_trading_report_body(
     const std::string settled_date =
         context.settled_date.empty() ? yesterday_date_str : context.settled_date;
 
-    // T-8D-2 R59: what the report says about the day before comes from the runner's own
+    // What the report says about the day before comes from the runner's own
     // classification of it, never from the weekday. A futures runner that carried its book found
     // no session (context.prior_day_no_session): the settled table is then not shown, and the
     // calendar adds the holiday's name when that day is one. The equity runner's day before is
@@ -3288,7 +3267,7 @@ std::string EmailSender::generate_trading_report_body(
     html << "</div>\n";
     html << "</div>\n";
 
-    // The banners about the day before (HD 2026-10-14, section 15): the original texts; the settled
+    // The banners about the day before: the settled
     // day's weekday and the calendar choose the title, the prices that arrived choose the form.
     DayBeforeBanner day_banner;
     if (!context.equities) {
@@ -3356,7 +3335,7 @@ std::string EmailSender::generate_trading_report_body(
             context.settled_zero_kinds);
         html << notes_html();
     } else if (!show_yesterday_pnl) {
-        // No prices at all: the red box and the yellow note, the table hidden (section 15).
+        // No prices at all: the red box and the yellow note, the table hidden.
         html << "<div class=\"alert-note\">\n" << day_banner.red_box_text << "</div>\n";
         html << "<div class=\"footer-note\">\n" << day_banner.yellow_note << "</div>\n";
     }
@@ -3470,7 +3449,7 @@ std::string EmailSender::generate_trading_report_body(
             html << "</div>\n";
         }
 
-        // Contracts traded each day, strategy fills and roll legs stacked (HD 2026-10-14)
+        // Contracts traded each day, strategy fills and roll legs stacked
         contracts_per_day_base64_ =
             ChartGenerator::generate_contracts_per_day_chart(db, chart_portfolio_id, date, 30);
         html << chart_ledger.record(ChartTitles::contracts_per_day_heading(),

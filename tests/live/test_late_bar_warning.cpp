@@ -3,9 +3,9 @@
 // The late-bar warning (late_bar_warning.hpp). A held symbol's bar for day D is missing when the
 // run dated D+1 settles the row dated D (the row books 0), and arrives before the next run. That
 // run settles its own Day T-1 against the D close, so the move into D is on no stored row. The
-// ruling: no catch-up, no refusal; the run that first consumes the late bar names it once.
+// rule: no catch-up, no refusal; the run that first consumes the late bar names it once.
 //
-// The worked case is session A's fixture: ZF short 2, the 2026-04-28 bar absent at the 04-29 run
+// The worked case: ZF short 2, the 2026-04-28 bar absent at the 04-29 run
 // and back for the 04-30 run; -2 x (108.0546875 - 108.1953125) x 1000 = 281.25.
 
 #include <gtest/gtest.h>

@@ -1,9 +1,9 @@
 // executions.execution_type and instrument_id (migration 015), live_results.total_roll_costs (017)
-// through the engine's own writers and readers (T-ROLLX commit 3): a STRATEGY fill and the two ROLL
+// through the engine's own writers and readers: a STRATEGY fill and the two ROLL
 // legs of one symbol-day share the sleeve's key, the legs' class and contract ids round-trip, the
 // re-run sweep by type removes the legs and nothing else, the backtest writer names the column, and
 // the previous total_roll_costs reads the latest row before a date. TRADE_NGIN_TEST_DSN only; a
-// throwaway strategy id; every row deleted at the end.
+// test-only strategy id; every row deleted at the end.
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 #include <chrono>

@@ -1,5 +1,4 @@
-// Rolls step 4 (HD 2026-10-23, ruling 18; migration 040): the split of every per-contract roll, on its
-// closing leg only.
+// Migration 040: the split of every per-contract roll, on its closing leg only.
 //   * The tracker names the held (old) contract's move booked on the roll bar, in points: on the roll's
 //     own bar for a roll known on its bar or booked after a withheld roll bar, on the switch bar for a
 //     vendor switch the next bar confirms (both switch-bar settings), measured from the close the bar's
@@ -227,7 +226,7 @@ TEST(RollSplit, TheLiveStateCarriesThePointsToTheRunner) {
 }
 
 // The results row names the two totals only when they have a value (the switch on), at round-trip
-// precision; with the switch off it names neither, so its statement is the one before 040.
+// precision; with the switch off it names neither, so its statement names none of 040's columns.
 TEST(RollSplit, TheResultsRowNamesTheTotalsOnlyWithTheSwitchOn) {
     EXPECT_TRUE(roll_split_summary_cells(std::nullopt, std::nullopt).empty());
     const auto cells = roll_split_summary_cells(-1075.0, 3350.125);
@@ -242,7 +241,7 @@ TEST(RollSplit, TheResultsRowNamesTheTotalsOnlyWithTheSwitchOn) {
     EXPECT_EQ(*zero[0].value, "0");
 }
 
-// R4b (the report's roll footnote): the T-1 settlement names the symbols whose T-1 bar is a per-contract
+// The report's roll footnote: the T-1 settlement names the symbols whose T-1 bar is a per-contract
 // roll bar (the row books the old contract's move to its close on it), none on an ordinary bar, none on a
 // roll of the vendor's series, and none for a symbol whose roll the run legs late.
 TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
@@ -266,7 +265,7 @@ TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
 }
 
 // The writers' statements (roll_split_sql.hpp): with no split in the call they name none of 040's columns
-// (the statements before 040); with one, the three columns, their placeholders from the given number, and
+// (the statements without 040); with one, the three columns, their placeholders from the given number, and
 // the three values in order (NULL where a row has none).
 TEST(RollSplit, TheWritersNameTheColumnsOnlyForASplit) {
     auto legs = legs_of(1.0, 50.960, 51.630);
@@ -306,7 +305,7 @@ TEST(RollSplit, TheDatabasesRollViewWithNothingToRead) {
     EXPECT_TRUE(on.names.empty());
 }
 
-// S4 (R4B audit A): the results row's cells are the statistics' cells then the two totals, only with a value.
+// The results row's cells are the statistics' cells then the two totals, only with a value.
 TEST(RollSplit, TheResultsRowStoresTheStatisticsCellsThenTheTotals) {
     BacktestStatisticsColumns columns;
     const auto stats = backtest_statistics_cells(columns);
@@ -321,7 +320,7 @@ TEST(RollSplit, TheResultsRowStoresTheStatisticsCellsThenTheTotals) {
     for (size_t i = 0; i < stats.size(); ++i) EXPECT_EQ(on[i].column, stats[i].column);
 }
 
-// S7 m13 (R4B audit A): a "vendor" switch bar (per_contract_switch_bar vendor: the target's own bar, the
+// A "vendor" switch bar (per_contract_switch_bar vendor: the target's own bar, the
 // field naming the held contract) carries the held contract's close as its mark but is no roll: nothing
 // rolled yet (or ever, for a stray), so the settled row gets no "Contract rolled that day" footnote.
 TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
@@ -334,4 +333,56 @@ TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
     const auto st = consumed_t1_settlement(consumed, "2025-11-25", status, {}, {}, {}, {});
     EXPECT_TRUE(st.per_contract_roll_symbols.empty());
     EXPECT_DOUBLE_EQ(st.t1_close_prices.at("SI.v.0"), 50.960) << "the held contract's close";
+}
+
+// The micros' 2026-02-23 change is a change of price source, not a trade. On its bar
+// (SOURCE_CHANGE) and, for a consumer that withheld that bar, on the next (AFTER_SOURCE_CHANGE), the series
+// reads it exactly as a known roll: the old contract's move booked to its close, the gap excluded, the held
+// contract the micro's; but the confirm is flagged, so live owes no legs for it (the runners and the
+// backtest skip it, PRICE_SOURCE_CHANGE) and the T-1 settlement gives it no roll footnote.
+TEST(RollSplit, TheMicrosChangeOfPriceSourceIsReadAsARollButNeverLegged) {
+    const auto walk = [](RollFromKind kind) {
+        RollTracker t;
+        t.add("e", 6906.25);
+        return t.add("m", 6857.25, from(6857.25, "e", kind, "2026-02-23"));
+    };
+    const auto known = walk(RollFromKind::KNOWN);
+    const auto source = walk(RollFromKind::SOURCE_CHANGE);
+    EXPECT_FALSE(known.price_source_change);
+    EXPECT_TRUE(source.price_source_change);
+    EXPECT_TRUE(source.confirm);
+    EXPECT_EQ(source.held_id, "m");
+    EXPECT_EQ(source.previous_held_id, "e");
+    EXPECT_DOUBLE_EQ(source.move(6857.25, 6906.25), known.move(6857.25, 6906.25));
+    EXPECT_DOUBLE_EQ(source.move(6857.25, 6906.25), 6857.25 - 6906.25) << "the old contract's own move";
+    EXPECT_EQ(source.roll_bar_points, known.roll_bar_points);
+    EXPECT_FALSE(source.holds());
+    // A consumer that withheld the change bar reads it on the next bar's AFTER_SOURCE_CHANGE field.
+    RollTracker withheld;
+    withheld.add("e", 6906.25);
+    const auto after = withheld.add("m", 6904.25, from(6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"));
+    EXPECT_TRUE(after.confirm);
+    EXPECT_TRUE(after.price_source_change);
+    EXPECT_EQ(after.held_id, "m");
+    // The series (returns, levels) reads both kinds as their roll kinds, bit for bit.
+    const std::vector<std::string> ids = {"e", "m", "m"};
+    const std::vector<double> raw = {6906.25, 6857.25, 6904.25};
+    const auto a = build_series(raw, ids, {std::nullopt, from(6857.25, "e"), from(6904.25, "e", RollFromKind::AFTER_ROLL)});
+    const auto b = build_series(raw, ids, {std::nullopt, from(6857.25, "e", RollFromKind::SOURCE_CHANGE),
+                                           from(6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE)});
+    EXPECT_EQ(a.returns, b.returns);
+    EXPECT_EQ(a.adjusted, b.adjusted);
+    EXPECT_EQ(a.flags.held_id, b.flags.held_id);
+    EXPECT_EQ(a.flags.confirm, b.flags.confirm);
+    // Live: the run whose T-1 bar is the change owes the change, flagged; the settlement names no roll bar.
+    const std::vector<Bar> consumed = {bar("2026-02-20", 6924.75, "e"), bar("2026-02-22", 6906.25, "e"),
+                                       bar("2026-02-23", 6857.25, "m",
+                                           from(6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"))};
+    const auto state = live_rolls_by_state(consumed, {{"SI.v.0", "e"}}, "2026-02-23");
+    ASSERT_EQ(state.rolls.size(), 1u);
+    EXPECT_TRUE(state.rolls[0].price_source_change);
+    EXPECT_DOUBLE_EQ(state.rolls[0].opening_price - state.rolls[0].closing_price, 0.0) << "MES's gap";
+    const auto settled = consumed_t1_settlement(consumed, "2026-02-23", roll_status_of(consumed), {}, {}, {}, {});
+    EXPECT_TRUE(settled.per_contract_roll_symbols.empty()) << "no roll footnote";
+    EXPECT_DOUBLE_EQ(settled.t1_close_prices.at("SI.v.0"), 6857.25) << "the old contract's close";
 }

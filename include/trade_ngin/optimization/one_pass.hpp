@@ -13,7 +13,7 @@ namespace trade_ngin {
 namespace one_pass {
 
 /**
- * The one optimisation pass of a rebalance (LOOP_SPEC sections 4 to 6) as pure functions of plain
+ * The one optimisation pass of a rebalance as pure functions of plain
  * vectors, in the order the rebalance applies them: the cap on the target, the optimiser's
  * covariance, the forecast-sign close, the search from the held book, the buffer and the rounding,
  * the clip to the cap, and the trim. Nothing here reads a book, a database or a clock, and nothing
@@ -135,7 +135,7 @@ std::vector<std::pair<std::string, double>> over_limit(const overlay::Readings& 
                                                        const overlay::Limits& limits);
 
 /**
- * ONE REBALANCE (LOOP_SPEC sections 3.2 to 6.4): everything between the sleeves' unrounded targets
+ * ONE REBALANCE: everything between the sleeves' unrounded targets
  * and the stored whole-contract book, in the one order the design fixes. A pure function of the
  * day's inputs; the caller supplies them and stores what comes back.
  *
@@ -143,7 +143,7 @@ std::vector<std::pair<std::string, double>> over_limit(const overlay::Readings& 
  * a consumed bar (a symbol with none is not passed). The matrices are [date][symbol].
  */
 struct DayInputs {
-    // the book's constants (LOOP_SPEC section 12)
+    // the book's constants
     double capital{0.0};            ///< E_t, the sizing capital
     double tau{0.20};               ///< the book's risk target (the first sleeve's)
     double cap{2.0};                ///< L, the per-name cap on the sizing capital
@@ -165,7 +165,7 @@ struct DayInputs {
     Vector cost_vol_mult;   ///< record only: its volatility multiplier (may be empty)
     Mask signalling;        ///< some sleeve signals the symbol
     Mask first_signalling;  ///< the first sleeve signals it
-    Mask hold;              ///< the engine's hold set: a non-SESSION bar, a withheld bar, a change bar (D37)
+    Mask hold;              ///< the engine's hold set: a non-SESSION bar, a withheld bar, a change bar
     Mask has_bar;           ///< the cycle consumed at least one bar of the symbol
     Mask ever_signalled;    ///< some sleeve signalled the symbol on an earlier rebalance
 
@@ -248,10 +248,10 @@ struct DayResult {
     double stored_gross{0.0};
     double risk_scale{0.0};    ///< stored gross / target gross (0 when the target is flat)
 
-    // LOOP_SPEC section 4, the refusal: the overlay could not produce m (an input or a reading that
+    // The refusal: the overlay could not produce m (an input or a reading that
     // is not a finite number; a window with too few dates is BLIND, which is not a failure). The
     // book is then the held book on every row, with no search, no trim and no fill. `refusal` says
-    // why (empty: no refusal); `refusal_on_reread` is true when section 6.4's re-read of the stored
+    // why (empty: no refusal); `refusal_on_reread` is true when the trim's re-read of the stored
     // book is what failed.
     std::string refusal;
     bool refusal_on_reread{false};

@@ -21,12 +21,12 @@ Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars,
 
     // Calculate expected T-1 date.
     //
-    // E2-F14: when the caller supplies t1_date it is authoritative -- it is the SAME
+    // When the caller supplies t1_date it is authoritative -- it is the SAME
     // resolved trading day the caller used to load the position book, so the price lookup
     // and the book cannot name different days. Omitted, this is `reference_date - 24h`,
     // which is what both futures runners compute for their own book
-    // (live_portfolio.cpp:1047, live_portfolio_conservative.cpp:1061) and therefore leaves
-    // the futures path unchanged. See the header for why a fallback here would instead
+    // (live_portfolio.cpp, live_portfolio_conservative.cpp), so the futures path reads the
+    // same day as its book. See the header for why a fallback here would instead
     // double-count futures.
     auto expected_t1_date = t1_date.has_value() ? *t1_date
                                                 : reference_date - std::chrono::hours(24);

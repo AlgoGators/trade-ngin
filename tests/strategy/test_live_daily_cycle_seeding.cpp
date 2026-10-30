@@ -30,21 +30,21 @@ static Result<void> live_sequence(BaseStrategy& strategy,
     return strategy.on_data(bars);  // the portfolio manager's one and only feed
 }
 
-// Wave 2 regression tests.
+// Seeding and basis retention.
 //
-// F-B: the live equity runner never seeded the strategy's positions_ from the
-//      previous day's book, so MeanReversionStrategy::generate_signal() took its
-//      flat-book ENTRY branch on every bar of every session. A held position was
-//      liquidated the moment its z-score left the entry zone (|z| < 2.0) instead
+// Seeding: the live equity runner seeds the strategy's positions_ from the
+//      previous day's book. Without it MeanReversionStrategy::generate_signal() takes
+//      its flat-book ENTRY branch on every bar of every session: a held position is
+//      liquidated the moment its z-score leaves the entry zone (|z| < 2.0) instead
 //      of being held to the exit threshold (|z| < 0.5), and the stop-loss -- which
-//      measures from Position::average_price -- could never fire at all.
+//      measures from Position::average_price -- can never fire at all.
 //
-// F-E: a held-but-untraded holding had its average_price overwritten with the
-//      previous session's close every day, so the basis every PnL figure and the
-//      stop-loss measure from drifted to the latest price and the position always
-//      looked flat.
+// Basis retention: a held-but-untraded holding keeps its average_price. Overwritten
+//      with the previous session's close every day, the basis every PnL figure and
+//      the stop-loss measure from would drift to the latest price and the position
+//      would always look flat.
 //
-// The two are one defect in two places and are tested together: seeding is what
+// The two are tested together: seeding is what
 // puts a basis in front of the stop-loss, and retaining the basis is what makes
 // that stop-loss measure from the truth.
 class LiveDailyCycleSeedingTest : public TestBase {
@@ -147,7 +147,7 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
-// F-B
+// Seeding
 // ---------------------------------------------------------------------------
 
 // The bug in one assertion: same bars, same strategy, same day -- the only
@@ -227,14 +227,14 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossFiresFromTheSeededCostBasis) {
 }
 
 // ---------------------------------------------------------------------------
-// F-B x F-E -- the reason the two fixes ship together
+// Seeding x basis retention -- why the two hold together
 // ---------------------------------------------------------------------------
 
-// If the runner re-anchors a held position's basis to the previous close (F-E),
-// then seeding it (F-B) hands the stop-loss a basis that is always ~= the current
-// price. The stop silently never fires, and the fix reads as if it worked.
+// If the runner re-anchors a held position's basis to the previous close, then
+// seeding it hands the stop-loss a basis that is always ~= the current price. The
+// stop silently never fires, and seeding reads as if it worked.
 TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousClose) {
-    const double kPreviousClose = 98.5;  // what the pre-Wave-2 runner wrote as basis
+    const double kPreviousClose = 98.5;  // what a re-anchoring runner writes as basis
     const double kTrueBasis = 200.0;     // what the position actually cost
     auto bars = hold_band_series("AAPL", kPreviousClose);
 
@@ -247,7 +247,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousCl
             .is_ok());
     ASSERT_GT(reanchored->get_position("AAPL"), 0.0)
         << "sanity: against a re-anchored basis the stop cannot fire -- this is the "
-           "silent failure F-E would leave behind";
+           "silent failure re-anchoring would leave behind";
 
     // The same position with the basis it actually has.
     auto retained = create_strategy();
@@ -261,7 +261,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousCl
 }
 
 // ---------------------------------------------------------------------------
-// F-E -- the basis rule itself
+// Basis retention -- the basis rule itself
 // ---------------------------------------------------------------------------
 
 TEST_F(LiveDailyCycleSeedingTest, UntradedHoldingRetainsItsCostBasisAcrossTheDay) {
@@ -399,17 +399,17 @@ TEST_F(LiveDailyCycleSeedingTest, BacktestAccumulationPathIsUnchanged) {
 }
 
 // ---------------------------------------------------------------------------
-// E2-F19 / E2-F20: the seeded book must not carry yesterday's realized P&L into
+// The seeded book must not carry yesterday's realized P&L into
 // today's row.
 //
-// seed_positions() is a wholesale copy, so positions_[sym].realized_pnl started
-// each session at whatever the loaded T-1 row held, and on_execution() added
-// today's fills on top. The persisted day-T row was therefore yesterday's value
-// plus today's trades -- and on a Monday, yesterday's value was Friday's MARK MOVE,
-// because the Saturday and Sunday runs had each finalized Friday (E2-F20).
+// seed_positions() is a wholesale copy, so a seeded positions_[sym].realized_pnl
+// would start each session at whatever the loaded T-1 row held, and on_execution()
+// would add today's fills on top: the persisted day-T row would be yesterday's value
+// plus today's trades -- and on a Monday, yesterday's value is Friday's MARK MOVE,
+// because the Saturday and Sunday runs each finalize Friday.
 //
 // metrics_.realized_pnl is a separate accumulator that seeding never touches; it
-// feeds live_results.daily_realized_pnl and has always been correct. These tests
+// feeds live_results.daily_realized_pnl. These tests
 // pin that asymmetry: the per-position figure becomes today's flow, the aggregate
 // does not move.
 // ---------------------------------------------------------------------------
@@ -442,18 +442,17 @@ ExecutionReport fill(const std::string& symbol, Side side, double qty, double pr
 
 }  // namespace
 
-// T-6. Seeding hands the strategy quantity, basis and mark; it does NOT hand it a
+// Seeding hands the strategy quantity, basis and mark; it does NOT hand it a
 // realized figure. unrealized is asserted at the value on_data re-marks it to --
 // (close - basis) x qty -- which is the stronger claim: the seeded basis reached
 // the mark, so the seed did not zero the basis along with realized.
-// StrategyMetrics had no default member initialisers and BaseStrategy never
-// value-initialised metrics_, so every accumulator started from whatever the heap
-// held. On the Linux CI box (gcc -O3) realized_pnl began at a stale 1,000,000 and
-// SeededRealizedDoesNotLeakIntoTheDaysFill / ThreeDayFlowWithInterposedFinalization
-// went red; on macOS the heap happened to be zero. This test cannot go red
-// deterministically on a zero-filled heap -- the CI failure is the red. The buffer
-// below is a best effort at dirtying the heap so a freshly allocated strategy
-// reuses memory full of 1e6 rather than zeros.
+// StrategyMetrics is value-initialised: an accumulator left uninitialised starts
+// from whatever the heap held (a stale 1,000,000 under gcc -O3 on Linux, zero on
+// macOS), and SeededRealizedDoesNotLeakIntoTheDaysFill /
+// ThreeDayFlowWithInterposedFinalization then fail. This test cannot go red
+// deterministically on a zero-filled heap; the buffer below is a best effort at
+// dirtying the heap so a freshly allocated strategy reuses memory full of 1e6
+// rather than zeros.
 TEST_F(LiveDailyCycleSeedingTest, FreshStrategyMetricsAreZero) {
     {
         std::vector<double> dirt(1 << 20, 1e6);
@@ -500,15 +499,14 @@ TEST_F(LiveDailyCycleSeedingTest, SeedZeroesRealizedAndKeepsBasisAndMark) {
         << "unrealized is re-marked from the seeded basis; update_metrics() sums it "
            "into the drawdown gate, so it must be seeded, not zeroed";
     EXPECT_DOUBLE_EQ(it->second.realized_pnl.as_double(), 0.0)
-        << "yesterday's realized must not be seeded: the row is a per-day flow "
-           "(E2-F19 route 1)";
+        << "yesterday's realized must not be seeded: the row is a per-day flow"
+           ".";
 }
 
-// T-7. The day's row is the day's trade, not the day's trade plus the chain.
+// The day's row is the day's trade, not the day's trade plus the chain.
 // Real TMUS 2026-04-15 numbers: closing SELL 37.515436 @ 190 against a 200.733033
-// basis realizes -402.654413. The map had -466.969196 seeded from the prior row,
-// and stored -869.62 for the day; live_results stored -402.6544. This is the test
-// that would have caught the second reverted attempt.
+// basis realizes -402.654413. With -466.969196 seeded from the prior row the map
+// would store -869.62 for the day, while live_results stores -402.6544.
 TEST_F(LiveDailyCycleSeedingTest, SeededRealizedDoesNotLeakIntoTheDaysFill) {
     mr_config_.use_stop_loss = false;  // basis 200.73 vs 98.5 closes would fire it
     strategy_config_.trading_params["TMUS"] = 1.0;
@@ -543,11 +541,11 @@ TEST_F(LiveDailyCycleSeedingTest, SeededRealizedDoesNotLeakIntoTheDaysFill) {
 }
 
 // ---------------------------------------------------------------------------
-// T-12. Three sessions -- open, hold, close -- with the T-1 finalization
+// Three sessions -- open, hold, close -- with the T-1 finalization
 // interposed between them the way the runner does it. Without the interposed
-// finalize the old code also passes, because a day-1 row seeded with realized 0
-// stays 0; the contamination needs the finalizer to have rewritten the row
-// first (F20 Fact B). Every day: sum of per-position realized == the aggregate
+// finalize a seeding that leaks realized also passes, because a day-1 row seeded
+// with realized 0 stays 0; the contamination needs the finalizer to have rewritten
+// the row first. Every day: sum of per-position realized == the aggregate
 // accumulator + the day's costs, and day 2's row is 0 while day 3's carries the
 // exit.
 // ---------------------------------------------------------------------------
@@ -623,7 +621,7 @@ TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
     ASSERT_TRUE(day2.count("TMUS"));
     EXPECT_DOUBLE_EQ(day2.at("TMUS").realized_pnl.as_double(), 0.0)
         << "a held, untraded position realizes nothing today; a mark move leaked "
-           "in through the seed (E2-F20)";
+           "in through the seed";
 
     auto day2_as_loaded = finalize_like_a_weekend(day2, 105.0, 110.0);
 
@@ -635,16 +633,16 @@ TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
     EXPECT_NEAR(day3.at("TMUS").realized_pnl.as_double(), 100.0, 1e-6)
         << "the close-day row carries the exit's realized";
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(day3.at("TMUS")))
-        << "the day-T write must keep the close-day row (E2-F19 route 3)";
+        << "the day-T write must keep the close-day row";
 }
 
 // ---------------------------------------------------------------------------
-// G1 in both shapes. The runner's day-T book comes from the strategy's target
+// Both shapes of a close-out row. The runner's day-T book comes from the strategy's target
 // map, which covers the configured universe. A held symbol IN the universe gets a
 // qty-0 target and the close-out flows through the ordinary delta path (route 3:
 // the row exists and must not be dropped). A held symbol NOT in the universe --
 // contra-merged, renamed, or de-configured -- gets a close-out from
-// generate_daily_executions' second loop and no row at all (G1: a row must be
+// generate_daily_executions' second loop and no row at all (a row must be
 // synthesized).
 // ---------------------------------------------------------------------------
 TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAConfiguredSymbolKeepsItsRow) {
@@ -702,21 +700,21 @@ TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAnUnconfiguredSymbolGetsARow) {
     auto added = LiveDailyCycle::add_rowless_exits(positions, strat->get_positions(), now);
 
     ASSERT_EQ(added.size(), 1u);
-    ASSERT_TRUE(positions.count("MSFT")) << "the exit's realized needs a row (G1)";
+    ASSERT_TRUE(positions.count("MSFT")) << "the exit's realized needs a row";
     EXPECT_NEAR(positions.at("MSFT").realized_pnl.as_double(), 100.0, 1e-6);
     EXPECT_DOUBLE_EQ(positions.at("MSFT").quantity.as_double(), 0.0);
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(positions.at("MSFT")));
 }
 
 // ---------------------------------------------------------------------------
-// E2-F28 -- the live day feeds the strategy ONCE
+// The live day feeds the strategy ONCE
 // ---------------------------------------------------------------------------
 
-// E2-F28: prepare_strategy_for_signals used to call on_data() itself, and the
-// portfolio manager called it again on the same vector a few lines later. MeanReversion
-// appends unconditionally (mean_reversion.cpp: price_history.push_back per bar,
-// volume_sample_count++ per bar), so every live session saw each bar twice: the history
-// ran to the trim cap instead of the bar count and the ADV EMA advanced over a series
+// prepare_strategy_for_signals does not call on_data() itself: the portfolio manager
+// calls it on the same vector a few lines later. MeanReversion appends unconditionally
+// (mean_reversion.cpp: price_history.push_back per bar, volume_sample_count++ per bar),
+// so a second call would show every live session each bar twice: the history would run
+// to the trim cap instead of the bar count and the ADV EMA would advance over a series
 // that never traded. Backtests feed once, so the two paths could not agree.
 TEST_F(LiveDailyCycleSeedingTest, LiveDayFeedsEachBarExactlyOnce) {
     auto bars = hold_band_series("AAPL");
@@ -736,14 +734,14 @@ TEST_F(LiveDailyCycleSeedingTest, LiveDayFeedsEachBarExactlyOnce) {
 }
 
 // ---------------------------------------------------------------------------
-// E2-F35 / BA-4 -- the row and the aggregate mark from ONE map
+// The row and the aggregate mark from ONE map
 // ---------------------------------------------------------------------------
 
-// The regression, stated as the two sides of the identity. THIN has no T-1 close;
+// The two sides of the identity. THIN has no T-1 close;
 // execute_day_t widens to an older real session and both fills and marks it there.
 // The aggregate (summed over `positions` after resolve_and_apply_basis) therefore
-// carries THIN's mark, while the day-T row loop used to recompute from the T-1 close
-// map -- which does not contain THIN at all -- and wrote 0. Same book, two answers.
+// carries THIN's mark, while a day-T row loop recomputing from the T-1 close map --
+// which does not contain THIN at all -- would write 0. Same book, two answers.
 TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) {
     const auto now = std::chrono::system_clock::now();
 
@@ -776,7 +774,7 @@ TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) 
         }
     }
     EXPECT_NEAR(rows, aggregate, 1e-9)
-        << "the row sum and the aggregate must mark from the same map (E2-F35)";
+        << "the row sum and the aggregate must mark from the same map";
 
     // And the shape of the defect, for the record: the un-widened map drops THIN's mark.
     double rows_from_t1_only = 0.0;
@@ -788,7 +786,7 @@ TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) 
         }
     }
     EXPECT_NEAR(aggregate - rows_from_t1_only, 200.0, 1e-9)
-        << "characterizing E2-F35: a widened symbol's row was 0 while the aggregate "
+        << "characterizing the gap: a widened symbol's row was 0 while the aggregate "
            "carried its mark";
 }
 

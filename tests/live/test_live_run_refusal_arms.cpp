@@ -1,24 +1,20 @@
 // tests/live/test_live_run_refusal_arms.cpp
 //
-// T-7a commit 1 (S-1, S-4, T-RISK-ARCH Q2): what a refused or half-finished live run leaves
-// in the database.
+// What a refused or half-finished live run leaves in the database.
 //
-// S-1. The futures runners' day-classification refusal ("DATA ISSUE DETECTED - ABORTING",
-//      no T-1 close on a day the calendar calls a trading day) sat BELOW the
-//      trading.live_run_metadata upsert, so the refused 2026-05-18 replay (T-5 C-HEAD) exited 1
-//      leaving a metadata row and no live_results row. scripts/check_live_trading.py reads that
-//      table as proof the day's run happened. a117a8d9 moved the A3/A2/A1 guards above the
-//      upsert and left this one below it. T-7a C4 then DELETED that refusal (a day with no T-1
-//      price is carried with its reason logged, never refused); the source test below now pins
-//      the deletion and the one refusal C4 adds (a held symbol's feed hole in true live), which
-//      sits above the upsert for the same reason.
-// Q2.  A portfolio-scope risk REFUSE is found inside process_market_data, after the upsert. The
-//      row records a run that did happen, so HD ruled it is marked, not deleted: the runner
+// Refusal placement. The futures runners carry no day-classification refusal: a day with no
+//      T-1 close on a day the calendar calls a trading day is carried with its reason logged,
+//      never refused. Their one refusal (a held symbol's feed hole in true live) sits ABOVE the
+//      trading.live_run_metadata upsert: scripts/check_live_trading.py reads that table as
+//      proof the day's run happened, so a refusal below it would exit 1 leaving a metadata row
+//      and no live_results row.
+// Risk REFUSE. A portfolio-scope risk REFUSE is found inside process_market_data, after the
+//      upsert. The row records a run that did happen, so it is marked, not deleted: the runner
 //      writes the same row again with the refusal in its portfolio_config JSON.
-// S-4. PostgresDatabase::execute_direct_query returned Result<void>, so the runners' Day T-1
-//      live_results UPDATE that matched ZERO rows logged "Successfully updated Day T-1
-//      live_results with finalized PnL and all metrics" (T-5 C-LAST, 2026-05-04 on a Mon-Fri
-//      cron). It now reports the affected rows and the zero-row case warns.
+// Zero-row UPDATE. PostgresDatabase::execute_direct_query reports the affected rows, so the
+//      runners' Day T-1 live_results UPDATE that matches ZERO rows warns instead of logging
+//      "Successfully updated Day T-1 live_results with finalized PnL and all metrics" (a
+//      Monday run on a Mon-Fri cron, whose T-1 Sunday a cron never writes, is that case).
 //
 // The runners are `main()`s and cannot be linked into this binary, so the placement of each
 // arm is tested in the runner source, as tests/live/test_day_t_write_ordering.cpp does. The
@@ -243,9 +239,9 @@ Timestamp date_at(int year, int month, int d) {
     return std::chrono::system_clock::from_time_t(timegm(&tm));
 }
 
-// -1 when execute_direct_query cannot say how many rows it touched (its Result<void> form, as
-// at 0738fd7e), else the count. Written generically so this file compiles against both forms
-// and the parent source fails at RUN time, on the assertion, not at compile time.
+// -1 when execute_direct_query cannot say how many rows it touched (a Result<void> form),
+// else the count. Written generically so a source with that form fails at RUN time, on the
+// assertion, not at compile time.
 template <typename R>
 long long rows_reported(const R& result) {
     if constexpr (std::is_same_v<R, Result<void>>) {
@@ -296,14 +292,14 @@ protected:
 }  // namespace
 
 // =============================================================================================
-// S-1 / T-7a C4: no day-classification abort; the feed-hole refusal precedes the upsert.
+// No day-classification abort; the feed-hole refusal precedes the upsert.
 // =============================================================================================
 
 TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefusalPrecedesTheUpsert) {
-    // T-7a C4 supersedes S-1: a day with no T-1 price is carried, never refused (the dead-Sunday
+    // A day with no T-1 price is carried, never refused (the dead-Sunday
     // Mondays 2026-05-18 and 05-25 carry forward with the reason logged). The one refusal the
     // classifier adds -- a held symbol's feed hole past the tolerance, in true live -- sits above
-    // the live_run_metadata upsert, where S-1 put the old one, so a refused run leaves no row.
+    // the live_run_metadata upsert, so a refused run leaves no row.
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
@@ -314,7 +310,7 @@ TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefus
         EXPECT_EQ(src.find("return 1;  // Fail fast on data issues"), npos);
         EXPECT_EQ(src.find("is_non_trading_day"), npos);
 
-        // T-DATED: the refusal's lines and its ruling are rule_held_feed_holes
+        // The refusal's lines and its ruling are rule_held_feed_holes
         // (live/session_book_gate.hpp), executed by tests/live/test_held_feed_ruling.cpp; the
         // runner calls it and returns on its verdict.
         const auto refusal = src.find("rule_held_feed_holes(");
@@ -331,9 +327,9 @@ TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefus
 }
 
 TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
-    // T-DATED R5 (reads source; the executed proof is the mode gate's refused equity run, which
-    // must leave no live_run_metadata row): the row used to be written before the bars were
-    // loaded, so every refused run left one.
+    // Reads source (the executed proof is the mode gate's refused equity run, which must
+    // leave no live_run_metadata row): a row written before the bars were loaded would be left
+    // by every refused run.
     const std::string src = read_source("apps/strategies/live_equity_mean_reversion.cpp");
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
     const auto upsert = src.find("db->store_live_run_metadata(");
@@ -348,7 +344,7 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsGuards) {
     }
 }
 
-// T-8D-2 R48 (executes, no database): the equity runner's row is built where its configuration is
+// Executes, no database: the equity runner's row is built where its configuration is
 // known and written at the run's first store. A run that refuses before it writes nothing; a run
 // that reaches two store points writes once, the row as it was built.
 TEST(DeferredRunRecordTest, ARunRefusedBeforeItsFirstStoreWritesNoRow) {
@@ -378,7 +374,7 @@ TEST(DeferredRunRecordTest, TheRowIsWrittenOnceAtTheFirstStorePointAsItWasBuilt)
 }
 
 // READS SOURCE (a labelled wiring guard; the executed proof of the order is the refused equity
-// run of the commit's section, and the two tests above).
+// run, and the two tests above).
 TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpActionRefusals) {
     const std::string src = read_source("apps/strategies/live_equity_mean_reversion.cpp");
     if (src.empty())
@@ -402,7 +398,8 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpAction
           "Cannot read the corp-action dedup record",
           "Corp-action dedup record holds an entry with ex_date ",
           "Could not read spinoff deal terms", "and the price series disagree. Refusing to trade.",
-          "E2-F15 invariant violated for ", "E2-F15 guard: after applying ", "E2-F17 guard: "}) {
+          "invariant violated for ", "guard: after applying ",
+          "guard: \" + symbol + \" carried an unapplied "}) {
         const auto at = src.find(refusal);
         ASSERT_NE(at, npos) << refusal;
         EXPECT_LT(held, at) << refusal;
@@ -410,7 +407,7 @@ TEST(RunRefusalArmsSource, TheEquityRunnerWritesItsMetadataRowBelowItsCorpAction
     }
     // The first write point is the line above the run's first other store, the corp-action unit
     // of work; the second is below the class-1 block and above the lifecycle handlers.
-    EXPECT_NE(src.find("run_metadata_row.write_once();  // the run's first write (T-8D-2 R48)\n"
+    EXPECT_NE(src.find("run_metadata_row.write_once();  // the run's first write\n"
                        "                    auto unit = db->begin_unit_of_work();"),
               npos);
     const auto unit = src.find("auto unit = db->begin_unit_of_work();");
@@ -443,7 +440,7 @@ TEST(RunRefusalArmsSource, TheTwinsCarryTheSameRefusalAndUpsertBlock) {
 }
 
 // =============================================================================================
-// Q2: the runners mark the metadata row when the portfolio risk step refused.
+// Risk REFUSE: the runners mark the metadata row when the portfolio risk step refused.
 // =============================================================================================
 
 TEST(RunRefusalArmsSource, BothTwinsMarkTheMetadataRowAfterProcessMarketData) {
@@ -463,7 +460,7 @@ TEST(RunRefusalArmsSource, BothTwinsMarkTheMetadataRowAfterProcessMarketData) {
 
         EXPECT_NE(detect, npos)
             << "the runner never asks the PM whether its risk step refused: a refused run "
-               "leaves an unmarked metadata row that reads as a completed run (T-RISK-ARCH Q2)";
+               "leaves an unmarked metadata row that reads as a completed run";
         EXPECT_NE(second_upsert, npos) << "no second live_run_metadata upsert after the PM call";
         EXPECT_NE(marked, npos) << "the second upsert does not carry the refusal";
         if (detect == npos || second_upsert == npos || marked == npos) continue;
@@ -476,7 +473,7 @@ TEST(RunRefusalArmsSource, BothTwinsMarkTheMetadataRowAfterProcessMarketData) {
 }
 
 // =============================================================================================
-// S-4: a zero-row Day T-1 UPDATE warns instead of logging success, in all three runners.
+// A zero-row Day T-1 UPDATE warns instead of logging success, in all three runners.
 // =============================================================================================
 
 TEST(RunRefusalArmsSource, AZeroRowDayTMinusOneUpdateWarnsInEveryRunner) {
@@ -505,7 +502,7 @@ TEST(RunRefusalArmsSource, AZeroRowDayTMinusOneUpdateWarnsInEveryRunner) {
 }
 
 // =============================================================================================
-// Q2, the part that runs: the PM's REFUSE, read by the helper the runners call.
+// Risk REFUSE, the part that runs: the PM's REFUSE, read by the helper the runners call.
 // =============================================================================================
 
 TEST_F(RefusalPmFixture, APortfolioRefuseIsReadWithItsModuleReasonAndLap) {
@@ -643,8 +640,8 @@ TEST_F(RunMetadataDbFixture, TheSecondUpsertMarksTheSameRowWithTheReason) {
     EXPECT_EQ(nlohmann::json::parse(r[0][2].as<std::string>()), strategy_configs);
 }
 
-// T-7b-1 C7b R4 (T-7a_CODE_REVIEW R4): the STRICT assertion fires after the day's upsert, so the
-// runner writes the same row again with the assertion marked (the Q2 pattern) before it returns 1.
+// The STRICT assertion fires after the day's upsert, so the runner writes the same row
+// again with the assertion marked (as a risk REFUSE does) before it returns 1.
 // The mark is merged into the JSON the row already carries: a same-day risk refusal mark stays.
 TEST_F(RunMetadataDbFixture, C7bTheStrictAssertionMarksTheSameRow) {
     const Timestamp run_date = date_at(2026, 5, 19);
@@ -654,7 +651,7 @@ TEST_F(RunMetadataDbFixture, C7bTheStrictAssertionMarksTheSameRow) {
     ASSERT_FALSE(db_->store_live_run_metadata(run_date, kProbeStrategy, kProbePortfolio,
                                               allocations, config, strategy_configs)
                      .is_error());
-    // The Q2 mark first, kept in the runner's JSON as the runner now keeps it.
+    // The risk refusal mark first, kept in the runner's JSON as the runner keeps it.
     RiskDecisionRecord rec;
     rec.phase = RiskPhase::LAP;
     rec.lap = 1;
@@ -698,9 +695,9 @@ TEST_F(RunMetadataDbFixture, C7bTheStrictAssertionMarksTheSameRow) {
 }
 
 TEST_F(RunMetadataDbFixture, ExecuteDirectQueryReportsTheRowsItTouched) {
-    // A statement whose command tag carries no row count (DDL): succeeds and reports 0. At
-    // ed6c4a6e this threw "Could not convert '' to int" out of execute_direct_query, AFTER the
-    // statement had committed (libpqxx's affected_rows() on an empty tag).
+    // A statement whose command tag carries no row count (DDL): succeeds and reports 0, never
+    // throwing "Could not convert '' to int" out of execute_direct_query AFTER the statement
+    // has committed (libpqxx's affected_rows() on an empty tag).
     auto created = db_->execute_direct_query("CREATE TEMP TABLE c1_s4_probe (id integer)");
     ASSERT_FALSE(created.is_error()) << created.error()->what();
     EXPECT_EQ(rows_reported(created), 0);
@@ -742,7 +739,7 @@ TEST_F(RunMetadataDbFixture, ExecuteDirectQueryReportsTheRowsItTouched) {
 TEST_F(RunMetadataDbFixture, ADayTMinusOneUpdateOnAMissingDateReportsZeroRows) {
     // The Day T-1 finalization's shape (live_portfolio_conservative.cpp, "UPDATE
     // trading.live_results ... WHERE strategy_id AND portfolio_id AND DATE(date) = T-1") on a
-    // date with no row: T-5 C-LAST's Monday 2026-05-04 run on a Mon-Fri cron, whose T-1 was
+// date with no row: a Monday 2026-05-04 run on a Mon-Fri cron, whose T-1 was
     // the Sunday 2026-05-03 that a cron never writes.
     const std::string update =
         "WITH day_before AS (SELECT COALESCE(current_portfolio_value, 500000.0) AS portfolio "

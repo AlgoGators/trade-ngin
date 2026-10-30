@@ -1,6 +1,6 @@
 #pragma once
 
-// LOOP_SPEC section 7.7: the one pass's constants, from a futures book's loaded files into its
+// The one pass's constants, from a futures book's loaded files into its
 // PortfolioConfig. The runners call this after ConfigLoader::require_loop_keys has passed, so
 // every value is one the files carry: the deferral band and B_sigma's floor from defaults.json's
 // optimization block, the per-name cap and the trim cap from risk.json's carver module (the
@@ -32,8 +32,8 @@ inline void apply_loop_config(const AppConfig& app, PortfolioConfig& portfolio) 
 /// The gross leverage limit of a futures book, L_max (the max_gross_leverage of the module that
 /// carries the overlay's limits; 0 when the book has none). The runners hand it to each sleeve as
 /// StrategyConfig::max_leverage, which a strategy's start-up validation requires to be positive
-/// and its own leverage warning compares against: the retired risk.json max_leverage used to feed
-/// both.
+/// and its own leverage warning compares against (risk.json's max_leverage is retired on such a
+/// book).
 inline double loop_gross_leverage_limit(const AppConfig& app) {
     for (const auto& module : app.risk_schema.portfolio) {
         const auto* carver = std::get_if<CarverModuleConfig>(&module.params);

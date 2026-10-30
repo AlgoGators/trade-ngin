@@ -1,10 +1,10 @@
 // tests/live/test_settled_statistics_block.cpp
 //
-// T-8D R39 and T-8D-2 R42 -- when the statistic columns of trading.live_results are computed
-// and which rows receive them.
+// When the statistic columns of trading.live_results are computed and which rows receive
+// them.
 //
-// R39: the row a run writes for its own date carries the statistics through the last settled
-// row, Day T-1. R42: the Day T-1 row's statistics are refreshed whenever that row exists, not
+// The row a run writes for its own date carries the statistics through the last settled
+// row, Day T-1. The Day T-1 row's statistics are refreshed whenever that row exists, not
 // only when STEP 4 finalizes its levels, and that UPDATE reports a row it did not change.
 //
 // The three runners are `main()`s and cannot be linked into this binary, so what is tested is
@@ -168,9 +168,9 @@ TEST(SettledStatisticsBlock, TheTwoFuturesRunnersCarryTheSameBlock) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// T-8a (5a): the block takes its returns and days from the statistics grid. total_days is the
+// The block takes its returns and days from the statistics grid. total_days is the
 // grid's n and total_annualized_return is a statistic of the same series, written by the
-// block to both rows and no longer by the level finalize (T-8D R5, R28, R39; T-8D-2 R74, R76).
+// block to both rows and not by the level finalize.
 // ──────────────────────────────────────────────────────────────────────────
 TEST(SettledStatisticsBlock, TheBlockBuildsTheStatisticsSeriesOnItsOwnGridAndSessionsAYear) {
     for (const auto& runner : kRunners) {
@@ -227,7 +227,7 @@ TEST(SettledStatisticsBlock, TheAnnualizedReturnIsAStatisticOfTheBlockOnBothRows
                   std::string::npos)
             << runner << ": the Day T-1 refresh does not write the grid's annualised return";
 
-        // The level finalize no longer writes it, and nothing queries a calendar count for T.
+        // The level finalize does not write it, and nothing queries a calendar count for T.
         const auto step4 = src.find(kStep4);
         const auto skip_else = src.find(kSkipElse);
         ASSERT_NE(step4, std::string::npos);
@@ -256,8 +256,8 @@ TEST(SettledStatisticsBlock, TheConfigTemplateRecordsTheFrozenSessionsAYear) {
     }
 }
 
-// T-8a (5b): the Sharpe family is taken on the grid, so no runner computes or carries a
-// calendar-day annualised return any more: not in the level finalize, not in the block.
+// The Sharpe family is taken on the grid, so no runner computes or carries a calendar-day
+// annualised return: not in the level finalize, not in the block.
 TEST(SettledStatisticsBlock, NoRunnerAnnualisesOnCalendarDaysForTheRatios) {
     for (const auto& runner : kRunners) {
         const std::string src = read_source(runner);
@@ -272,8 +272,8 @@ TEST(SettledStatisticsBlock, NoRunnerAnnualisesOnCalendarDaysForTheRatios) {
     }
 }
 
-// T-8a (5c): the drawdown is taken on the grid levels of the statistics series, so no runner
-// reads the equity-curve table for a statistic any more.
+// The drawdown is taken on the grid levels of the statistics series, so no runner reads the
+// equity-curve table for a statistic.
 TEST(SettledStatisticsBlock, NoRunnerReadsTheEquityCurveTableForADrawdown) {
     for (const auto& runner : kRunners) {
         const std::string src = read_source(runner);
@@ -286,8 +286,8 @@ TEST(SettledStatisticsBlock, NoRunnerReadsTheEquityCurveTableForADrawdown) {
     }
 }
 
-// T-8a (5d): win_rate is W / (W + L) on the grid, so the calendar-count override is gone from
-// every runner; the calendar count is only logged beside n.
+// win_rate is W / (W + L) on the grid, so no runner overrides it with a calendar count; the
+// calendar count is only logged beside n.
 TEST(SettledStatisticsBlock, NoRunnerOverridesTheWinRateWithACalendarCount) {
     for (const auto& runner : kRunners) {
         const std::string src = read_source(runner);
@@ -306,7 +306,7 @@ TEST(SettledStatisticsBlock, NoRunnerOverridesTheWinRateWithACalendarCount) {
     }
 }
 
-// T-8a (5e): every statistic is taken on the statistics series, so no runner loads a history of
+// Every statistic is taken on the statistics series, so no runner loads a history of
 // stored daily returns or daily P&L for a statistic, and the calculator is handed the series,
 // its sessions a year and the executions count only.
 TEST(SettledStatisticsBlock, NoRunnerLoadsAStoredReturnOrPnlHistoryForAStatistic) {
@@ -324,7 +324,7 @@ TEST(SettledStatisticsBlock, NoRunnerLoadsAStoredReturnOrPnlHistoryForAStatistic
     }
 }
 
-// Migration 036 (LOOP_SPEC sections 7.4 and 10): the new statistics are taken in the same block,
+// Migration 036: the new statistics are taken in the same block,
 // on the same series and K, once, and the same cells feed the Day T-1 refresh and the row the
 // run writes. The sizing-capital history is read on the futures books only.
 TEST(SettledStatisticsBlock, TheMigration036StatisticsAreTakenOnTheBlocksSeriesAndFeedBothWrites) {
@@ -448,7 +448,7 @@ TEST(SettledStatisticsBlock, AFailedReadOfTheMigration036HistoriesLeavesTheRestO
     }
 }
 
-// T-8D-2 R44 (b): the equity book's dividend counter is dated by ex-date. The event of an ex-date
+// The equity book's dividend counter is dated by ex-date. The event of an ex-date
 // is applied by the next run, so the figure through Day T-1 rides the Day T-1 refresh and the row
 // the run writes takes the figure through its own date; neither is the undated lifetime sum. The
 // futures rows do not carry the column.

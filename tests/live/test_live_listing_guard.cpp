@@ -126,7 +126,11 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
     for (const char* runner : kLiveRunners) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
-        const size_t relabels = src.find("ListingDates::instance().set_relabels(app_config.instrument_id_relabels);");
+        // The relabels read are the switch's (none with per_contract_rolls on).
+        const size_t relabels = src.find(
+            "const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+            "            if (!relabels.empty()) {\n"
+            "                ListingDates::instance().set_relabels(relabels);");
         const size_t contracts = src.find("ListingDates::instance().set(app_config.listing_dates);");
         const size_t guard = src.find("live_listing_refusals(");
         const size_t es_filter = src.find("s == \"ES.v.0\"");
@@ -140,6 +144,26 @@ TEST(LiveListingGuard, BothLiveRunnersInstallTheBlocksAndRefuseBeforeTheFirstWri
         ASSERT_NE(first_write, std::string::npos) << runner;
         EXPECT_LT(relabels, bars) << runner << ": the relabels are installed before any bar is loaded";
         EXPECT_LT(guard, es_filter) << runner << ": the guard reads the symbol list before any name filter";
+        // The guard judges the run's universe, without a predecessor its stored listed contract carries
+        const size_t universe = src.find("symbols = ListingDates::instance().run_universe(symbols, &carried);");
+        // A micro beside its full-size root without a pair refuses, with or
+        // without listing_dates, before the listing block and any write
+        const size_t unpaired = src.find("ListingDates::unpaired_micro_refusals(symbols, app_config.listing_dates);");
+        ASSERT_NE(unpaired, std::string::npos) << runner;
+        EXPECT_LT(unpaired, contracts) << runner;
+        EXPECT_LT(unpaired, first_write) << runner;
+        EXPECT_NE(src.find("for (const auto& line : unpaired) ERROR(line);\n                return 1;", unpaired),
+                  std::string::npos) << runner;
+        // The pairs the stored data cannot carry refuse before the universe and any write
+        const size_t refused = src.find("ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);");
+        ASSERT_NE(refused, std::string::npos) << runner;
+        EXPECT_LT(contracts, refused) << runner;
+        EXPECT_LT(refused, universe) << runner;
+        EXPECT_NE(src.find("for (const auto& line : listing_refused) ERROR(line);\n                    return 1;", refused),
+                  std::string::npos) << runner;
+        ASSERT_NE(universe, std::string::npos) << runner;
+        EXPECT_LT(contracts, universe) << runner;
+        EXPECT_LT(universe, guard) << runner;
         EXPECT_LT(guard, first_write) << runner << ": a refused run leaves no row";
         const size_t refusal_exit = src.find("if (!listing_refusals.empty()) {\n                    return 1;", guard);
         ASSERT_NE(refusal_exit, std::string::npos) << runner;
@@ -205,7 +229,11 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
         ASSERT_LT(from, to) << runner;
         const std::string hunk = src.substr(from, to - from);
         for (const char* needed :
-             {"ListingDates::instance().set_relabels(app_config.instrument_id_relabels);",
+             {"const auto relabels = relabels_read(app_config.instrument_id_relabels, app_config.per_contract_rolls);\n"
+              "            if (!relabels.empty()) {\n"
+              "                ListingDates::instance().set_relabels(relabels);",
+              "} else if (!app_config.instrument_id_relabels.empty()) {\n"
+              "                INFO(relabels_not_read_line(app_config.instrument_id_relabels));",
               "ListingDates::instance().set(app_config.listing_dates);",
               "ListingDates::instance().set_switch_rule(app_config.listing_switch_rule);",
               "InstrumentRegistry::instance().set_full_size_remap(false);",
@@ -213,9 +241,29 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
               "const std::string wrong = ListingDates::ratio_error(",
               "if (!wrong.empty()) throw std::runtime_error(wrong);",
               "if (!InstrumentRegistry::instance().has_instrument(p)) {\n                        throw std::runtime_error(",
-              "symbols.push_back(p);"}) {
+              "symbols.push_back(p);",
+              // A stored predecessor carried by its stored listed contract leaves the universe
+              "symbols = ListingDates::instance().run_universe(symbols, &carried);"}) {
             EXPECT_NE(hunk.find(needed), std::string::npos) << runner << " lacks: " << needed;
         }
+        EXPECT_LT(hunk.find("ListingDates::instance().run_universe(symbols, &carried);"),
+                  hunk.find("ListingDates::instance().predecessor_symbols("))
+            << runner << ": the window's predecessors are added after the stored ones leave";
+        // A micro beside its full-size root without a pair refuses, with or
+        // without listing_dates, before the listing block
+        const size_t unpaired = hunk.find("ListingDates::unpaired_micro_refusals(symbols, app_config.listing_dates);");
+        ASSERT_NE(unpaired, std::string::npos) << runner;
+        EXPECT_LT(unpaired, hunk.find("ListingDates::instance().set(app_config.listing_dates);")) << runner;
+        EXPECT_NE(hunk.find("for (const auto& line : unpaired) ERROR(line);\n"
+                            "                throw std::runtime_error(unpaired.front());"),
+                  std::string::npos) << runner;
+        // The pairs the stored data cannot carry refuse the run, before the universe
+        const size_t refused = hunk.find("ListingDates::instance().refusals(symbols, app_config.per_contract_rolls);");
+        ASSERT_NE(refused, std::string::npos) << runner;
+        EXPECT_LT(refused, hunk.find("ListingDates::instance().run_universe(symbols, &carried);")) << runner;
+        EXPECT_NE(hunk.find("for (const auto& line : listing_refused) ERROR(line);\n"
+                            "                    throw std::runtime_error(listing_refused.front());"),
+                  std::string::npos) << runner;
         hunks.push_back(hunk);
     }
     ASSERT_EQ(hunks.size(), 2u);
@@ -234,4 +282,37 @@ TEST(ListingRunnerWiring, BothBacktestRunnersInstallTheBlocksAndTheCoordinatorRe
     EXPECT_EQ(id_reads, 2u);
     EXPECT_NE(coordinator.find("return ListingDates::instance().read_ids(symbols, std::move(ids));"),
               std::string::npos);
+}
+
+// Both backtest runners store in the run's config only the relabels the run
+// read: relabels_read gives none with per_contract_rolls on, so a switch-on run stores no
+// instrument_id_relabels key; with the switch off, the declared list. The stored block is the
+// only writer of the key, and it reads relabels_read's list, never the declared one.
+TEST(ListingRunnerWiring, BothBacktestRunnersStoreOnlyTheRelabelsTheRunRead) {
+    std::vector<std::string> hunks;
+    for (const char* runner : {"apps/backtest/bt_portfolio_conservative.cpp", "apps/backtest/bt_portfolio.cpp"}) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string store = "portfolio_config_json[\"instrument_id_relabels\"] = relabels;";
+        const size_t at = src.find(store);
+        ASSERT_NE(at, std::string::npos) << runner;
+        EXPECT_EQ(src.find(store, at + 1), std::string::npos) << runner << ": one writer of the stored key";
+        const size_t from = src.rfind("            // the relabels the run read (none with per_contract_rolls on)", at);
+        ASSERT_NE(from, std::string::npos) << runner;
+        const std::string hunk = src.substr(from, at + store.size() - from);
+        EXPECT_NE(hunk.find("const auto read = relabels_read(app_config.instrument_id_relabels, "
+                            "app_config.per_contract_rolls);\n            if (!read.empty()) {"),
+                  std::string::npos)
+            << runner << ": the stored list is the one the run read";
+        EXPECT_NE(hunk.find("for (const auto& r : read) {"), std::string::npos) << runner;
+        EXPECT_EQ(hunk.find("for (const auto& r : app_config.instrument_id_relabels)"), std::string::npos)
+            << runner << ": the declared list would be stored with the switch on";
+        hunks.push_back(hunk);
+    }
+    ASSERT_EQ(hunks.size(), 2u);
+    EXPECT_EQ(hunks[0], hunks[1]) << "the twins differ";
+    // and the list the run reads is empty with the switch on, the declared one with it off
+    const std::vector<InstrumentIdRelabel> declared = {{"MES", "2026-02-22", "42140878", "42003800"}};
+    EXPECT_TRUE(relabels_read(declared, true).empty());
+    EXPECT_EQ(relabels_read(declared, false).size(), 1u);
 }

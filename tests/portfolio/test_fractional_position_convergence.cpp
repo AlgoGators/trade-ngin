@@ -1,4 +1,4 @@
-// E2-F1 regression pins.
+// Pins for the risk loop on fractional positions.
 //
 // The optimizer/risk loop in PortfolioManager::process_market_data iterates until
 // target positions are integral, applying the risk scale IN PLACE on every lap
@@ -7,18 +7,17 @@
 // Futures trade whole contracts, so the loop converges on lap 1 and the scale is
 // applied exactly once -- the single application the design comment at that site
 // reasons about. Equities with fractional shares can never satisfy an
-// integrality test, so pre-fix the loop ran all 5 laps, compounded the scale
-// (the gate is scale-invariant, so shrinking never satisfies it -- see E2-F2),
-// and then force-rounded the decayed remainder to an integer, i.e. to zero.
+// integrality test, so held to it the loop would run all 5 laps, compound the
+// scale (the gate is scale-invariant, so shrinking never satisfies it), and then
+// force-round the decayed remainder to an integer, i.e. to zero.
 //
-// Observed in the first ever bt_equity_mr run: META target 2.42425398 decayed
+// On a bt_equity_mr run that shape took META's target 2.42425398 through
 // 2.424 -> 0.767 -> 0.243 -> 0.077 -> 0.024 -> rounded to 0. Across that run 220
 // days hit max iterations and 107 of 448 forced roundings drove a nonzero target
 // to exactly zero.
 //
-// These tests pin BOTH directions, because pinning only one is what let this
-// survive: the false case is the futures invariant (must keep rounding), the
-// true case is the equities fix (must keep the fraction).
+// These tests pin BOTH directions: the false case is the futures invariant (must
+// keep rounding), the true case is the equities rule (must keep the fraction).
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -187,5 +186,5 @@ TEST_F(FractionalConvergenceTest, TheFlagIsWhatDecidesTheOutcome) {
     EXPECT_NE(permitted, forbidden)
         << "allow_fractional_positions changed nothing. Both paths agreeing means "
            "the flag is not wired into the convergence test, so this suite would "
-           "not catch a regression of E2-F1.";
+           "not catch a regression.";
 }

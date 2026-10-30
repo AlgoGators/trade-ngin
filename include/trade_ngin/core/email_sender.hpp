@@ -133,19 +133,6 @@ public:
         const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
         const OverLimitReport& over_limit = {}, const EmailReportContext& context = {});
 
-    /**
-     * @brief Generate trading results email body from database results
-     * @param db Database interface to query trading.results
-     * @param strategy_id Strategy identifier
-     * @param date Trading date
-     * @return HTML email body
-     */
-    std::string generate_trading_report_from_db(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& date
-    );
-
 private:
     std::shared_ptr<CredentialStore> credentials_;
     EmailSenderConfig config_;

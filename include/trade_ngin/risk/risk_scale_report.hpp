@@ -1,12 +1,12 @@
 // include/trade_ngin/risk/risk_scale_report.hpp
 //
-// RA-01 (T-RISK-ARCH §2.1): every live runner builds a throwaway snapshot RiskManager AFTER the
+// Every live runner builds a separate snapshot RiskManager AFTER the
 // trade; its recommended scale (the "reporter") never moves a contract. The scale that did move
 // the book is the PortfolioManager's, recorded row by row in last_risk_decisions(). On a futures
 // row the stored live_results.risk_scale is the DELIVERED scale (migration 020), not the
 // reporter's; on an equity row, whose book runs no portfolio-risk overlay, it is
-// kRiskScaleNoOverlay (T-8D R14; migration 034's comment still describes the reporter's scale
-// there). The per-lap half is the PM's RISK_APPLIED line; this is the per-rebalance half, one
+// kRiskScaleNoOverlay (migration 034's comment describes the reporter's scale there). The
+// per-lap half is the PM's RISK_APPLIED line; this is the per-rebalance half, one
 // log line:
 //
 //   RISK_SCALE_REPORT reporter=<r> applied_cumulative=<c> laps=<n> cutting_laps=<k>
@@ -97,10 +97,9 @@ inline std::string format_risk_scale_report(double reporter, const RiskScaleSumm
     return format_risk_scale_report(std::string(buf), s);
 }
 
-// T-7b-2 C9a (T-VOL C4): the DELIVERED cut beside the requested one. The gate's request
+// The DELIVERED cut beside the requested one. The gate's request
 // (applied_cumulative above) is what the loop multiplied the book by; what reaches the stored book
-// also depends on lap 2's buffer and the rounding (T-VOL section 3.2: 0.747 of the lap-1 book in
-// notional on cut days against a 0.870 request). One line per rebalance, printed right after the
+// also depends on lap 2's buffer and the rounding. One line per rebalance, printed right after the
 // RISK_SCALE_REPORT line and only where it is printed:
 //
 //   RISK_DELIVERED requested=<r> delivered=<d> final_gross=<g> lap1_gross=<g1> unpriced=<n>
@@ -147,7 +146,7 @@ inline double delivered_gross_notional(const std::map<std::string, double>& book
     return gross;
 }
 
-/// T-7b-2 C9a3: the ACCOUNT book of per-strategy books (strategy -> symbol -> Position): per symbol, the sum of
+/// The ACCOUNT book of per-strategy books (strategy -> symbol -> Position): per symbol, the sum of
 /// every sleeve's quantity. The live futures runners pass the per-strategy book they store (after their BOOK_GATE
 /// hold) through this to PortfolioManager::delivered_cut_for_book.
 template <typename Books>
@@ -160,7 +159,7 @@ std::map<std::string, double> account_book_of(const Books& books) {
     return out;
 }
 
-/// T-8D-2 R69: the ACCOUNT book of a runner that stores ONE sleeve as a flat list of rows (the
+/// The ACCOUNT book of a runner that stores ONE sleeve as a flat list of rows (the
 /// equity runner's stored positions): the same book account_book_of gives for those rows filed
 /// under one sleeve, so PortfolioManager::delivered_cut_for_book measures final_gross on the book
 /// that runner stores. A row of quantity 0 (a closed row) stays in the map and adds no notional.
@@ -171,14 +170,14 @@ std::map<std::string, double> account_book_of_rows(const Rows& rows) {
     return out;
 }
 
-/// T-8D R14: what live_results.risk_scale holds on a row whose run applied no portfolio-risk
+/// What live_results.risk_scale holds on a row whose run applied no portfolio-risk
 /// overlay (every equity row). 1.0 = no portfolio-risk overlay ran this run, not an uncut book.
 /// The snapshot reporter's recommended scale is never stored under that name.
 inline constexpr double kRiskScaleNoOverlay = 1.0;
 
-/// T-8D-2 R68: the console's "Risk Scale" lines of a book the overlay sizes (the live futures
+/// The console's "Risk Scale" lines of a book the overlay sizes (the live futures
 /// runners), each labelled and ending with a newline, four decimals as the column holds them:
-///   risk_scale      the DELIVERED scale the row stores (LOOP_SPEC sections 7.2 and 10).
+///   risk_scale      the DELIVERED scale the row stores.
 ///   risk_requested  m_t, the row's risk_detail.risk_requested; N/A when the row stores no
 ///                   risk_detail (`overlay_answered` false: no session, a sizing hold, a refused
 ///                   overlay), where risk_scale is the held book against itself, 1.
@@ -198,7 +197,7 @@ inline std::string risk_scale_console(double risk_scale, bool overlay_answered,
     return out;
 }
 
-/// The same line on a book that runs no overlay (the equity runner): the stored value with R14's
+/// The same line on a book that runs no overlay (the equity runner): the stored value with its
 /// meaning in the label, and no request, since none exists.
 inline std::string risk_scale_console_no_overlay() {
     char buf[64];
@@ -229,8 +228,8 @@ inline DeliveredCut measure_delivered_cut(const std::map<std::string, double>* l
 ///                lap-1 book's gross is 0 (an EMPTY lap-1 book: no symbol, or every quantity 0 --
 ///                there is nothing to cut, so no ratio; final_gross is still printed).
 ///   final_gross  the book the runner stores: the PM's final book in the backtest (its session hold is inside
-///                the PM), the runner's book after its BOOK_GATE hold on the live futures runners (T-7b-2 C9a3,
-///                PortfolioManager::delivered_cut_for_book); `na` when the measurement did not run: no call this cycle (the backtest's
+///                the PM), the runner's book after its BOOK_GATE hold on the live futures runners
+///                (PortfolioManager::delivered_cut_for_book); `na` when the measurement did not run: no call this cycle (the backtest's
 ///                all-JUNK cycle), or the call returned before its end (an error; the measurement
 ///                runs once, at the end of the call, so neither book is valued then).
 ///   lap1_gross   `na` in the same cases, and when the call ended without a lap-1 book; 0 for an

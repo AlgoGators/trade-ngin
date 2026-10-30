@@ -12,7 +12,7 @@ namespace backtest {
 
 /**
  * @brief What the futures backtest feeds its strategies, its PortfolioManager and its cost models
- *        on one cycle under LOOP_SPEC v6.1 section 2.1 (K-01, LOCKED).
+ *        on one cycle.
  *
  * A JUNK bar and a thin first print (SymbolDayVerdict::k01_withheld) are WITHHELD: never consumed
  * and never fed later. The live runners take the same bars out of their whole window on every run
@@ -21,9 +21,6 @@ namespace backtest {
  *
  *   - feed:     the signal group without the withheld symbols' bars, the other bars in their order;
  *   - withheld: those bars, in the group's order (logged, never carried to a later cycle).
- *
- * This replaces T-7b-1 commit 7a's one-cycle delayed feed, which fed a withheld bar on the next
- * cycle ahead of its symbol's next bar (K-01 retires that release).
  */
 struct K01SignalFeed {
     std::vector<Bar> feed;

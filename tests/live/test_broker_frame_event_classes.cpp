@@ -1,7 +1,6 @@
-// B-vii regression pins -- expected_pnl_gap must fold only SHARE-COUNT events into the
-// split correction.
+// expected_pnl_gap must fold only SHARE-COUNT events into the split correction.
 //
-// THE DEFECT: the reverse walk classifies every event as "dividend or split":
+// THE HAZARD: a reverse walk that classifies every event as "dividend or split":
 //
 //     if (!is_dividend(ev)) { splits_after *= ev.ratio; continue; }
 //
@@ -16,22 +15,21 @@
 // February dividend was paid on exactly the share count held today -- no split intervened --
 // but the walk charges it at d/1.10 and understates the gap by ~$13.73 on 100 shares.
 //
-// Second defect on the same line: the ratio-validity check
+// Second hazard on the same line: a ratio-validity check
 //
 //     if (!ev.ratio_known || !(ev.ratio > 0.0) ...) return 0.0;
 //
-// runs BEFORE the event class is known, so a TERMINATION row -- which carries a NULL
-// basis_ratio, because a termination does not restate a basis -- short-circuits the entire
-// chain to 0.0. A closed-out position in the history therefore silences the reconciliation
-// for the whole symbol.
+// that runs BEFORE the event class is known lets a TERMINATION row -- which carries a NULL
+// basis_ratio, because a termination does not restate a basis -- short-circuit the entire
+// chain to 0.0. A closed-out position in the history then silences the reconciliation for
+// the whole symbol.
 //
 // THE RULE: only SPLIT and ADR_SPLIT change the share count. Everything that is neither a
 // dividend nor a share-count split is irrelevant to this arithmetic and is skipped without
 // its ratio being validated.
 //
-// NOTE: expected_pnl_gap has no production caller today (C-5 §9-D) -- it is reachable only
-// from tests and the F-8 reconciliation tooling. These pins are what will make it correct
-// when it is wired.
+// NOTE: expected_pnl_gap has no production caller -- it is reachable only from tests and
+// the reconciliation tooling. These pins keep it correct for when it is wired.
 
 #include <gtest/gtest.h>
 
@@ -95,7 +93,7 @@ TEST(BrokerFrameEventClasses, ASpinoffDoesNotDiscountAnEarlierDividend) {
 }
 
 TEST(BrokerFrameEventClasses, ARealSplitStillDiscountsAnEarlierDividend) {
-    // The BA-23 behaviour must survive: a dividend paid BEFORE a 4:1 split was paid on a
+    // A real split still discounts: a dividend paid BEFORE a 4:1 split was paid on a
     // quarter of today's shares.
     const std::vector<AppliedEvent> chain = {
         dividend("2024-02-16", 1.51, 1.00524),
@@ -134,7 +132,7 @@ TEST(BrokerFrameEventClasses, ATerminationWithNoRatioDoesNotSilenceTheChain) {
 }
 
 TEST(BrokerFrameEventClasses, AnUnknownDividendRatioStillSilencesTheChain) {
-    // The BA-23 / migration-006 rule is unchanged for the rows that DO restate a basis: a
+    // The migration-006 rule holds for the rows that DO restate a basis: a
     // pre-006 dividend row with a NULL ratio makes the chain uninvertible and must say so.
     const std::vector<AppliedEvent> chain = {
         dividend("2024-02-16", 1.51, 1.00524),

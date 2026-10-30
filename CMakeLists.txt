@@ -171,6 +171,7 @@ set(TRADE_NGIN_SOURCES
     src/data/roll_calendar.cpp
     src/data/contract_bars.cpp
     src/data/roll_cycle.cpp
+    src/data/carry_quote.cpp
     src/data/contract_roll_rule.cpp
     src/data/contract_rolls.cpp
     src/data/per_contract_source.cpp
@@ -211,6 +212,7 @@ set(TRADE_NGIN_SOURCES
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
     src/strategy/trend_estimator.cpp
+    src/strategy/carry_estimator.cpp
     src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp

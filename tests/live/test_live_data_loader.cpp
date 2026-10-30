@@ -58,14 +58,11 @@ TEST_F(LiveDataLoaderTest, GetLiveResultsCountDisconnectedErrors) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-5 / C-1 D2 -- a real pin for 43dfefb7.
+// load_commissions_by_symbol's column name.
 //
-// That commit's headline fix was load_commissions_by_symbol's column name:
 // <schema>.executions stores realised commissions in `commissions_fees`, never
-// `commission`, so the old query FAILED at runtime and every caller silently
-// degraded to a WARN with an empty map. C-1 found the fix had no test anywhere
-// at HEAD -- the one test the commit added covers an unrelated dividend
-// contract, so the column name could be reverted and the suite stays green.
+// `commission`; a query naming `commission` fails at runtime and every caller
+// silently degrades to a WARN with an empty map.
 //
 // The query is built as a string and handed to execute_query, so its SHAPE is
 // observable: capture it and assert the column. Note `commission` is a
@@ -129,8 +126,7 @@ TEST_F(LiveDataLoaderTest, CommissionsQueryNamesTheCommissionsFeesColumn) {
     EXPECT_NE(db->last_query.find("trading.executions"), std::string::npos);
     EXPECT_NE(db->last_query.find("GROUP BY symbol"), std::string::npos);
 
-    // Portfolio id and date are quoted literals, not bare concatenation -- the
-    // other half of what 43dfefb7 changed.
+    // Portfolio id and date are quoted literals, not bare concatenation.
     EXPECT_NE(db->last_query.find("'EQUITY_MR_PORTFOLIO'"), std::string::npos);
     EXPECT_NE(db->last_query.find("'2026-08-06'"), std::string::npos)
         << "the date key must be the UTC date, quoted. Query was:\n"
@@ -151,8 +147,7 @@ TEST_F(LiveDataLoaderTest, CommissionsQueryEscapesAQuoteInThePortfolioId) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// A two-column text result for a reader's parsing test (the equity-curve history reader it
-// was written for is deleted: T-8D-2 R51; the statistics levels still use it).
+// A two-column text result for a reader's parsing test (the statistics levels use it).
 // ──────────────────────────────────────────────────────────────────────────
 namespace {
 
@@ -196,13 +191,13 @@ private:
 }  // namespace
 
 // ──────────────────────────────────────────────────────────────────────────
-// T-8a (4): a statistics history starts at the book's start, the metadata row's
-// live_start_date (T-8D ruling R9), read the one way the sizing history reads it.
+// A statistics history starts at the book's start, the metadata row's
+// live_start_date, read the one way the sizing history reads it.
 // The reads that carry the account value do not take it.
 // ──────────────────────────────────────────────────────────────────────────
 namespace {
 
-// The bound as load_sizing_pnl_history has carried it since T-LOOP, on a date expression.
+// The bound load_sizing_pnl_history carries, on a date expression.
 std::string book_start_bound(const std::string& date_expr) {
     return "AND " + date_expr +
            " >= COALESCE((SELECT MIN(live_start_date) FROM trading.strategy_trading_days_metadata "
@@ -235,9 +230,10 @@ TEST_F(LiveDataLoaderTest, StatisticsHistoryBoundNamesTheSamePortfolioAsTheRowFi
         << db->last_query;
 }
 
-// The sizing history is a sizing input: its query is the text T-LOOP landed, to the byte, plus
-// the one column migration 035 adds to it: whether the row's settled_at is set (the sizing read's
-// settled test, live/live_sizing_read.hpp). The rows read and their order are unchanged.
+// The sizing history is a sizing input: its query text is pinned to the byte, with the one
+// column migration 035 adds to it: whether the row's settled_at is set (the sizing read's
+// settled test, live/live_sizing_read.hpp). The statistics bound changes neither the rows read
+// nor their order.
 TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound) {
     auto db = std::make_shared<QueryCapturingDb>();
     LiveDataLoader loader(db, "trading");
@@ -255,7 +251,7 @@ TEST_F(LiveDataLoaderTest, SizingPnlHistoryQueryIsUnchangedByTheStatisticsBound)
 }
 
 // current_portfolio_value and the sizing capital come from the latest stored row before a date,
-// whatever its date: a bound on these reads would move the book (T-8D section 11, part B).
+// whatever its date: a bound on these reads would move the book.
 TEST_F(LiveDataLoaderTest, AccountValueReadsCarryNoBookStartBound) {
     auto db = std::make_shared<QueryCapturingDb>();
     LiveDataLoader loader(db, "trading");
@@ -326,9 +322,9 @@ TEST_F(LiveDataLoaderTest, PreviousAggregatesAndTheFinalizeReadCarryNoBookStartB
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// T-8a (5a): the inputs of the statistics grid. The levels and the grid dates are bounded by
+// The inputs of the statistics grid. The levels and the grid dates are bounded by
 // the book's start as the three histories are; the futures grid is counted from the bars
-// alone (T-8D R3, T-8D-2 R81).
+// alone.
 // ──────────────────────────────────────────────────────────────────────────
 TEST_F(LiveDataLoaderTest, StatisticsLevelsAreTheStoredAccountValuesFromTheBookStart) {
     auto db = std::make_shared<QueryCapturingDb>();
@@ -389,7 +385,7 @@ TEST_F(LiveDataLoaderTest, FuturesStatisticsGridIsCountedFromTheBarsAlone) {
                   "GROUP BY 1) bars "
                   "WHERE printed >= 9 AND EXTRACT(DOW FROM grid_date) <> 6 "
                   "ORDER BY grid_date ASC");
-    // Statistics only: nothing of the trading session test is read (R81).
+    // Statistics only: nothing of the trading session test is read.
     for (const char* not_read : {"session", "classif", "closed", "volume", "live_results"}) {
         EXPECT_EQ(db->last_query.find(not_read), std::string::npos) << not_read;
     }

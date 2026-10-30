@@ -1,7 +1,7 @@
-// The live T-1 settlement on the consumed bars (LOOP_SPEC v6.1 sections 2.1, 6.6; T-ROLLX-FIX commit
-// 2): the live P&L manager's T-1 finalize books 0 for a symbol whose T-1 bar is a change bar (a roll's
-// switch day or either bar of a flip pair) or a WITHHELD bar (K-01), and settles every other symbol
-// exactly as before; consumed_t1_settlement (session_book_gate.hpp) names those symbols and books
+// The live T-1 settlement on the consumed bars: the live P&L manager's T-1 finalize books 0 for
+// a symbol whose T-1 bar is a change bar (a roll's switch day or either bar of a flip pair) or
+// a WITHHELD bar (K-01), and settles every other symbol as usual; consumed_t1_settlement
+// (session_book_gate.hpp) names those symbols and books
 // each T-1 move against the previous CONSUMED close (a withheld bar in between is skipped).
 #include <gtest/gtest.h>
 #include <chrono>
@@ -157,7 +157,7 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("ES.v.0"), 5020.0) << "day 2's close, the last consumed before T-1";
     EXPECT_DOUBLE_EQ(s.t2_close_prices.at("NG.v.0"), 3.33);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
-    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // The two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
     // what the settle reads, so nothing it books moves
     EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
     EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
@@ -172,7 +172,7 @@ TEST_F(ChangeBarPnlTest, TheT1SettlementSkipsAWithheldBarAndZeroesChangeAndWithh
     EXPECT_DOUBLE_EQ(r.value().position_realized_pnl.at("6B.v.0"), 0.0) << "a withheld T-1 bar books nothing";
 }
 
-// HD 2026-10-12, one source: the two price columns of the report's settled table and of the
+// One source: the two price columns of the report's settled table and of the
 // settled file are the pair THIS settle booked each row on, the maps consumed_t1_settlement hands
 // finalize_previous_day, never a second lookup of the bars. The same book as above plus ZN, which
 // printed no bar on T-1 (day 4) nor on day 3. EXECUTES the settlement, the finalize and the
@@ -211,7 +211,7 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
         << "the raw entry, never used: no T-1 bar";
     EXPECT_EQ(s.t1_close_prices, raw_t1);
     EXPECT_EQ(s.zero_pnl_symbols, (std::unordered_set<std::string>{"NG.v.0", "6B.v.0"}));
-    // T-EMAIL: the two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
+    // The two kinds kept apart (NG is a change bar, 6B a withheld print); their union is
     // what the settle reads, so nothing it books moves
     EXPECT_EQ(s.roll_zero_symbols, (std::unordered_set<std::string>{"NG.v.0"}));
     EXPECT_EQ(s.withheld_zero_symbols, (std::unordered_set<std::string>{"6B.v.0"}));
@@ -243,16 +243,12 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     EXPECT_DOUBLE_EQ(booked.at("ES.v.0"), 1000.0);
 
     // ZN printed no bar on T-1: the settle booked 0; the table prints its last known close (day
-    // 2's 112, not day 1's 111) and the words; the file leaves the mark empty.
+    // 2's 112, not day 1's 111) and the words.
     EXPECT_DOUBLE_EQ(booked.at("ZN.v.0"), 0.0);
     EXPECT_EQ(table.latest.count("ZN.v.0"), 0u);
     EXPECT_EQ(cells("ZN.v.0").previous, "$112.0000");
     EXPECT_EQ(cells("ZN.v.0").latest, "\xE2\x80\x93");
     EXPECT_TRUE(cells("ZN.v.0").no_bar);
-    const SettledCsvCells zn_file = settled_csv_cells(settled_price_of(table.previous, "ZN.v.0"),
-                                                      settled_price_of(table.latest, "ZN.v.0"));
-    EXPECT_EQ(zn_file.prior_mark, "112");
-    EXPECT_EQ(zn_file.mark, "");
 
     // NG, a roll's change bar, and 6B, a withheld T-1 print: the table shows the two closes the
     // settle was handed, and the settle booked 0 by rule, so these rows do not multiply out.
@@ -265,7 +261,7 @@ TEST_F(ChangeBarPnlTest, TheSettledTablePricesAreThePairTheFinalizeBookedEachRow
     EXPECT_DOUBLE_EQ(booked.at("6B.v.0"), 0.0);
 }
 
-// Rolls step 3 (per_contract_rolls on): NG's T-1 bar (day 4) is a roll bar of the per-contract
+// With per_contract_rolls on: NG's T-1 bar (day 4) is a roll bar of the per-contract
 // source, the new contract's 3.965 with the old contract's 3.41; the finalize books the old
 // contract's own move, 2 x (3.41 - 3.33) x 10,000, not 0 and not the splice step. ES's T-1 bar
 // follows a vendor switch on day 3 it did not confirm: it books from the held contract's day-3 close.

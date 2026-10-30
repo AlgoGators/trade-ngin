@@ -1,7 +1,7 @@
-// E2-F15 regression pins — a corp-action restatement must not put the position and the price
+// A corp-action restatement must not put the position and the price
 // series in different unit frames.
 //
-// THE FAILURE, from a real run (2026-09-01 10:09, R4 window, log r4d/2026-04-06.log):
+// THE FAILURE SHAPE, on BKNG's 25:1 split:
 //
 //   Applied SPLIT for BKNG (ex_date 2026-04-06): qty 10 -> 250, avg_price 4194.31 -> 167.7724
 //   Generated execution: BKNG SELL 248.799399 at 4194.31        <-- PRE-split price
@@ -11,25 +11,24 @@
 // price was 25x too large because the position moved into post-split units and the price
 // series did not.
 //
-// WHY IT HAPPENED. Two windows, each individually correct:
+// WHY IT CAN HAPPEN. Two windows, each individually correct:
 //   * the corp-action fetch reads split_factor from the ex-date bar ROW, so it spans day D --
 //     legitimate, split ratios are announced weeks ahead and using one is not lookahead;
 //   * the bar load ends at the last completed session on a replay (`end_date = now - 24h`),
 //     and build_equity_adjusted_query back-adjusts a bar by the steps of every LATER bar, so
 //     with the ex-date bar outside the window there is no step and the closes stay raw.
-// Nothing rescaled the prices to match the restated basis.
+// Nothing rescales the prices to match the restated basis.
 //
-// THE FIX is a horizon gate, not a rescale: only apply an event the price series already
+// THE RULE is a horizon gate, not a rescale: only apply an event the price series already
 // covers. Rescaling the price maps instead would corrupt finalize_previous_day, which marks
 // `previous_positions_pre_action` and MUST stay pre-event -- that would trade a $1M error for
 // a $40k one.
 //
-// WHY THESE TESTS EXIST AT ALL. Every invariant the E2 fix wave added PASSES on the bad
-// number at HEAD: L5 rows-sum-to-aggregate, `total_pnl = (realized - costs) + unrealized`,
-// `equity = initial + total_pnl`, and the daily-flow identity. They are all INTERNAL
-// consistency checks and the wrong number is consistently wrong everywhere. The first test
-// below is the missing statement -- the only one that compares a restatement against
-// something outside itself.
+// WHY THESE TESTS EXIST AT ALL. The internal invariants (rows-sum-to-aggregate,
+// `total_pnl = (realized - costs) + unrealized`, `equity = initial + total_pnl`, and the
+// daily-flow identity) all PASS on the bad number: they are INTERNAL consistency checks and
+// the wrong number is consistently wrong everywhere. The first test below is the one that
+// compares a restatement against something outside itself.
 
 #include <gtest/gtest.h>
 
@@ -75,8 +74,8 @@ bool horizon_allows(const std::string& ex_date, const std::string& last_bar_date
     return !last_bar_date.empty() && ex_date <= last_bar_date;
 }
 
-// E2-F16's companion rule, likewise stated as the RULE rather than the plumbing. Day T-1 is
-// normally finalized from the PRE-corp-action snapshot (8a1a96ef), so a day is not restated
+// The companion rule, likewise stated as the RULE rather than the plumbing. Day T-1 is
+// normally finalized from the PRE-corp-action snapshot, so a day is not restated
 // before its own ex-date. That holds only while the ex-date is still in the future relative to
 // T-1. Once the horizon gate defers an event, the event can arrive on a run whose T-1 is ALREADY
 // on or after the ex-date -- and then the T-1 close is post-event while the pre-action basis is
@@ -248,13 +247,13 @@ TEST(CorpActionFrameHorizon, DeferredEventAppliesOnTheNextRunAndTheInvariantThen
 
 
 // ---------------------------------------------------------------------------
-// 4. E2-F16 -- the defect the horizon gate CREATED, and its fix.
+// 4. The state the horizon gate creates, and the rule for it.
 //
-// Deferral is correct, but it invents a state 8a1a96ef never had to consider: an event applying
-// on run D for an ex-date of D-1. The pre-action snapshot is then a frame behind the T-1 close,
-// and the finalizer marks a pre-split basis against a post-split price. Measured on a real run:
-// the 2026-04-06 row took -4824.16 of phantom unrealized and the equity curve dropped to
-// 95,080.29. It does NOT self-correct -- running 04-08 and 04-09 left the row untouched.
+// Deferral is correct, but it creates a state of its own: an event applying on run D for an
+// ex-date of D-1. The pre-action snapshot is then a frame behind the T-1 close, and the
+// finalizer would mark a pre-split basis against a post-split price: on BKNG the 2026-04-06
+// row would take -4824.16 of phantom unrealized and the equity curve would drop to 95,080.29.
+// It does NOT self-correct -- later runs leave the row untouched.
 // ---------------------------------------------------------------------------
 
 TEST(CorpActionFrameHorizon, DeferredEventCatchingUpFinalizesFromTheRestatedBook) {
@@ -266,7 +265,7 @@ TEST(CorpActionFrameHorizon, DeferredEventCatchingUpFinalizesFromTheRestatedBook
         << "ex_date behind T-1: a longer gap, same conclusion.";
 
     // The ordinary case must be untouched: an event whose ex-date is still ahead of T-1 is
-    // exactly what 8a1a96ef's pre-action snapshot exists for.
+    // exactly what the pre-action snapshot exists for.
     EXPECT_FALSE(finalize_from_restated_book(kExDate, "2026-04-02"))
         << "ex_date after T-1 must keep the PRE-action snapshot, or a day is restated before "
            "its own ex-date -- the regression 8a1a96ef fixed.";

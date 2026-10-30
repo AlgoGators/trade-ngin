@@ -80,15 +80,14 @@ bool find_key(const nlohmann::json& node, const std::string& key, const std::str
 }
 
 /**
- * @brief S7 -- the keys schema 2 removed are load ERRORS, not ignored leftovers.
+ * @brief The keys schema 2 removed are load ERRORS, not ignored leftovers.
  *
  * Ignoring them is what makes a migration silently half-applied: a `use_risk_management:
  * false` left behind in a file nobody re-read would read as "risk is off" to a human and
  * as nothing at all to the loader, and the book would gate while its config says it does
  * not. Each message names the key's path and what replaced it.
  *
- * removed-key guard: delete after the first production run on schema 2 (the lead names
- * the release; LEAD_RULINGS_C7 item 15 records it as an open question for HD).
+ * removed-key guard: it can go once every production config is on schema 2.
  */
 Result<void> check_removed_keys(const nlohmann::json& merged, const std::string& portfolio_id) {
     const std::string config_prefix = "config for " + portfolio_id + ": ";
@@ -98,8 +97,8 @@ Result<void> check_removed_keys(const nlohmann::json& merged, const std::string&
             ErrorCode::INVALID_DATA,
             config_prefix + where +
                 " (use_risk_management) was removed in schema 2; risk is assigned by risk.json "
-                "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
-                "T-RISK-ARCH_ADVERSARIAL E2)",
+                "\"modules\". Delete the key (a leftover false would silently turn risk back on"
+                ")",
             "ConfigLoader");
     }
     if (merged.contains("risk_defaults")) {
@@ -149,8 +148,8 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         if (merged.contains("initial_capital")) {
             config.initial_capital = merged.at("initial_capital").get<double>();
         }
-        // "reserve_capital_pct" (OPT-N4) is no longer read: nothing sized on it (J3, deleted
-        // T-7a). A deployed portfolio.json that still carries the key (or "reserve_capital",
+        // "reserve_capital_pct" is not read: nothing sizes on it. A deployed portfolio.json that
+        // still carries the key (or "reserve_capital",
         // the name the stored run metadata used) loads unchanged, the key is ignored, and the
         // run says so once.
         for (const char* key : {"reserve_capital_pct", "reserve_capital"}) {
@@ -176,7 +175,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         if (merged.contains("optimization")) {
             const auto& optimization = merged.at("optimization");
             config.opt_config.from_json(optimization);
-            // LOOP_SPEC section 7.7: the one pass's keys, strictly when present (a futures book
+            // The one pass's keys, strictly when present (a futures book
             // requires them: require_loop_keys), and the optimiser's retired keys, noted.
             config.has_cost_penalty_scalar = optimization.contains("cost_penalty_scalar");
             for (const char* key : {"sign_close_band", "b_sigma_floor"}) {
@@ -256,7 +255,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         }
         config.use_optimization = merged.at("use_optimization").get<bool>();
 
-        // T-6c commit B: the PortfolioManager's covariance history length, in prices per
+        // The PortfolioManager's covariance history length, in prices per
         // symbol. Optional; absent means 756 (the trend sleeve's own history cap). A value
         // that is not a whole number of at least 2 is refused: one price gives no return.
         if (merged.contains("covariance_history_prices")) {
@@ -273,7 +272,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_history_prices = v.get<size_t>();
         }
 
-        // T-7b-1 7d: how many union dates a covariance participant's last close may trail the
+        // How many union dates a covariance participant's last close may trail the
         // newest before the optimiser leaves it out of the date intersection. Optional; absent
         // means 5. 0 is allowed (every participant must print on the newest date).
         if (merged.contains("covariance_stale_dates")) {
@@ -291,8 +290,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_stale_dates = v.get<size_t>();
         }
 
-        // Rolls step 2: the per-contract roll switch. Optional, boolean, off when absent; read by
-        // nothing yet (steps 3 and 4 wire it).
+        // The per-contract roll switch. Optional, boolean, off when absent.
         if (merged.contains("per_contract_rolls")) {
             const auto& v = merged.at("per_contract_rolls");
             if (!v.is_boolean()) {
@@ -305,7 +303,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             }
             config.per_contract_rolls = v.get<bool>();
         }
-        // Rolls step 4, ruling 19: the switch-bar setting, "held" (absent) or "vendor".
+        // The switch-bar setting, "held" (absent) or "vendor".
         if (merged.contains("per_contract_switch_bar")) {
             const auto& v = merged.at("per_contract_switch_bar");
             if (!v.is_string() ||
@@ -321,7 +319,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.per_contract_switch_bar = v.get<std::string>();
         }
 
-        // LOOP_SPEC sections 2.5 and 7.7 (D40): the equity slow rule. Parsed strictly when present;
+        // The equity slow rule. Parsed strictly when present;
         // the futures runners require it (require_loop_keys).
         if (merged.contains("equity_slow_rule")) {
             const auto& v = merged.at("equity_slow_rule");
@@ -383,7 +381,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         for (auto it = merged.begin(); it != merged.end(); ++it) {
             const std::string& key = it.key();
             for (const char* block :
-                 {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+                 {"listing_dates", "instrument_id_relabels", "trading_rule_removals", "carry"}) {
                 // "listing_date...", "instrument_id_relabel...": the block's name less its last letter
                 const std::string stem(block, std::strlen(block) - 1);
                 if (key != block && key.rfind(stem, 0) == 0) {
@@ -545,7 +543,76 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             }
         }
 
-        // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
+        // Carry (trade-ngin #185): optional; parsed strictly when present. Weight 0 is carry off.
+        if (merged.contains("carry")) {
+            const auto& v = merged.at("carry");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id + ": portfolio.json \"carry\" " + what +
+                        " (expected {\"weight\": 0.4, \"spans\": [5, 20, 60, 120], \"scalar\": "
+                        "30}), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object()) return bad("must be an object");
+            const std::string unknown = unknown_key(v, {"weight", "spans", "scalar"});
+            if (!unknown.empty()) return bad("has an unknown key \"" + unknown + "\"");
+            CarryConfig carry;
+            carry.present = true;
+            if (!v.contains("weight") || !v.at("weight").is_number() ||
+                !(v.at("weight").get<double>() >= 0.0 && v.at("weight").get<double>() <= 1.0)) {
+                return bad("needs a weight from 0 to 1");
+            }
+            carry.weight = v.at("weight").get<double>();
+            if (v.contains("spans")) {
+                const auto& spans = v.at("spans");
+                if (!spans.is_array() || spans.empty()) return bad("needs a non-empty list of spans");
+                carry.spans.clear();
+                for (const auto& span : spans) {
+                    if (!span.is_number_integer() || span.get<int64_t>() <= 0 ||
+                        span.get<int64_t>() > 10000 ||
+                        (!carry.spans.empty() && span.get<int64_t>() <= carry.spans.back())) {
+                        return bad("names spans that are not positive whole numbers, fastest first");
+                    }
+                    carry.spans.push_back(span.get<int>());
+                }
+            }
+            if (v.contains("scalar")) {
+                if (!v.at("scalar").is_number() || !(v.at("scalar").get<double>() > 0.0)) {
+                    return bad("needs a positive scalar");
+                }
+                carry.scalar = v.at("scalar").get<double>();
+            }
+            // The carry rules join ONE trend sleeve's forecast: with carry on a book of several
+            // sleeves, or of another kind of sleeve, is refused.
+            if (carry.enabled()) {
+                int sleeves = 0;
+                bool trend_only = true;
+                if (merged.contains("strategies") && merged.at("strategies").is_object()) {
+                    const nlohmann::json& strategies = merged.at("strategies");
+                    for (const auto& entry : strategies.items()) {
+                        const auto& def = entry.value();
+                        if (!def.is_object()) continue;
+                        const auto flag = [&](const char* key) {
+                            return def.contains(key) && def.at(key).is_boolean() &&
+                                   def.at(key).get<bool>();
+                        };
+                        if (!flag("enabled_backtest") && !flag("enabled_live")) continue;
+                        ++sleeves;
+                        trend_only = trend_only && def.contains("type") && def.at("type").is_string() &&
+                                     def.at("type").get<std::string>() == "TrendFollowingStrategy";
+                    }
+                }
+                if (sleeves != 1 || !trend_only) {
+                    return bad("with a weight above 0 applies to a book of exactly one enabled "
+                               "TrendFollowingStrategy sleeve; this book enables " +
+                               std::to_string(sleeves));
+                }
+            }
+            config.carry = carry;
+        }
+
+        // The sizing mode and the starting capital. Parsed
         // strictly when present; the futures runners require both (require_loop_keys).
         if (merged.contains("sizing_mode")) {
             const auto& v = merged.at("sizing_mode");
@@ -776,7 +843,7 @@ Result<void> ConfigLoader::require_loop_keys(const AppConfig& config) {
                 "({\"symbols\": [\"M2K\", \"MES\", \"MNQ\", \"MYM\"], \"pairs\": [[32, 128], [64, 256]]})",
             "ConfigLoader");
     }
-    // LOOP_SPEC sections 4, 7.7 and 12: the overlay's limits. The book's carver module carries
+    // The overlay's limits. The book's carver module carries
     // R_max, R_jump_max and R_shock_max (ratios to tau); its max_gross_leverage and
     // max_net_leverage are L_max and L_net_max.
     {
@@ -857,7 +924,7 @@ std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
     if (local_tm != nullptr) anchor_tm = *local_tm;
     Timestamp end_date = now;
 
-    // M-12: the frozen window, taken only when a config explicitly carries the
+    // The frozen window, taken only when a config explicitly carries the
     // key. Anything unparseable is refused rather than silently ignored -- a
     // typo in a test config that quietly reverted to now() would reintroduce the
     // very drift this exists to remove, and it would do it invisibly.
@@ -1137,17 +1204,20 @@ Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
                                 "portfolio.json only",
                                 "ConfigLoader");
     }
-    // Rejoin R-17: the per-contract blocks are the engine's data about the contracts (when each
+    // The per-contract blocks are the engine's data about the contracts (when each
     // micro listed, its renamed ids, the rules each contract drops), not desk settings. The
-    // settings check (D-17) does not run their meaning checks, so a changed block would pass it
+    // settings check does not run their meaning checks, so a changed block would pass it
     // and then stop every later run of the portfolio.
     for (const char* engine_data :
-         {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+         {"listing_dates", "instrument_id_relabels", "trading_rule_removals", "carry"}) {
         if (overlay.contains(engine_data)) {
             return make_error<void>(ErrorCode::INVALID_DATA,
                                     std::string(engine_data) +
-                                        " (the engine's per-contract data) cannot be overridden "
-                                        "from the database: it stays in portfolio.json",
+                                        (std::string(engine_data) == "carry"
+                                             ? " (the strategy's forecast rules)"
+                                             : " (the engine's per-contract data)") +
+                                        " cannot be overridden from the database: it stays in "
+                                        "portfolio.json",
                                     "ConfigLoader");
         }
     }

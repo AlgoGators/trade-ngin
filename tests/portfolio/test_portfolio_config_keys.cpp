@@ -1,4 +1,4 @@
-// LOOP_SPEC sections 7.5 and 7.5.1: the design keys a futures book records with every run, in
+// The design keys a futures book records with every run, in
 // backtest.run_metadata.portfolio_config and live_run_metadata.portfolio_config. Both are
 // PortfolioConfig::to_json() (the backtest runners add strategy_allocations and strategy_names,
 // the live runners their marks). This test pins EVERY key and value of the shipped CONSERVATIVE
@@ -84,7 +84,8 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     EXPECT_EQ(keys_of(j.at("risk_config")),
               (std::vector<std::string>{"R_jump_max", "R_max", "R_shock_max", "capital",
                                         "confidence_level", "lookback_period", "max_gross_leverage",
-                                        "max_net_leverage", "per_name_cap", "trim_max", "version"}));
+                                        "max_net_leverage", "overlay_covariance", "per_name_cap",
+                                        "trim_max", "version"}));
     EXPECT_EQ(keys_of(j.at("equity_slow_rule")), (std::vector<std::string>{"pairs", "symbols"}));
 
     // Every value of section 7.5.1's table.
@@ -92,27 +93,20 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("cost_penalty_scalar").get<double>(), 100.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("sign_close_band").get<double>(), 2.0);
     EXPECT_DOUBLE_EQ(j.at("opt_config").at("b_sigma_floor").get<double>(), 0.05);
-    // overlay_covariance: "sample" is not recorded (the object a sample book stored before the
-    // key), "carver" is.
-    EXPECT_FALSE(j.at("risk_config").contains("overlay_covariance"));
-    AppConfig carver_app = loaded.value();
-    for (auto& module : carver_app.risk_schema.portfolio) {
-        if (auto* c = std::get_if<CarverModuleConfig>(&module.params)) c->overlay_covariance = "carver";
-    }
-    const nlohmann::json carver = runner_config(carver_app, "TREND_FOLLOWING", 0.20).to_json();
-    EXPECT_EQ(carver.at("risk_config").at("overlay_covariance").get<std::string>(), "carver");
-    EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
-    EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
-    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 2.25);
-    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_jump_max").get<double>(), 4.5);
-    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_shock_max").get<double>(), 4.0);
+    // overlay_covariance: "carver" is recorded; "sample" is not (BASE, below, carries no such key).
+    EXPECT_EQ(j.at("risk_config").at("overlay_covariance").get<std::string>(), "carver");
+    EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_gross_leverage").get<double>(), 7.25);
+    EXPECT_DOUBLE_EQ(j.at("risk_config").at("max_net_leverage").get<double>(), 5.5);
+    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_max").get<double>(), 1.75);
+    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_jump_max").get<double>(), 4.75);
+    EXPECT_DOUBLE_EQ(j.at("risk_config").at("R_shock_max").get<double>(), 3.0);
     EXPECT_DOUBLE_EQ(j.at("risk_config").at("per_name_cap").get<double>(), 2.0);
     EXPECT_EQ(j.at("risk_config").at("trim_max").get<int>(), 5);
     EXPECT_EQ(j.at("sizing_mode").get<std::string>(), "half_compounding");
     EXPECT_EQ(j.at("equity_slow_rule").dump(),
               "{\"pairs\":[[32,128],[64,256]],\"symbols\":[\"M2K\",\"MES\",\"MNQ\",\"MYM\"]}");
     EXPECT_EQ(j.at("oracle_hash_list").get<std::string>(), "oracle_sha256_frozen_v6_4.txt");
-    // The keys the object carried before and keeps.
+    // The keys every book's object carries.
     EXPECT_EQ(j.at("use_optimization").get<bool>(), true);
     EXPECT_EQ(j.at("allow_fractional_positions").get<bool>(), false);
     EXPECT_DOUBLE_EQ(j.at("max_strategy_allocation").get<double>(), 1.0);
@@ -135,18 +129,23 @@ TEST(PortfolioConfigKeys, TheFuturesBookRecordsEveryDesignKeyAndNoRetiredOne) {
         EXPECT_FALSE(j.contains(elsewhere)) << elsewhere;
     }
 
-    // BASE records the same keys (its values are CONSERVATIVE's).
+    // BASE records the same keys, less overlay_covariance (a sample book), with its own limits.
     auto base = ConfigLoader::load(tmpl.parent_path(), "base");
     ASSERT_TRUE(base.is_ok()) << (base.is_error() ? base.error()->what() : "");
     const nlohmann::json b = runner_config(base.value(), "TREND_FOLLOWING", 0.20).to_json();
     EXPECT_EQ(keys_of(b), keys_of(j));
     EXPECT_EQ(b.at("opt_config").dump(), j.at("opt_config").dump());
-    EXPECT_EQ(b.at("risk_config").dump(), j.at("risk_config").dump());
+    EXPECT_FALSE(b.at("risk_config").contains("overlay_covariance"));
+    EXPECT_DOUBLE_EQ(b.at("risk_config").at("max_gross_leverage").get<double>(), 8.0);
+    EXPECT_DOUBLE_EQ(b.at("risk_config").at("max_net_leverage").get<double>(), 6.0);
+    EXPECT_DOUBLE_EQ(b.at("risk_config").at("R_max").get<double>(), 2.25);
+    EXPECT_DOUBLE_EQ(b.at("risk_config").at("R_jump_max").get<double>(), 4.5);
+    EXPECT_DOUBLE_EQ(b.at("risk_config").at("R_shock_max").get<double>(), 4.0);
     EXPECT_EQ(b.at("equity_slow_rule").dump(), j.at("equity_slow_rule").dump());
 }
 
 // A book with no overlay sleeve (the equity book) writes the object it always wrote: the same
-// keys, the optimiser's and the gate's old ones included, and none of the loop's.
+// keys, the optimiser's and the gate's generic ones included, and none of the loop's.
 TEST(PortfolioConfigKeys, ABookWithNoOverlaySleeveWritesTheObjectItAlwaysWrote) {
     PortfolioConfig pc{100000.0, 1.0, 0.0, false};
     pc.allow_fractional_positions = true;

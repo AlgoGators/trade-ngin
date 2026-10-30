@@ -1,18 +1,18 @@
 // tests/live/test_risk_module_error_path.cpp
 //
-// T-7a commit 5: the risk module error path (HD 2026-09-21, option b).
+// The risk module error path.
 //
 // A portfolio-scope risk module whose evaluate errors REFUSES the scope: the seeded T-1 book is
 // held (every strategy pinned to its previous book, as a REFUSE does), no orders are generated,
-// an ERROR is logged, the decision is recorded as a REFUSE carrying the error (so C1's metadata
+// an ERROR is logged, the decision is recorded as a REFUSE carrying the error (so the run-metadata
 // mark and risk_decisions_json() see it), the live futures runners exit non-zero after storing
 // what a REFUSE day stores, and the email carries a visible flag.
 //
-// Before this commit the shipped shape failed OPEN: the lone Carver module's capabilities are
-// {SCALE, WARN}, refuse_on_failed_gatekeeper refused only REFUSE-capable modules, so a Carver
-// whose evaluate errored contributed NONE and the book shipped uncut with exit 0; a throw from a
-// module's on_bars reached the loop, which logged "continuing without risk management" and
-// shipped the book uncut too (T-6_BRANCH_REVIEW section 5 item 1, T-6b A-1r).
+// The shipped shape must not fail OPEN: the lone Carver module's capabilities are {SCALE, WARN},
+// so a gatekeeper that refused only REFUSE-capable modules would let a Carver whose evaluate
+// errored contribute NONE and ship the book uncut with exit 0; a throw from a module's on_bars
+// that reached the loop would log "continuing without risk management" and ship the book uncut
+// too.
 //
 // The runners are main()s and cannot be linked here, so their placement of the exit path and
 // the email flag is tested in the runner source (as test_live_run_refusal_arms.cpp does); the
@@ -326,9 +326,9 @@ TEST_F(RiskModuleErrorPathTest, TheFailureIsRecordedAsARefuseCarryingTheError) {
     }
     EXPECT_TRUE(found);
 
-    // C1's metadata mark reads it.
+    // The run-metadata mark reads it.
     const auto refusal = portfolio_risk_refusal(pm_->last_risk_decisions());
-    ASSERT_TRUE(refusal.has_value()) << "C1's Q2 mark does not see the module failure";
+    ASSERT_TRUE(refusal.has_value()) << "the run-metadata mark does not see the module failure";
     EXPECT_EQ((*refusal)["action"], "REFUSE");
     EXPECT_EQ((*refusal)["module"], "carver");
     EXPECT_EQ((*refusal)["scope_id"], pm_id_);
@@ -350,9 +350,9 @@ TEST_F(RiskModuleErrorPathTest, TheFailureIsRecordedAsARefuseCarryingTheError) {
     EXPECT_TRUE(row);
 }
 
-// A throw from the module's on_bars used to reach the loop, which logged "continuing without risk
-// management" and shipped the book uncut. It is the portfolio risk step failing: refused, held,
-// recorded as a REFUSE row of kRiskStepModuleId carrying the error.
+// A throw from the module's on_bars is the portfolio risk step failing: refused, held, recorded
+// as a REFUSE row of kRiskStepModuleId carrying the error, never "continuing without risk
+// management" with the book uncut.
 TEST_F(RiskModuleErrorPathTest, AnOnBarsThrowRefusesThePortfolioScopeToo) {
     const std::string out = run_two_days(/*throw_in_on_bars=*/true);
     ASSERT_TRUE(day2_result_ok_) << out;
@@ -537,7 +537,7 @@ TEST(RiskModuleErrorPathSource, TheTwinsCarryTheSameErrorPathBlocks) {
     const std::pair<const char*, const char*> blocks[] = {
         {"        // Set when a portfolio risk module could not answer",
          "        // NORMAL TRADING DAY PROCESSING"},
-        {"            // T-7a C5 (HD 2026-09-21, option b)",
+        {"            // PORTFOLIO RISK MODULE FAILURE",
          "            if (port_process_result.is_error())"},
         {"                    // The day's flags, then the body file or the one send",
          "                    if (!delivery.ok) {"},

@@ -104,13 +104,11 @@ TEST_F(ExecutionManagerTest, ClosedShortPositionGeneratesBuyExecution) {
     EXPECT_EQ(r.value()[0].side, Side::BUY);
 }
 
-// This test used to be MissingMarketPriceFallsBackToAveragePrice and asserted that a
-// symbol with no market price was filled at its average_price. That fallback was the
-// bug: average_price is a COST BASIS, and for a position opened today it is 0 until
-// the fill being priced has been processed -- so the fallback booked fills at zero,
-// persisted the zero as the new basis, and reloaded it the next session as a carried
-// basis of zero. The old assertion passed only because the fixture handed it a
-// pre-set basis of 4500.0, which production does not have for a new position.
+// A symbol with no market price is not filled at its average_price. average_price is a
+// COST BASIS, and for a position opened today it is 0 until the fill being priced has been
+// processed -- so that fallback would book fills at zero, persist the zero as the new basis,
+// and reload it the next session as a carried basis of zero. A fixture with a pre-set basis
+// of 4500.0 would hide this; production has no basis for a new position.
 //
 // A symbol we cannot price is a symbol we must not trade.
 TEST_F(ExecutionManagerTest, MissingMarketPriceSkipsTheExecutionRatherThanPricingItFromBasis) {
@@ -229,7 +227,7 @@ TEST_F(ExecutionManagerTest, UpdateMarketDataDoesNotThrow) {
 // Futures behaviour preservation.
 //
 // TrendFollowingStrategy sets Position::average_price to price_history.back() --
-// the latest mark, by design (trend_following.cpp:623, REALIZED_ONLY daily
+// the latest mark, by design (TrendFollowingStrategy, REALIZED_ONLY daily
 // settlement). So for futures the mark fallback prices the fill at a real,
 // one-session-stale close, and removing it would replace a correct fill with a
 // skip. MARK_FALLBACK is the default precisely so the two futures runners, which
@@ -287,11 +285,11 @@ TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaff
 }
 
 // ============================================================================
-// E2-F29: SEC/TAF regulatory fees must reach a SELL fill.
+// SEC/TAF regulatory fees must reach a SELL fill.
 //
-// TransactionCostManager gates the fees on `quantity < 0`; the live caller passed
-// |quantity| for both sides, so on a config with apply_regulatory_fees the sell
-// side was charged exactly what the buy side was. SELL cost - BUY cost must equal
+// TransactionCostManager gates the fees on `quantity < 0`; a caller passing
+// |quantity| for both sides would charge the sell side exactly what the buy side is
+// charged on a config with apply_regulatory_fees. SELL cost - BUY cost must equal
 // sec_fee + taf for the same clip.
 // ============================================================================
 TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
@@ -332,18 +330,17 @@ TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// E2-F46 -- the order-id date must be the RUN date, in the run date's frame.
+// The order-id date must be the RUN date, in the run date's frame.
 //
-// generate_date_string formatted the run timestamp with std::localtime while
-// the equity runner passes UTC midnight (95679ea2) and stamps every other
-// artefact of the same run with gmtime. On a negative-offset host that is the
-// previous evening locally, so the id took the previous calendar day: the
-// 2026-06-15 run wrote DAILY_AAPL_20260614. The id is what
+// The equity runner passes UTC midnight and stamps every other artefact of the same run
+// with gmtime. Formatted with std::localtime, on a negative-offset host that is the
+// previous evening locally, so the id would take the previous calendar day: the
+// 2026-06-15 run would write DAILY_AAPL_20260614. The id is what
 // delete_stale_executions matches on and what a broker statement is
 // reconciled against, so an id naming the wrong day is not cosmetic.
 //
 // Both frames are pinned: UTC midnight is what the equity runner passes, local
-// midnight is what live_portfolio*.cpp:60 still passes (E2-F42). Both must
+// midnight is what the two futures runners pass. Both must
 // produce the run date's own YYYYMMDD, or fixing equities would move futures.
 // ──────────────────────────────────────────────────────────────────────────
 

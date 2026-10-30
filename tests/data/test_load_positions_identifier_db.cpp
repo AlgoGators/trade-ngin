@@ -1,24 +1,23 @@
-// DB-load-positions-no-validate: load_positions_by_date interpolated `table_name`
-// straight into its FROM clause without going through validate_table_name, while
-// every other interpolating read in postgres_database.cpp validates first.
+// load_positions_by_date interpolates `table_name` into its FROM clause, so it
+// goes through validate_table_name first, as every other interpolating read in
+// postgres_database.cpp does.
 //
-// Nothing exploits it today, and the reason is not this function: it is that all
-// four callers happen to pass the literal "trading.positions". That is a property
-// of today's call sites. The next caller to pass a name derived from config, a
-// portfolio id, or an asset-class switch inherits an unvalidated concatenation
-// into SQL, and the read is the one that seeds the whole live book.
+// The callers pass the literal "trading.positions", but a caller that passes a
+// name derived from config, a portfolio id, or an asset-class switch must not
+// get an unvalidated concatenation into SQL, and the read is the one that seeds
+// the whole live book.
 //
 // Proving the check exists needs a real connection, because the validation sits
 // after validate_connection() exactly as it does in the sibling methods: offline
 // the function returns CONNECTION_ERROR before it ever looks at the table name,
-// so an offline test would pass without the fix. Hence a DB-backed test.
+// so an offline test would pass without the check. Hence a DB-backed test.
 //
 // Reachability gate matches tests/data/test_delete_stale_executions_scope_db.cpp:
 //   * TRADE_NGIN_REQUIRE_DB=1 -- unreachable database FAILS rather than skips.
 //   * unset -- skip (local dev without a server).
 //
 // Read-only: every case is expected to be rejected before any SQL is issued, and
-// the one accepted case reads a scratch identity that owns no rows.
+// the one accepted case reads a test identity that owns no rows.
 
 #include <gtest/gtest.h>
 
@@ -89,7 +88,7 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// Before the fix each of these reached the server as part of a concatenated
+// Unvalidated, each of these would reach the server as part of a concatenated
 // FROM clause. The first two are the SQL-injection shapes validate_table_name
 // exists to stop; the rest are the malformed names it also rejects.
 TEST_F(LoadPositionsIdentifierTest, HostileTableNameIsRejectedByTheValidator) {

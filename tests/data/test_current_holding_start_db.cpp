@@ -1,6 +1,6 @@
 // tests/data/test_current_holding_start_db.cpp
 //
-// BA-2 / C-3 D1 -- PostgresDatabase::get_current_holding_start_dates.
+// PostgresDatabase::get_current_holding_start_dates.
 //
 // The class-2 rename era must be tested against the start of the CURRENT holding.
 // `get_position_inception_dates` answers min(date) over all history and fails WIDE on
@@ -170,7 +170,7 @@ TEST_F(CurrentHoldingStartDbTest, HoldingStartIsNeverEarlierThanTheLifetimeIncep
 
 // The two questions are not the same question. Every symbol whose history contains a
 // flat row after its first non-zero row was closed and re-opened, and for exactly those
-// the two answers MUST differ -- that difference is the whole point of BA-2. Where the
+// the two answers MUST differ -- that difference is the whole point of the query. Where the
 // book contains no such symbol the test says so rather than passing silently.
 TEST_F(CurrentHoldingStartDbTest, ReopenedTickersGetADifferentDateFromTheLifetimeQuery) {
     pqxx::connection c(conn_string_);

@@ -10,7 +10,7 @@ namespace trade_ngin {
 namespace overlay {
 
 /**
- * The risk overlay's arithmetic in capital terms (LOOP_SPEC section 4), as pure functions of the
+ * The risk overlay's arithmetic in capital terms, as pure functions of the
  * participants' returns and position weights. Nothing here reads a book, a database or a clock.
  *
  * THE GATE WINDOW. `returns[d][i]` is participant i's adjusted percentage return on date d (NaN

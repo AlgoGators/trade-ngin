@@ -62,17 +62,16 @@ using ChartPoint = std::pair<std::string, double>;
  */
 namespace ChartTitles {
 /// "Yesterday's PnL by Symbol". On an equity book the bars are the day's REALIZED P&L only (a
-/// futures row's daily figure is its whole settled P&L), and the heading says so (T-8D-2 R64).
+/// futures row's daily figure is its whole settled P&L), and the heading says so.
 inline std::string pnl_by_symbol_heading(bool equities) {
     return equities ? "Day's PnL by Symbol" : "Yesterday's PnL by Symbol";
 }
 /// The daily PnL chart holds the last `stored_days` STORED days before the run date, which on a
-/// book with missing days is a longer span than that many calendar days (T-8D-2 R62).
+/// book with missing days is a longer span than that many calendar days.
 inline std::string daily_pnl_heading(int stored_days) {
     return "Daily PnL (last " + std::to_string(stored_days) + " days)";
 }
-/// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off
-/// (T-8D-2 R62).
+/// The cumulative chart sums each symbol's stored daily realized P&L; no cost is taken off.
 inline std::string cumulative_pnl_heading() {
     return "Cumulative PnL by Symbol";
 }
@@ -80,7 +79,7 @@ inline std::string cumulative_pnl_heading() {
 inline std::string cumulative_pnl_title(const std::string& date) {
     return "Cumulative PnL by Symbol, all-time as of " + date;
 }
-/// The contracts chart (HD 2026-10-14): contracts traded each day, strategy fills and roll legs.
+/// The contracts chart: contracts traded each day, strategy fills and roll legs.
 inline std::string contracts_per_day_heading() {
     return "Contracts Traded per Day";
 }
@@ -95,7 +94,7 @@ inline std::string contracts_per_day_title(int days) {
  * A fetcher sends exactly this text; a test calls these to read what a chart asks for.
  */
 namespace ChartQueries {
-/// The newest `lookback_days` stored rows BEFORE the run date `date` (T-8D-2 R63).
+/// The newest `lookback_days` stored rows BEFORE the run date `date`.
 std::string equity_curve(const std::string& strategy_id, const std::string& portfolio_id,
                          const std::string& date, int lookback_days);
 /// The book's starting capital (total_capital of its latest live_run_metadata row on or before
@@ -160,7 +159,7 @@ ChartData pnl_by_symbol(std::vector<ChartPoint> rows, const std::string& date,
 /// rows: (date, daily PnL), newest first as the query returns them.
 ChartData daily_pnl(std::vector<ChartPoint> rows);
 /// rows: grouped by day, oldest first. A day's point is its cost / the notional TRADED that day
-/// (the sum of quantity x price x multiplier over the day's fills) x 1,000,000 (T-8D-2 R64). A
+/// (the sum of quantity x price x multiplier over the day's fills) x 1,000,000. A
 /// day without a fill has no point; neither has a day with a fill whose multiplier is not on
 /// record.
 ChartData cost_per_million(const std::vector<CostFillRow>& rows,
@@ -444,7 +443,7 @@ public:
         const std::string& date);
 
     /// Contracts traded per day, strategy fills and roll legs stacked, over the `days` ending on
-    /// the run date (HD 2026-10-14).
+    /// the run date.
     static std::string generate_contracts_per_day_chart(std::shared_ptr<DatabaseInterface> db,
                                                         const std::string& portfolio_id,
                                                         const std::string& date, int days = 30);
@@ -493,13 +492,13 @@ public:
                                                const std::string& date);
 
 
-    /// The drawdown from the running peak of the stored equity curve, in percent (HD 10-13).
+    /// The drawdown from the running peak of the stored equity curve, in percent.
     static std::string generate_drawdown_chart(std::shared_ptr<DatabaseInterface> db,
                                                const std::string& strategy_id,
                                                const std::string& portfolio_id,
                                                const std::string& date, int lookback_days = 30);
 
-    /// The stored gross and net leverage on the sizing capital over the last days (HD 10-13).
+    /// The stored gross and net leverage on the sizing capital over the last days.
     static std::string generate_gross_leverage_chart(std::shared_ptr<DatabaseInterface> db,
                                                      const std::string& strategy_id,
                                                      const std::string& portfolio_id,

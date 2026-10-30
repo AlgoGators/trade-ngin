@@ -27,19 +27,27 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
     f.base_close.assign(n, std::nullopt);
     f.leg_opening_price.assign(n, std::nullopt);
     if (n == 0) return f;
+    // A change of price source reads as the roll kind it stands for (series_kind).
+    std::vector<std::optional<RollFrom>> as_read;
+    if (!roll_from.empty()) {
+        as_read = roll_from;
+        for (auto& rf : as_read) {
+            if (rf) rf->kind = series_kind(rf->kind);
+        }
+    }
     auto field = [&](size_t t) -> const std::optional<RollFrom>& {
         static const std::optional<RollFrom> none;
-        return roll_from.empty() ? none : roll_from[t];
+        return as_read.empty() ? none : as_read[t];
     };
 
     std::string held;            // the confirmed id the position is held in
     std::string last_known;      // the last known id seen (the previous consumed bar's, skipping unknowns)
     std::vector<size_t> pending;  // the change bars of the unresolved sequence, oldest first
-    // Rolls step 3: a vendor switch (AWAITS_NEXT) the next bar decides: its bar, the target's id.
+    // A vendor switch (AWAITS_NEXT) the next bar decides: its bar, the target's id.
     int awaiting = -1;
     std::string awaiting_target;
-    std::string awaiting_date;  // rolls step 4: the switch bar's date (RollFrom::date)
-    bool awaiting_on_target = false;  // rolls step 4, ruling 19: the switch bar is the target's
+    std::string awaiting_date;  // the switch bar's date (RollFrom::date)
+    bool awaiting_on_target = false;  // SwitchBar VENDOR: the switch bar is the target's
     for (size_t t = 0; t < n; ++t) {
         const std::string& id = ids[t];
         if (id.empty()) {
@@ -64,7 +72,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
             awaiting = -1;
             const bool on_target = awaiting_on_target;
             awaiting_on_target = false;
-            // Rolls step 4: a field following a later roll into the target does not confirm it.
+            // A field following a later roll into the target does not confirm it.
             const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL &&
                                     !rf->date.empty() && !awaiting_date.empty() &&
                                     rf->date != awaiting_date;
@@ -78,7 +86,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
                     f.leg_opening_price[t] = roll_from[a]->close;
                     f.base_close[a] = roll_from[a]->close;
                 }
-                // (ruling 19 "vendor": the switch bar is the target's, so the closing leg is its
+                // (SwitchBar VENDOR: the switch bar is the target's, so the closing leg is its
                 // old_close, the opening leg and the start of the next move its own close)
                 f.rolled[a] = true;
                 // ("vendor": the switch bar already carries the target's id, so this is no change)
@@ -90,7 +98,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
                     continue;
                 }
             } else if (on_target) {
-                // Ruling 19 "vendor": nothing rolled; this bar moves from the held contract's close
+                // SwitchBar VENDOR: nothing rolled; this bar moves from the held contract's close
                 // on the switch bar, not from the target's the bar carried.
                 f.base_close[a] = roll_from[a]->close;
             }
@@ -109,7 +117,7 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
             continue;
         }
         if (rf && rf->kind == RollFromKind::AWAITS_NEXT_VENDOR) {
-            // Ruling 19 "vendor": the bar is the target's own; the field names the held contract,
+            // SwitchBar VENDOR: the bar is the target's own; the field names the held contract,
             // whose close the bar's move ends at.
             f.pending[t] = true;
             f.old_close[t] = rf->close;
@@ -275,9 +283,14 @@ Series build_series(const std::vector<double>& raw, const std::vector<std::strin
 }
 
 RollTracker::Status RollTracker::add(const std::string& id, double close,
-                                     const std::optional<RollFrom>& rf) {
+                                     const std::optional<RollFrom>& field) {
     Status st;
     ++n_;
+    // A change of price source reads as the roll kind it stands for; the confirm it makes is
+    // flagged (Status::price_source_change) so no caller legs it.
+    std::optional<RollFrom> rf = field;
+    const bool source_change = rf && is_price_source_change(rf->kind);
+    if (rf) rf->kind = series_kind(rf->kind);
     if (id.empty()) {
         st.held_id = held_;
         st.pending = !pending_.empty();
@@ -292,31 +305,31 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         return st;
     }
     if (awaiting_) {
-        // Rolls step 3: the contract held going into this bar decides the vendor switch (its own
+        // The contract held going into this bar decides the vendor switch (its own
         // id, or the contract a roll known on this bar leaves).
         const std::string& before = rf && rf->kind == RollFromKind::KNOWN ? rf->instrument_id : id;
         pending_.clear();
         awaiting_ = false;
         const bool on_target = awaiting_on_target_;
         awaiting_on_target_ = false;
-        // Rolls step 4: a field following a later roll into the target does not confirm it.
+        // A field following a later roll into the target does not confirm it.
         const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL && !rf->date.empty() &&
                                 !awaiting_date_.empty() && rf->date != awaiting_date_;
         const bool confirmed = before == awaiting_id_ && !later_roll;
         if (!confirmed && on_target) {
-            // Ruling 19 "vendor": nothing rolled; this bar moves from the held contract's close on
+            // SwitchBar VENDOR: nothing rolled; this bar moves from the held contract's close on
             // the switch bar, not from the target's the bar carried.
             st.previous_close = awaiting_old_close_;
         }
         if (confirmed) {
             // The roll happened on the switch bar: both legs at its two closes; this bar moves from
-            // the target's close (ruling 19 "vendor": the switch bar's own, the previous close).
+            // the target's close (SwitchBar VENDOR: the switch bar's own, the previous close).
             st.confirm = true;
             st.previous_held_id = awaiting_old_id_;
             st.last_close_before_change = awaiting_old_close_;
             st.change_bar_close = awaiting_close_;
             st.bars_pending = 1;
-            st.roll_bar_points = awaiting_bar_points_;  // ruling 18: the switch bar's booked move
+            st.roll_bar_points = awaiting_bar_points_;  // the switch bar's booked move
             if (!on_target)
                 st.previous_close = awaiting_close_;
             // ("vendor": the switch bar already carries the target's id, so this is no change)
@@ -336,7 +349,7 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         }
     }
     if (rf && rf->kind == RollFromKind::AWAITS_NEXT_VENDOR) {
-        // Ruling 19 "vendor": the bar is the target's own; the field names the held contract, whose
+        // SwitchBar VENDOR: the bar is the target's own; the field names the held contract, whose
         // close the bar's move ends at.
         st.pending = true;
         st.mark_close = rf->close;
@@ -382,7 +395,8 @@ RollTracker::Status RollTracker::add(const std::string& id, double close,
         st.last_close_before_change = rf->close;
         st.change_bar_close = close;
         st.bars_pending = 1;
-        st.roll_bar_points = st.move(close, last_close_);  // ruling 18: the old contract's own move
+        st.roll_bar_points = st.move(close, last_close_);  // the old contract's own move
+        st.price_source_change = source_change;
         held_ = id;
         last_known_ = id;
         pending_.clear();

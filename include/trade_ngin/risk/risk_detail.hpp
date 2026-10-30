@@ -1,6 +1,6 @@
 #pragma once
 
-// LOOP_SPEC sections 7.2 and 7.3: the loop's record of one rebalance, and the risk_detail jsonb
+// The loop's record of one rebalance, and the risk_detail jsonb
 // object built from it (trading.live_results.risk_detail and backtest.equity_curve.risk_detail,
 // migration 020). Nine flat keys, pinned by tests/portfolio/test_one_pass_book.cpp
 // (RiskDetailJson.TheNineKeysArePinned).
@@ -14,8 +14,8 @@
 namespace trade_ngin {
 
 /**
- * @brief The one pass's record of the last rebalance of a book that names an overlay sleeve
- *        (LOOP_SPEC sections 4 to 6): what the runners store as risk_detail and risk_scale and
+ * @brief The one pass's record of the last rebalance of a book that names an overlay sleeve:
+ *        what the runners store as risk_detail and risk_scale and
  *        the forecast-sign closes they book as their own fills.
  */
 struct OnePassDay {
@@ -82,7 +82,7 @@ struct OnePassDay {
     bool stores_detail() const { return ran && sized && !refused; }
 };
 
-/// risk_detail's keys, in the order of section 7.3's table.
+/// risk_detail's keys, in their fixed order.
 inline constexpr std::array<const char*, 9> kRiskDetailKeys = {
     "risk_requested",
     "binding_term",
@@ -97,7 +97,7 @@ inline constexpr std::array<const char*, 9> kRiskDetailKeys = {
 /**
  * @brief The risk_detail object of one sized rebalance. `account_value` is V_t at the instant the
  *        sizing capital was read: the starting capital plus the cumulative settled net P&L the
- *        sizing capital was built from (section 3.1).
+ *        sizing capital was built from.
  */
 inline nlohmann::json risk_detail_json(const OnePassDay& day, double account_value) {
     nlohmann::json j = nlohmann::json::object();

@@ -1,13 +1,13 @@
 // tests/live/corp_actions/test_spinoff_retry_after_split.cpp
 //
-// E2-F50 -- the retry of a refused spinoff must not distribute on the post-split share count.
+// The retry of a refused spinoff must not distribute on the post-split share count.
 //
 // THE SEQUENCE. A spinoff bar carrying a coincident reverse split (HLT 2017-01-04: split_factor
-// 0.3333333333, div_cash 24.48, children PK 0.6 and HGV 0.33333) is decomposed by E2-F48: the
-// reverse split goes to the class-1 applier, the rest is the distribution. When the children
-// have no price series -- which is the case for PK and HGV in this database -- the distribution
-// is REFUSED and writes no dedup row, so it retries on every later run. The reverse split is
-// NOT refused with it: it applies, and it IS dedup'd.
+// 0.3333333333, div_cash 24.48, children PK 0.6 and HGV 0.33333) is decomposed by the spinoff
+// split rule: the reverse split goes to the class-1 applier, the rest is the distribution. When
+// the children have no price series -- which is the case for PK and HGV in this database -- the
+// distribution is REFUSED and writes no dedup row, so it retries on every later run. The reverse
+// split is NOT refused with it: it applies, and it IS dedup'd.
 //
 //   run N    : distribution refused (no child closes); SPLIT applied, dedup row written.
 //              the book is now 33.333333 HLT at basis 82.17, not 100 at 27.39.
@@ -19,11 +19,11 @@
 //      0.6 PK is 200 M PK shares over 330 M pre-split HLT shares). Applied to 33.333333 shares
 //      it delivers 33.33333333 * 0.6 = 20 PK and 11 HGV -- a third of the entitlement,
 //      with no error anywhere.
-//   2. `pending_class1_split_factor` would still be set from the bar, so the G1 basis-vs-mark
+//   2. `pending_class1_split_factor` would still be set from the bar, so the basis-vs-mark
 //      bound would divide an already-post-split basis by 0.3333 a second time: a 3x error
 //      inside the guard whose job is to catch 3x errors.
 //
-// THE FIX is exact rather than approximate. q_post = q_pre * F_split and r_post = r / F_split,
+// THE RETRY FRAME is exact rather than approximate. q_post = q_pre * F_split and r_post = r / F_split,
 // so q_post * r_post == q_pre * r; and B_post = B_pre / F_split makes the distributed pool and
 // the relative-FMV weights scale by the same factor, which cancels. The retry therefore lands
 // on exactly the book a same-run apply would have produced -- which is what the last test here
@@ -93,8 +93,8 @@ TEST(SpinoffRetryAfterSplit, SameRunLeavesTheRatiosAloneAndTellsTheBoundASplitIs
         << "on the same-run path the book is still PRE-split, so the vendor's ratios apply "
            "as written";
     EXPECT_DOUBLE_EQ(f.pending_split_factor, kSplit)
-        << "class 1 applies the reverse split after the routing block, and the G1 bound has "
-           "to divide by it before comparing basis to mark (E2-F48)";
+        << "class 1 applies the reverse split after the routing block, and the basis-vs-mark bound "
+           "has to divide by it before comparing basis to mark";
 }
 
 TEST(SpinoffRetryAfterSplit, AnAlreadyAppliedSplitScalesTheRatiosAndClearsThePendingFactor) {
@@ -125,7 +125,7 @@ TEST(SpinoffRetryAfterSplit, ABarWithNoReverseSplitIsUnaffectedEitherWay) {
 }
 
 TEST(SpinoffRetryAfterSplit, TheUnscaledRetryIsTheDefectAndDeliversAThirdOfTheEntitlement) {
-    // What the code did before E2-F50: the vendor's ratios against the post-split book.
+    // The unscaled retry: the vendor's ratios against the post-split book.
     const double qty_post = kQtyPre * kSplit;              // 33.333333
     const double basis_post = kBasisPre / kSplit;          // 82.17
     std::unordered_map<std::string, Position> positions;
@@ -136,10 +136,10 @@ TEST(SpinoffRetryAfterSplit, TheUnscaledRetryIsTheDefectAndDeliversAThirdOfTheEn
     ASSERT_EQ(log.size(), 1u);
     ASSERT_EQ(log[0].children.size(), 2u);
 
-    // 33.33333333 * 0.6 = 19.999999998. Under a bare floor that was NINETEEN plus a
+    // 33.33333333 * 0.6 = 19.999999998. Under a bare floor that would be NINETEEN plus a
     // 0.999999998 "fraction" -- the defect one share worse still, from floating-point dust
-    // rather than from anything real. BA-25's epsilon removes that artefact from the
-    // measurement, so the unscaled retry now delivers a clean 20: exactly a third of the
+    // rather than from anything real. The whole-share epsilon removes that artefact from the
+    // measurement, so the unscaled retry delivers a clean 20: exactly a third of the
     // sixty the holder is owed, which is the defect this test is about.
     EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 20.0) << "PK: 33.33333333 * 0.6";
     EXPECT_NEAR(log[0].children[0].fractional, 0.0, 1e-6);
@@ -163,7 +163,7 @@ TEST(SpinoffRetryAfterSplit, TheScaledRetryDeliversTheFullEntitlementOnHLTsNumbe
     ASSERT_EQ(log.size(), 1u);
     ASSERT_EQ(log[0].children.size(), 2u);
 
-    // 60 PK and 33.33 HGV per 100 PRE-split shares -- the brief's acceptance.
+    // 60 PK and 33.33 HGV per 100 PRE-split shares -- the holder's whole entitlement.
     EXPECT_NEAR(log[0].children[0].quantity + log[0].children[0].fractional,
                 kQtyPre * kRatioPK, 1e-9);
     EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 60.0);
@@ -182,15 +182,14 @@ TEST(SpinoffRetryAfterSplit, TheScaledRetryDeliversTheFullEntitlementOnHLTsNumbe
                 kBasisPre / hlt_bar().total_factor(), 1e-7);
 }
 
-// BA-25 -- the retry must survive the ROUND TRIP THROUGH THE DATABASE, not only through
-// memory.
+// The retry must survive the ROUND TRIP THROUGH THE DATABASE, not only through memory.
 //
 // The test above compares the two paths with quantities the process computed. Production does
 // not: `trading.positions.quantity` is numeric(20,6), so the retry reloads 33.333333, not the
 // 33.33333333 the same-run path holds. 33.333333 x 1.8 = 59.9999994, and a bare floor turns
 // that into 59 whole shares plus a 0.9999994 "fraction" -- the holder is one PK short and the
 // book emits a cash-in-lieu SELL for very nearly a whole share that no broker ever paid.
-// "Exactly the same book" was true in memory and false in the database.
+// "Exactly the same book" must hold in the database, not only in memory.
 TEST(SpinoffRetryAfterSplit, ASixDecimalRoundTripStillDeliversSixtyAndNoCashInLieu) {
     const auto frame = hlt_bar().retry_frame(/*coincident_split_already_applied=*/true);
 
@@ -225,17 +224,17 @@ TEST(SpinoffRetryAfterSplit, ASixDecimalRoundTripStillDeliversSixtyAndNoCashInLi
     EXPECT_DOUBLE_EQ(positions["PK"].quantity.as_double(), 60.0);
 }
 
-// The MIRROR of the case above (B-5d). Storage rounds a quantity DOWN for a 100-share holding
+// The MIRROR of the case above. Storage rounds a quantity DOWN for a 100-share holding
 // and UP for a 200-share one, so the exact entitlement lands just ABOVE the integer rather
 // than just below it:
 //
 //     200 pre-split HLT  ->  66.66666665999999 shares, stored as 66.666667
 //     66.666667 x 1.80000000018  =  120.000000612
 //
-// BA-25 rounds that to 120 whole shares, which is right. It then reported the leftover
-// 6.12e-7 as a "fraction": a cash-in-lieu SELL of six ten-millionths of a share, written to
-// trading.executions, with a realized figure to match. The clamp only covered the below-the-
-// integer side; a whole entitlement has no remainder on EITHER side.
+// The whole-share epsilon rounds that to 120 whole shares, which is right. The leftover
+// 6.12e-7 must not be reported as a "fraction": that is a cash-in-lieu SELL of six
+// ten-millionths of a share, written to trading.executions, with a realized figure to match.
+// A whole entitlement has no remainder on EITHER side of the integer.
 TEST(SpinoffRetryAfterSplit, AnEntitlementJustABOVEAWholeShareBooksNoCashInLieuDust) {
     const auto frame = hlt_bar().retry_frame(/*coincident_split_already_applied=*/true);
     const double q_pre = 200.0;
@@ -329,7 +328,7 @@ TEST(SpinoffRetryAfterSplit, AHalfShareEntitlementIsFlooredNotRounded) {
 }
 
 TEST(SpinoffRetryAfterSplit, TheRetryLandsOnEXACTLYTheBookASameRunApplyWouldHave) {
-    // The statement that makes the fix a fix rather than a patch: run the two paths side by
+    // The statement that the retry is exact rather than a patch: run the two paths side by
     // side and compare every number. Path A -- the distribution applies on the PRE-split book,
     // then class 1 splits. Path B -- class 1 split first (the refusal), then the scaled retry.
     std::unordered_map<std::string, Position> a;

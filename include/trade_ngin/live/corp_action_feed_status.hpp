@@ -13,13 +13,12 @@ namespace trade_ngin {
 /**
  * @brief Whether the equities_data.corporate_action deal-terms feed is still frozen.
  *
- * E4 item 3. The termination handler's WARN text named a COMPILED-IN date
- * (`kCorpActionTableFrozenAfter`, "2025-08-29") as the point the feed stopped.
- * That is a fact about the database, not about the code, and the code cannot
- * know it: the day the vendor subscription is restarted and the ACTIONS ingest
- * backfills, every one of those WARNs starts asserting something false, and it
- * takes a rebuild to stop it. Worse, the operator reading the log has no signal
- * that the revival happened at all -- the message is identical before and after.
+ * The date the feed stopped is a fact about the database, not about the code,
+ * and the code cannot know it: a COMPILED-IN date (`kCorpActionTableFrozenAfter`,
+ * "2025-08-29") in the termination handler's WARN text would turn false the day
+ * the vendor subscription is restarted and the ACTIONS ingest backfills, and
+ * would take a rebuild to correct, with no signal to the operator reading the
+ * log that the revival happened.
  *
  * So the date is MEASURED at startup (`SELECT max(date) FROM
  * equities_data.corporate_action`) and reported. The constant survives only as
@@ -49,8 +48,8 @@ struct CorpActionFeedStatus {
  * @param measured_max_date `max(date)` from equities_data.corporate_action, or
  *        "" when the query failed or the table is empty. An empty value falls
  *        back to the compiled-in constant with `measured = false`, so the log
- *        line and the WARN text degrade to the old behaviour rather than to a
- *        blank.
+ *        line and the WARN text fall back to the compiled-in date rather than to
+ *        a blank.
  * @param as_of_ymd the run's as-of date, YYYY-MM-DD.
  *
  * Future-dated placeholder rows are the reason `frozen` compares against the
@@ -93,7 +92,7 @@ inline std::string describe_corp_action_feed(const CorpActionFeedStatus& s) {
 }
 
 /**
- * @brief E2-F41: the deal-terms rows the PER-BAR feed does not carry.
+ * @brief The deal-terms rows the PER-BAR feed does not carry.
  *
  * Class-1 effects are sourced per bar -- `ohlcv_1d.split_factor` and `ohlcv_1d.div_cash`,
  * never `corporate_action.value`. A class-1 row in the deal-terms feed whose ex-date bar is
@@ -105,9 +104,8 @@ inline std::string describe_corp_action_feed(const CorpActionFeedStatus& s) {
  * 127.25 -> 121.94. Universe-wide since 2020 the class is 99 rows.
  *
  * Nothing can be APPLIED here; the applier has no input to act on. What this produces is the
- * announcement, which is the whole point of E2-F41 -- so it is a returned value rather than a
- * log statement, because a WARN emitted inside a runner loop cannot be asserted and the
- * original pin passed with the announcement reverted (C-5 §9-A1).
+ * announcement -- so it is a returned value rather than a log statement, because a WARN
+ * emitted inside a runner loop cannot be asserted.
  *
  * @param terms_keys    (ticker, ex-date) of every class-1 deal-terms row read for the held
  *                      book, in the order the feed returned them.

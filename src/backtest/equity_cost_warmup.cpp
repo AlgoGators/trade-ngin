@@ -1,7 +1,7 @@
 // src/backtest/equity_cost_warmup.cpp
 //
 // The equity backtest's cost warm-up: the 30 calendar days BEFORE start_date, loaded with the
-// MarketDataBus off, feeding only the two cost registrations. See the header (ledger H-13).
+// MarketDataBus off, feeding only the two cost registrations. See the header.
 
 #include "trade_ngin/backtest/equity_cost_warmup.hpp"
 
@@ -92,9 +92,9 @@ EquityCostWarmupSummary register_equity_cost_warmup(
 
     summary.registered_execution_costs =
         execution_costs.register_equity_costs_from_bars(symbols, summary.bars_by_symbol);
-    // E2-C9: PortfolioManager owns a SECOND, independent cost manager, and it is the one whose
+    // PortfolioManager owns a SECOND, independent cost manager, and it is the one whose
     // numbers reach backtest.executions and the equity curve -- the coordinator's only feeds the
-    // reported metrics. Registering just one left a single run carrying two different cost bases.
+    // reported metrics. Registering just one would leave a single run carrying two different cost bases.
     summary.registered_portfolio_costs =
         portfolio.register_equity_cost_configs(symbols, summary.bars_by_symbol);
 

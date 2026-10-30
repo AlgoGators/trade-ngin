@@ -31,7 +31,7 @@ CME_GROUPS = {
     "interest_rates": ["ZT", "ZF", "ZN", "UB"],
     "fx": ["6A", "6B", "6C", "6E", "6J", "6L", "6M", "6N", "6S"],
     "energy": ["CL", "HO", "NG", "RB"],
-    "metals": ["GC", "SI", "HG", "PL"],
+    "metals": ["GC", "SI", "HG", "PL", "MGC", "SIL"],
     "grains": ["ZC", "ZS", "ZW", "KE", "ZL", "ZM", "ZR"],
     "livestock": ["LE", "HE", "GF"],
     "crypto": ["MBT"],

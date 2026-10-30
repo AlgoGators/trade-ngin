@@ -1,4 +1,4 @@
-// R4B fix round 1 (audit A, S5): what a futures live runner asks the report's roll view for
+// What a futures live runner asks the report's roll view for
 // (live/report_roll_query.hpp), executed: the held symbols of the book and every sleeve (a zero quantity
 // left out), the contract the book holds after the settled bar per symbol (the roll tracker's held id: the
 // old contract on a pending switch), every ROLL closing leg with the contract its opening leg opens and the

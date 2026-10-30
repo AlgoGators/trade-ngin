@@ -1,4 +1,4 @@
-// K3 storage (T-7b-2 8b, migration 013): every executions writer stores netting_adjustment.
+// Migration 013: every executions writer stores netting_adjustment.
 //
 // store_executions (every live runner) and store_backtest_executions_with_strategy (the backtest
 // path: the single-row statement and the batched one above 100 rows) must name the column and bind the report's value, so a netted row
@@ -7,7 +7,7 @@
 // the four cost columns beside it are, so the column reads like them (-0.50653208999999999 in
 // NUMERIC) and a full cross's total_transaction_costs - netting_adjustment is exactly 0 in SQL.
 //
-// Needs a database migrated with 013 (the gate applies it to the session clone first).
+// Needs a database migrated with 013.
 // Writes only under the probe identities below and removes them in TearDown.
 // Reachability gate as tests/data/test_delete_stale_executions_scope_db.cpp.
 
@@ -125,7 +125,7 @@ protected:
 };
 
 TEST_F(ExecutionsNettingColumnTest, LiveRowsStoreTheirExactAdjustment) {
-    // C9h basechain 2026-04-29: both sleeves sell 1 6C; the account's C(2) makes it a debit.
+    // Real rows of 2026-04-29: both sleeves sell 1 6C; the account's C(2) makes it a debit.
     std::vector<ExecutionReport> tf{
         make_exec("EXEC_K3_TF", Side::SELL, "3.97287664", "-0.50653209")};
     std::vector<ExecutionReport> ff{
@@ -141,7 +141,7 @@ TEST_F(ExecutionsNettingColumnTest, LiveRowsStoreTheirExactAdjustment) {
     EXPECT_EQ(trading_value("K3_FF"), "-0.50653208");
     EXPECT_EQ(trading_value("K3_ONE"), "0") << "an un-netted row is 0, not NULL";
 
-    // C9h basechain 2026-04-24: a full cross, the adjustment is the row's own cost.
+    // Real rows of 2026-04-24: a full cross, the adjustment is the row's own cost.
     std::vector<ExecutionReport> x{make_exec("EXEC_K3_X", Side::BUY, "3.94919180", "3.94919180")};
     ASSERT_FALSE(db_->store_executions(x, kStrategyId, "K3_X", kPortfolio, "trading.executions")
                      .is_error());
@@ -176,7 +176,7 @@ TEST_F(ExecutionsNettingColumnTest, BacktestRowsStoreTheirAdjustmentOnEveryWrite
     EXPECT_EQ(vb[8], "0");
 }
 
-// T-NETTING fix round: a ROLL leg and a BORROW row are never netted. A row of either kind that
+// A ROLL leg and a BORROW row are never netted. A row of either kind that
 // carries a netting adjustment is REFUSED by the writer (an error naming the row), not stored and
 // not corrected to 0; the same row with adjustment 0 is stored.
 TEST_F(ExecutionsNettingColumnTest, ARollOrBorrowRowWithAnAdjustmentIsRefusedNotStored) {

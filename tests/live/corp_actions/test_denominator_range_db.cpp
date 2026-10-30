@@ -1,6 +1,6 @@
 // tests/live/corp_actions/test_denominator_range_db.cpp
 //
-// FIX-2 against a real server: the collapse was in the ARGUMENTS, so only running both
+// The denominator range against a real server: a collapse is in the ARGUMENTS, so only running both
 // argument shapes against real data shows the difference. The pure tests in
 // test_denominator_frame.cpp pin the range the runner computes; these pin what that
 // range actually fetches.
@@ -30,9 +30,10 @@ using namespace trade_ngin;
 
 namespace {
 
-// Held since 2000-01-03 in equities_data.ohlcv_1d, so it is unambiguously "deep"
-// against any bulk load we run.
-constexpr const char* kDeepSymbol = "KO";
+// The position's inception date, unambiguously "deep" against any bulk load we run. The held symbol
+// is read from the table (deep_symbol below), not named: the reference clone's KO is not in every copy
+// (the tuning copy's equity table holds 30 symbols, KO not among them).
+constexpr const char* kInception = "2005-04-01";
 
 std::string discover_connection_string() {
     // Database-backed tests connect ONLY through TRADE_NGIN_TEST_DSN. The previous
@@ -44,6 +45,26 @@ std::string discover_connection_string() {
         return std::string(dsn);
     }
     return {};
+}
+
+// The symbol with the most bars among those printing from before kInception through the table's last
+// bar date, and that date: a position held since kInception in this database. Empty when none prints.
+struct DeepSymbol {
+    std::string symbol, today;
+};
+DeepSymbol deep_symbol(const std::string& conn) {
+    pqxx::connection c(conn);
+    pqxx::work w(c);
+    const auto r = w.exec(
+        "WITH last AS (SELECT max((time AT TIME ZONE 'UTC')::date) AS d FROM equities_data.ohlcv_1d) "
+        "SELECT o.symbol, (SELECT d FROM last)::text FROM equities_data.ohlcv_1d o GROUP BY o.symbol "
+        "HAVING min((o.time AT TIME ZONE 'UTC')::date) <= $1::date "
+        "   AND max((o.time AT TIME ZONE 'UTC')::date) = (SELECT d FROM last) "
+        "ORDER BY count(*) DESC, o.symbol LIMIT 1",
+        pqxx::params{std::string(kInception)});
+    w.commit();
+    if (r.empty()) return {};
+    return {r[0][0].as<std::string>(), r[0][1].as<std::string>()};
 }
 
 }  // namespace
@@ -82,8 +103,8 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// FIX-3, measured rather than hypothesised: the frame gap is present in the data we
-// will actually run E2 against.
+// The frame gap, measured rather than hypothesised: it is present in the data the runner
+// reads.
 TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
     // Find a dividend that has a split after it -- the stacked shape the old code got
     // wrong. Located by query rather than hardcoded so a data refresh cannot rot it.
@@ -95,9 +116,9 @@ TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
         "WHERE a.div_cash > 0 AND a.close > 0 AND a.adjusted_close > 0 "
         // The premise is a row whose adjusted close already DIFFERS from its raw close
         // (a later split or dividend has restated it). Without this predicate the
-        // time-descending locator drifts with the calendar and, as of 2026-09-04, picked
-        // APH 2026-06-23 where adjusted_close == close, failing the test on a row that
-        // never carried the stacked shape (D-4-FIX F-2).
+        // time-descending locator drifts with the calendar and can pick a row where
+        // adjusted_close == close (APH 2026-06-23 is one), failing the test on a row that
+        // never carried the stacked shape.
         "  AND a.adjusted_close <> a.close "
         // Bounded so the scan stays quick; stacked pairs are common in recent history.
         "  AND a.time > now() - interval '2 years' "
@@ -137,8 +158,12 @@ TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
 }
 
 TEST_F(DenominatorRangeDbTest, UnifiedRangeFetchesTheWholeHistoryTheOldTopUpMissed) {
-    const std::time_t today = parse_ymd_utc("2026-08-28");  // last bar date in the table
-    std::unordered_map<std::string, std::string> inception = {{kDeepSymbol, "2005-04-01"}};
+    const auto deep = deep_symbol(discover_connection_string());
+    ASSERT_FALSE(deep.symbol.empty())
+        << "no symbol prints from before " << kInception << " to the table's last date: the range has nothing to span";
+    const std::string kDeepSymbol = deep.symbol;
+    const std::time_t today = parse_ymd_utc(deep.today);  // last bar date in the table
+    std::unordered_map<std::string, std::string> inception = {{kDeepSymbol, kInception}};
 
     auto w = derive_corp_action_window(today, /*min_days=*/14, /*bulk_days=*/730, inception);
     ASSERT_FALSE(w.deep_symbols.empty());
@@ -146,7 +171,7 @@ TEST_F(DenominatorRangeDbTest, UnifiedRangeFetchesTheWholeHistoryTheOldTopUpMiss
 
     const std::vector<std::string> symbols = {kDeepSymbol};
 
-    // What the code used to ask for: [deep_start, window.start]. Both ends are the same
+    // The degenerate range [deep_start, window.start]. Both ends are the same
     // date, and get_historical_closes is inclusive at both ends, so this is one day.
     auto collapsed = db_->get_historical_closes(symbols, format_ymd_utc(w.deep_start),
                                                 format_ymd_utc(w.start));
@@ -163,7 +188,19 @@ TEST_F(DenominatorRangeDbTest, UnifiedRangeFetchesTheWholeHistoryTheOldTopUpMiss
     size_t full_dates = 0;
     for (const auto& [sym, by_date] : full.value()) full_dates += by_date.size();
 
-    // ~21 years of trading days. Anything near the collapsed count means the seam is back.
+    // ~21 years of trading days. Anything near the collapsed count means the seam is back. Every
+    // stored bar of the range, counted from the table.
+    size_t stored = 0;
+    {
+        pqxx::connection c(discover_connection_string());
+        pqxx::work w(c);
+        stored = w.exec("SELECT count(DISTINCT (time AT TIME ZONE 'UTC')::date) FROM equities_data.ohlcv_1d "
+                        "WHERE symbol = $1 AND (time AT TIME ZONE 'UTC')::date BETWEEN $2::date AND $3::date",
+                        pqxx::params{kDeepSymbol, range.start, range.end})[0][0]
+                     .as<size_t>();
+        w.commit();
+    }
+    EXPECT_EQ(full_dates, stored) << "the denominator read no longer spans the position's history";
     EXPECT_GT(full_dates, 4000u) << "the denominator read no longer spans the position's history";
     EXPECT_GT(full_dates, collapsed_dates * 100);
 }
@@ -172,7 +209,9 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
     // The mechanism itself, stated directly against the server: get_historical_closes
     // with start == end is a single day, which is why an end argument of window.start
     // was fatal rather than merely narrow.
-    auto one_day = db_->get_historical_closes({kDeepSymbol}, "2015-06-10", "2015-06-10");
+    const auto deep = deep_symbol(discover_connection_string());
+    ASSERT_FALSE(deep.symbol.empty());
+    auto one_day = db_->get_historical_closes({deep.symbol}, "2015-06-10", "2015-06-10");
     ASSERT_TRUE(one_day.is_ok()) << one_day.error()->what();
     for (const auto& [sym, by_date] : one_day.value()) {
         EXPECT_LE(by_date.size(), 1u);
@@ -180,7 +219,7 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-8 / C-1 D12 -- get_delisting_dates must not hand a 2026 run a 2008 row.
+// get_delisting_dates must not hand a 2026 run a 2008 row.
 //
 // delisting_date is keyed on the TICKER and the reader takes max() over the
 // symbol's entire history, so a reused ticker inherits the dead company's
@@ -193,43 +232,68 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
 // ──────────────────────────────────────────────────────────────────────────
 class DelistingFloorDbTest : public DenominatorRangeDbTest {};
 
-TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
-    const std::vector<std::string> tickers{"HPC", "MER"};
+// The two tickers are read from the table, the oldest two delistings before the floor (the reference
+// clone's HPC 2008-11-24 and MER 2008-12-31; the tuning copy's equity table holds neither, its oldest are
+// ROH 2009-04-01 and HSP 2015-09-02), with their dates read directly, so the test holds on any copy.
+struct OldDelisting {
+    std::string ticker, date, day_after;
+};
+std::vector<OldDelisting> oldest_delistings(const std::string& conn) {
+    pqxx::connection c(conn);
+    pqxx::work w(c);
+    const auto r = w.exec(
+        "SELECT symbol, max(delisting_date)::text, (max(delisting_date) + 1)::text FROM equities_data.ohlcv_1d "
+        "WHERE delisting_date IS NOT NULL GROUP BY symbol HAVING max(delisting_date) < '2026-06-01' "
+        "ORDER BY max(delisting_date), symbol LIMIT 2");
+    w.commit();
+    std::vector<OldDelisting> out;
+    for (const auto& row : r) out.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::string>()});
+    return out;
+}
 
-    // No floor: the historical rows come back, which is the pre-BA-8 behaviour
-    // and the input the runner used to act on.
+TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
+    const auto old = oldest_delistings(discover_connection_string());
+    ASSERT_EQ(old.size(), 2u) << "two tickers must actually carry a delisting row, or this test proves nothing";
+    const std::vector<std::string> tickers{old[0].ticker, old[1].ticker};
+
+    // No floor: the historical rows come back, which is the input the runner
+    // must not act on.
     auto unbounded = db_->get_delisting_dates(tickers);
     ASSERT_TRUE(unbounded.is_ok()) << unbounded.error()->what();
     ASSERT_EQ(unbounded.value().size(), 2u)
         << "both tickers must actually carry a delisting row, or this test proves nothing";
-    EXPECT_EQ(unbounded.value().at("HPC"), "2008-11-24");
-    EXPECT_EQ(unbounded.value().at("MER"), "2008-12-31");
+    EXPECT_EQ(unbounded.value().at(old[0].ticker), old[0].date);
+    EXPECT_EQ(unbounded.value().at(old[1].ticker), old[1].date);
 
     // With a floor a 2026 run cannot see them at all.
     auto bounded = db_->get_delisting_dates(tickers, "2026-06-01");
     ASSERT_TRUE(bounded.is_ok()) << bounded.error()->what();
     EXPECT_TRUE(bounded.value().empty())
-        << "a delisting 18 years before the run date must not reach a live book";
+        << "a delisting years before the run date must not reach a live book";
 
     // The floor is INCLUSIVE, so a delisting exactly on the bound survives.
-    auto on_bound = db_->get_delisting_dates({"HPC"}, "2008-11-24");
+    auto on_bound = db_->get_delisting_dates({old[0].ticker}, old[0].date);
     ASSERT_TRUE(on_bound.is_ok()) << on_bound.error()->what();
     ASSERT_EQ(on_bound.value().size(), 1u) << "the bound is inclusive";
-    EXPECT_EQ(on_bound.value().at("HPC"), "2008-11-24");
+    EXPECT_EQ(on_bound.value().at(old[0].ticker), old[0].date);
 
     // One day later excludes it, pinning the boundary rather than the direction only.
-    auto past_bound = db_->get_delisting_dates({"HPC"}, "2008-11-25");
+    auto past_bound = db_->get_delisting_dates({old[0].ticker}, old[0].day_after);
     ASSERT_TRUE(past_bound.is_ok()) << past_bound.error()->what();
     EXPECT_TRUE(past_bound.value().empty());
 }
 
 TEST_F(DelistingFloorDbTest, EmptyFloorPreservesTheUnboundedRead) {
     // The default argument must be behaviour-preserving: any caller that passes
-    // nothing gets exactly what it got before.
-    auto with_empty = db_->get_delisting_dates({"MER"}, "");
-    auto defaulted = db_->get_delisting_dates({"MER"});
+    // nothing gets the unbounded read.
+    // The OLDEST delisting of the table, so any floor hidden in the
+    // default path (one later than that date) drops it.
+    const auto old = oldest_delistings(discover_connection_string());
+    ASSERT_FALSE(old.empty()) << "a ticker must carry a delisting row, or this test proves nothing";
+    auto with_empty = db_->get_delisting_dates({old[0].ticker}, "");
+    auto defaulted = db_->get_delisting_dates({old[0].ticker});
     ASSERT_TRUE(with_empty.is_ok() && defaulted.is_ok());
     EXPECT_EQ(with_empty.value(), defaulted.value());
     ASSERT_EQ(defaulted.value().size(), 1u);
-    EXPECT_EQ(defaulted.value().at("MER"), "2008-12-31");
+    EXPECT_EQ(defaulted.value().at(old[0].ticker), old[0].date);
 }

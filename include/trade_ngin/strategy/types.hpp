@@ -36,36 +36,6 @@ struct PnLAccounting {
     PnLAccountingMethod method{PnLAccountingMethod::MIXED};  // Accounting method
 
     /**
-     * @brief Get total PnL based on accounting method
-     */
-    double get_total_pnl() const {
-        switch (method) {
-            case PnLAccountingMethod::REALIZED_ONLY:
-                return total_realized_pnl;
-            case PnLAccountingMethod::UNREALIZED_ONLY:
-                return total_unrealized_pnl;
-            case PnLAccountingMethod::MIXED:
-                return total_realized_pnl + total_unrealized_pnl;
-        }
-        return 0.0;
-    }
-
-    /**
-     * @brief Get daily PnL based on accounting method
-     */
-    double get_daily_pnl() const {
-        switch (method) {
-            case PnLAccountingMethod::REALIZED_ONLY:
-                return daily_realized_pnl;
-            case PnLAccountingMethod::UNREALIZED_ONLY:
-                return daily_unrealized_pnl;
-            case PnLAccountingMethod::MIXED:
-                return daily_realized_pnl + daily_unrealized_pnl;
-        }
-        return 0.0;
-    }
-
-    /**
      * @brief Reset daily PnL counters (call at start of new day)
      */
     void reset_daily() {
@@ -87,14 +57,6 @@ struct PnLAccounting {
     void add_unrealized_pnl(double pnl) {
         total_unrealized_pnl += pnl;
         daily_unrealized_pnl += pnl;
-    }
-
-    /**
-     * @brief Set unrealized PnL (for mark-to-market)
-     */
-    void set_unrealized_pnl(double pnl) {
-        daily_unrealized_pnl += (pnl - total_unrealized_pnl);
-        total_unrealized_pnl = pnl;
     }
 };
 

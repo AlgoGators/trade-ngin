@@ -16,24 +16,23 @@ namespace trade_ngin::contract_rolls {
 
 /**
  * @brief The per-contract roll rule: which contract the futures book holds on each date of the
- *        vendor's grid, and when it rolls (HD 2026-10-23; ROLLS_STEP1_PLAN section 11, which replaces
- *        sections 3, 5c and 10b point 4 where they differ).
+ *        vendor's grid, and when it rolls.
  *
- * HD's rule, as ruled:
+ * The rule:
  *
  *   For the held contract:
  *   - Deadline D*: its first notice day, or its last trading day where that comes first or where it
  *     has no notice day.
- *   - Window: from the fifth trading day before D* to the last actionable bar (HD 2026-10-23,
- *     ruling 11: the window ends at the last actionable bar, so a crossover after it does not
- *     roll; the trading days between the last actionable bar and D* are outside the window).
+ *   - Window: from the fifth trading day before D* to the last actionable bar (the window ends at
+ *     the last actionable bar, so a crossover after it does not roll; the trading days between the
+ *     last actionable bar and D* are outside the window).
  *   - Last actionable bar: the last trading-day bar B before D* whose next calendar day is still
  *     before D*. The live runners run seven days a week and the run dated R trades the bar of R-1
  *     (a Saturday run trades Friday's bar at Friday's settle), so this is the last bar whose trade
  *     happens before D*.
  *   - The roll happens on the first of:
  *     (a) the vendor's confirmed forward switch (a contract expiring later than the held one, kept
- *         by the next bar: today's confirmation rule), on the vendor's date;
+ *         by the next bar: the confirmation rule), on the vendor's date;
  *     (b) the first trading-day bar inside the window where the target contract's volume is greater
  *         than the held contract's;
  *     (c) the last actionable bar.
@@ -53,11 +52,11 @@ namespace trade_ngin::contract_rolls {
  *     names another contract; when the vendor names the held contract and the table has no row,
  *     use the vendor's bar with a WARN.
  *   - Old contract with no bar on the roll bar: move to the next trading-day bar where both print,
- *     never later than the last actionable bar. If none exists, the plan's section 5c fallback
- *     with a WARN, and list every such case.
+ *     never later than the last actionable bar. If none exists, the fallback (RollFallback) with a
+ *     WARN, and list every such case.
  *   - Class d: the vendor's contract by symbol and instant (contract_bars.hpp).
  *
- * Where the ruling is silent, this code decides as follows (R2 report, "Interpretations"):
+ * Where the rule above is silent, this code decides as follows:
  *   - The window's first day is the 5th trading day strictly before D*; its last day is the last
  *     actionable bar (LAB), the latest trading day t with t + 1 day < D*, a calendar date (the grid
  *     may lack it).
@@ -90,7 +89,7 @@ enum class BarSource {
 /// "own", "vendor", "carry".
 const char* to_string(BarSource source);
 
-/// The plan's section 5c fallback, on a roll whose old contract has no bar up to the LAB.
+/// The fallback on a roll whose old contract has no bar up to the LAB.
 enum class RollFallback {
     NONE,
     NEW_CONTRACT_MOVE,  ///< the new contract's move, the gap taken on the previous grid date
@@ -105,7 +104,7 @@ struct ContractDates {
     std::optional<Day> first_notice_day;   ///< the exchange rule (roll_calendar.hpp)
     Day deadline{};                        ///< D*
     Day window_first{};                    ///< the window's first day: the 5th trading day before D*
-    Day last_actionable{};                 ///< the LAB, the window's last day (ruling 11)
+    Day last_actionable{};                 ///< the LAB, the window's last day
     std::optional<Day> rule_last_trading_day;  ///< the exchange rule's, for the cross-check
 };
 
@@ -118,7 +117,7 @@ ContractDates contract_dates(const ContractKey& key, const TradingCalendar& cal)
 Result<const Contract*> cycle_target(const ContractBook& book, const std::string& root,
                                      const std::string& cycle, const ContractKey& held, Day day);
 
-/// The cycle front after the held contract among LISTED contracts (R2 fix round 1, audit B 6): the
+/// The cycle front after the held contract among LISTED contracts: the
 /// first cycle delivery month after the held one, at or before `up_to` (a delivery index), for which
 /// the book has a contract of `root`; -1 when none. A month never listed (6LF1 in 2010) is passed
 /// over, so a target is flagged as skipping the front only when a listed front exists.
@@ -126,9 +125,9 @@ int listed_cycle_front(const ContractBook& book, const std::string& root, const 
                        const ContractKey& held, int up_to);
 
 /**
- * @brief Rolls step 3: a vendor switch on a trading-day bar that only the next bar could confirm,
- *        where the next bar did not (or the range ends on the bar), and that would have rolled the
- *        held contract on this bar into `target` had it been confirmed. Nothing rolled: the held
+ * @brief A vendor switch on a trading-day bar that only the next bar could confirm, where the
+ *        next bar did not (or the range ends on the bar), and that would have rolled the held
+ *        contract on this bar into `target` had it been confirmed. Nothing rolled: the held
  *        contract stays. The bar source hands the bar out as it hands out a confirmed switch bar
  *        (the held contract's own bar, the field naming the target), because a run whose bars end
  *        here cannot tell the two apart (per_contract_source.hpp); the next consumed bar shows it.
@@ -166,7 +165,7 @@ struct HeldDay {
     bool vendor_off_cycle{false};      ///< a vendor switch into a month outside the cycle timed it
     bool late{false};                  ///< a deadline roll after the LAB (no grid bar on the LAB)
 
-    // Rolls step 3 (the bar source's inputs; the dump tool prints none of them):
+    // The bar source's inputs (the dump tool prints none of them):
     std::string old_id;      ///< roll bars: the old contract's id on this date (empty on a fallback)
     /// Roll bars: the old contract's own bar on this date (none on a fallback). A vendor roll that
     /// awaits the next bar is handed out as this bar: until it is confirmed the book holds it.
@@ -181,8 +180,16 @@ struct HeldDay {
     /// bars after it (RollFromKind::AFTER_ROLL): it books the roll on its first consumed bar.
     std::optional<double> left_close;
     std::string left_id;
-    /// Rolls step 4: the date of the roll the contract left was left on (with left_close).
+    /// With left_close, the contract left's own volume on this date.
+    std::optional<int64_t> left_volume;
+    /// The date of the roll the contract left was left on (with left_close).
     Day left_roll_date{};
+    /// That roll was the micros' change (trigger ALIAS), a change of price source.
+    bool left_by_alias{false};
+    /// An equity micro's alias before the change (full_size_grid false, the held contract the
+    /// full-size one): the micro's own contract of the held expiry, its volume on this date where
+    /// it prints (Bar::own_contract_volume).
+    std::optional<int64_t> micro_volume;
 };
 
 /// Counts and messages of one series, for the report and the measures.
@@ -211,19 +218,26 @@ struct HeldSeries {
 };
 
 /**
- * @brief The micros' full-size contracts before the vendor's 2026-02-22 change (ROLLS_STEP1_PLAN 10b
- *        point 5): until then MES.v.0, MNQ.v.0, MYM.v.0 and M2K.v.0 are the ES, NQ, YM and RTY
+ * @brief The micros' full-size contracts before the vendor's 2026-02-22 change: until then
+ *        MES.v.0, MNQ.v.0, MYM.v.0 and M2K.v.0 are the ES, NQ, YM and RTY
  *        contracts (same index price and expiries, another multiplier and volume). Before `change`
  *        the series reads the full-size root's contracts and the vendor's id names one of them; from
  *        it, the micro's own. The change is one roll (trigger ALIAS) between the two contracts of the
  *        same expiry, on the first trading-day bar on or after `change` where both print.
+ *
+ * The gold and silver micros read the same way before their listing dates,
+ * MGC the GC contracts before 2010-10-04 and SIL the SI contracts before 2013-06-17. Their own .v.0
+ * starts at the listing, so before the change their vendor's grid is the full-size root's .v.0.
  */
 struct MicroAlias {
     std::string full_root;  ///< "ES"
     Day change{};           ///< the first date the vendor names the micro's own contract
+    /// Before `change` the grid is `full_root`.v.0 (MGC, SIL); false: the micro's own .v.0 already
+    /// carries the full-size contracts' bars (MES, MNQ, MYM, M2K).
+    bool full_size_grid{false};
 };
 
-/// The micro alias of `root` ("MES" -> ES, 2026-02-22), or nullopt.
+/// The micro alias of `root` ("MES" -> ES, 2026-02-22; "MGC" -> GC, 2010-10-04), or nullopt.
 std::optional<MicroAlias> micro_alias(const std::string& root);
 
 /// The inputs of one root's series.
@@ -237,7 +251,7 @@ struct RuleInputs {
     /// Warnings dated before this day are kept in RuleReport::warnings but not logged (the bar
     /// source runs the rule from the series start on every load and logs its own window's only).
     Day log_from{};
-    /// Rolls step 4 (R4a open question 4): asked before a warning is logged; false keeps it in
+    /// Asked before a warning is logged; false keeps it in
     /// RuleReport::warnings, not logged (the bar source logs each message once per run). Empty: log.
     std::function<bool(const std::string&)> log_once;
 };

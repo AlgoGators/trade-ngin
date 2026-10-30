@@ -13,18 +13,18 @@
 namespace trade_ngin::contract_rolls {
 
 /**
- * @brief The roll cycle per root: the delivery months the roll rule holds (HD 2026-10-23, ruling 2).
+ * @brief The roll cycle per root: the delivery months the roll rule holds.
  *
  * The months the vendor's own continuous series has held in at least half of the years it covers,
- * measured from futures_data.ohlcv_1d_raw over the whole history (2010-06 to 2026-10-02, measured
- * 2026-10-23 on the 10-21 production copy, report R2): "held" is named by the vendor on two
- * consecutive grid bars (today's confirmation rule, so a one-bar stray does not count), and the
- * years are the delivery years of the contracts held. The table is FIXED here, so the history does
- * not move as data grows; test_roll_cycle_db recomputes it from the data and must match. The roll
- * rule's target and the email's rollover warning (step 4) both read this table.
+ * measured from futures_data.ohlcv_1d_raw over the whole history (2010-06 to 2026-10-02): "held" is
+ * named by the vendor on two consecutive grid bars (the confirmation rule, so a one-bar stray does
+ * not count), and the years are the delivery years of the contracts held. The table is FIXED here,
+ * so the history does not move as data grows; test_roll_cycle_db recomputes it from the data and
+ * must match. The roll rule's target and the email's rollover warning both read this table.
  *
  * Months are the month codes F G H J K M N Q U V X Z. ES, NQ, YM and RTY (the micros' contracts
- * before the vendor's 2026-02-22 change) are not loaded yet; their cycle is the micros' own.
+ * before the vendor's 2026-02-22 change) have no row: a micro's series reads them on the micro's own
+ * cycle.
  */
 inline const std::map<std::string, std::string>& roll_cycle_table() {
     static const std::map<std::string, std::string> table = {
@@ -36,6 +36,9 @@ inline const std::map<std::string, std::string>& roll_cycle_table() {
         {"RB", "FGHJKMNQUVXZ"},
         // Metals: GC Feb Apr Jun Aug Dec (never Oct); SI, HG Mar May Jul Sep Dec; PL Jan Apr Jul Oct.
         {"GC", "GJMQZ"}, {"SI", "HKNUZ"}, {"HG", "HKNUZ"}, {"PL", "FJNV"},
+        // The gold and silver micros on their own vendor series from the listing (GC's and SI's
+        // contracts before it, the alias); the cycle of their full-size roots.
+        {"MGC", "GJMQZ"}, {"SIL", "HKNUZ"},
         // Grains: ZC Mar May Jul Dec (Sep held 4 of 17 years); ZS Jan Mar May Jul Nov.
         {"ZC", "HKNZ"}, {"ZS", "FHKNX"}, {"ZW", "HKNUZ"}, {"KE", "HKNUZ"}, {"ZL", "FHKNZ"},
         {"ZM", "FHKNZ"}, {"ZR", "FHKNUX"},

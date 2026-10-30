@@ -1,6 +1,6 @@
 // tests/core/test_resolved_sleeves.cpp
 //
-// T-8D R24 and R25, T-8D-2 R53 and R73, LOOP_SPEC sections 7.5 and 7.5.1 -- the JSON a run stores
+// The JSON a run stores
 // about its own configuration (core/resolved_sleeves.hpp): each sleeve's resolved values in
 // trading.live_results.config, the two keys on the day's sizing capital, the strategy_type key,
 // and the keys backtest.run_metadata.portfolio_config gains.
@@ -62,7 +62,7 @@ std::set<std::string> keys_of(const nlohmann::json& j) {
 
 }  // namespace
 
-// R25's defect: BASE's FAST sleeve resolves risk_target 0.25 and the string stored 0.2.
+// BASE's FAST sleeve resolves risk_target 0.25, and the stored string carries 0.25, not 0.2.
 TEST(ResolvedSleeves, ABaseConfigWhoseFastSleeveResolvesAQuarterStoresAQuarter) {
     const auto portfolio = read_template("config_template/portfolios/base/portfolio.json");
     if (portfolio.is_null()) GTEST_SKIP() << "config template not found from the test directory";
@@ -104,7 +104,7 @@ TEST(ResolvedSleeves, AOneSleeveBookStoresItsOwnValues) {
     EXPECT_DOUBLE_EQ(only.at("allocation").get<double>(), 1.0);
 }
 
-// R73: AlgoLens keys on config["strategy_type"]: top level, a JSON string, the row's strategy_id
+// AlgoLens keys on config["strategy_type"]: top level, a JSON string, the row's strategy_id
 // byte for byte, read back from the stored string.
 TEST(ResolvedSleeves, StrategyTypeParsesBackAsTheRowsStrategyId) {
     for (const std::string strategy_id :
@@ -123,7 +123,7 @@ TEST(ResolvedSleeves, StrategyTypeParsesBackAsTheRowsStrategyId) {
     }
 }
 
-// R24: capital_allocation is the day's sizing capital and gross_leverage the gross notional over it.
+// capital_allocation is the day's sizing capital and gross_leverage the gross notional over it.
 TEST(ResolvedSleeves, TheCapitalKeysAreOnTheDaysSizingCapital) {
     const auto j = futures_live_results_config_json("LIVE_TREND_FOLLOWING",
                                                     {{"TREND_FOLLOWING", 2.5, 0.2, 1.0}}, 480000.0,
@@ -182,7 +182,7 @@ TEST(ResolvedSleeves, ASleeveWithNoIdmStoresNoIdmKey) {
     EXPECT_DOUBLE_EQ(j.at("EQUITY_MEAN_REVERSION").at("risk_target").get<double>(), 0.15);
 }
 
-// R53 and LOOP_SPEC 7.5.1: the keys backtest.run_metadata.portfolio_config gains, and only those.
+// The keys backtest.run_metadata.portfolio_config gains, and only those.
 TEST(ResolvedSleeves, TheBacktestRunKeysArePinned) {
     nlohmann::json portfolio_config = {{"total_capital", 500000.0},
                                        {"strategy_allocations", {{"TREND_FOLLOWING", 1.0}}}};

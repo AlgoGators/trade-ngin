@@ -1,4 +1,4 @@
-// K3 wiring (T-7b-2 8b): the netting adjustment on the per-sleeve execution reports.
+// The netting adjustment on the per-sleeve execution reports.
 //
 // Backtest: the PortfolioManager nets each bar's per-sleeve executions of one symbol (the account
 // sends ONE order, the signed sum) with its own cost manager at that bar's price, and writes each
@@ -8,7 +8,7 @@
 // function itself is pinned in tests/transaction_cost/test_netting.cpp). A live runner's
 // PortfolioManager (not marked backtest) does NOT net its own reports: in a fresh live process
 // its filled ledger is empty, so those reports are each sleeve's whole held book, never an order
-// and never stored (T-7b-2 C8b4).
+// and never stored.
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -217,8 +217,8 @@ TEST_F(PmNettingTest, TheBacktestNetsEachBarsSleeveRowsAndLeavesSingleRowsAtZero
 
 // A live runner's PM pass (a fresh process: empty filled ledger, not marked backtest). Both sleeves
 // hold 1 ZZA, so the PM's reports are the whole held book (A +1, B +1), not an order: nothing is
-// netted, no NETTING line is printed, every report keeps netting_adjustment 0. RED on ac26b230,
-// where the PM netted them (a debit on each report) and printed a NETTING line for ZZA.
+// netted, no NETTING line is printed, every report keeps netting_adjustment 0. RED when the PM nets
+// them (a debit on each report) and prints a NETTING line for ZZA.
 TEST_F(PmNettingTest, ALiveRunnersPmPassDoesNotNetItsWholeBookReports) {
     make_pm({{{"ZZA", make_pos("ZZA", 1, 100)}, {"ZZB", make_pos("ZZB", 2, 50)}}},
             {{{"ZZA", make_pos("ZZA", 1, 100)}}}, /*backtest=*/false);
@@ -259,7 +259,7 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
         }
         const auto strict = src.find("STRICT_ASSERTION failed");
         const auto net = src.find("transaction_cost::apply_netting_adjustments(");
-        // the first store of the day's executions (T-DATED R3: every sleeve's rows go through the
+        // the first store of the day's executions (every sleeve's rows go through the
         // one-transaction replace; the sleeves with ROLL legs first)
         const auto store = src.find("db->replace_roll_day_executions(");
         EXPECT_NE(strict, std::string::npos) << f;
@@ -276,7 +276,7 @@ TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {
     }
 }
 
-// The cost after netting (HD 2026-10-09): the backtest's cost totals read the one helper.
+// The cost after netting: the backtest's cost totals read the one helper.
 TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
     const std::vector<std::pair<const char*, const char*>> sites = {
         {"src/backtest/backtest_coordinator.cpp", "transaction_cost::add_net_costs(total_transaction_costs, execs, count_before)"},
@@ -295,7 +295,7 @@ TEST(PmNettingSource, TheBacktestsCostTotalsReadTheHelper) {
     }
 }
 
-// The cost after netting (HD 2026-10-09), live: the day's transaction cost is added up AFTER the
+// The cost after netting, live: the day's transaction cost is added up AFTER the
 // runner has written every fill's netting_adjustment, from the rows it stores, through the one
 // helper; nothing adds a fill's own cost to the day's total.
 TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHelper) {
@@ -308,7 +308,7 @@ TEST(PmNettingSource, BothFuturesRunnersAddUpTheDaysCostAfterNettingThroughTheHe
         }
         const auto last_net = src.rfind("transaction_cost::apply_netting_adjustments(");
         const auto sum = src.find("total_daily_transaction_costs = transaction_cost::add_net_costs(");
-        // the first store of the day's executions (T-DATED R3: every sleeve's rows go through the
+        // the first store of the day's executions (every sleeve's rows go through the
         // one-transaction replace; the sleeves with ROLL legs first)
         const auto store = src.find("db->replace_roll_day_executions(");
         // EXPECT, not ASSERT: a failure in one runner must not end the test before its twin is
@@ -403,7 +403,7 @@ TEST(LiveDayCost, TheDaysCostIsTheSumOfTheNetCostsOfTheStoredRows) {
     EXPECT_EQ(net_of["MBT.v.0"], Decimal(10.83)) << "same side: above the 9.00 of the rows' own costs";
 }
 
-// T-NETTING fix round: the live log states the day's cost in one line that adds up (own costs,
+// The live log states the day's cost in one line that adds up (own costs,
 // adjustments, cost after netting), printed after the day's sum in both twins.
 TEST(PmNettingSource, BothFuturesRunnersLogTheDaysOwnCostsAdjustmentsAndCostAfterNetting) {
     for (const char* f : {"apps/strategies/live_portfolio.cpp",

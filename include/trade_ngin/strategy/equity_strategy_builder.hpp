@@ -3,9 +3,9 @@
 // Shared helpers for the equity portfolio runners (bt_equity_mean_reversion,
 // live_equity_mean_reversion). Centralizes (a) parsing a MeanReversionConfig from
 // a strategy's JSON "config" block so the backtest and live runners build the
-// strategy identically (review T-OR.5), and (b) iterating a portfolio's
+// strategy identically, and (b) iterating a portfolio's
 // strategies_config to collect the *enabled* strategies while ERRORing on an
-// unknown strategy type instead of silently dropping it (review §F10).
+// unknown strategy type instead of silently dropping it.
 
 #include <algorithm>
 #include <string>
@@ -105,9 +105,9 @@ inline Result<std::vector<EquityStrategyEntry>> collect_enabled_equity_strategie
 /**
  * @brief Refuse to start when the config asks for the optimizer on an equity book.
  *
- * Both equity runners hard-code PortfolioConfig::use_optimization to false (HD
- * 2026-09-01: the dynamic optimizer is a trend-following construct that cannot even see
- * an equity strategy). Schema 2 makes `use_optimization` an explicit, required key in
+ * Both equity runners hard-code PortfolioConfig::use_optimization to false (the dynamic
+ * optimizer is a trend-following construct that cannot even see an equity strategy).
+ * Schema 2 makes `use_optimization` an explicit, required key in
  * portfolio.json, which creates a contradiction the hard-code would win silently -- the
  * operator would read `true` in the file and believe it. So the runner stops instead.
  *
@@ -120,7 +120,7 @@ inline Result<void> refuse_if_optimizer_requested(bool config_use_optimization) 
     return make_error<void>(
         ErrorCode::INVALID_DATA,
         "Refusing to start: portfolio.json sets use_optimization=true, but the equity runners "
-        "do not run the optimizer (HD 2026-09-01; see the comment at the hard-code).",
+        "do not run the optimizer (see the comment at the hard-code).",
         "equity_strategy_builder");
 }
 

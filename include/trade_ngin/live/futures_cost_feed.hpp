@@ -15,8 +15,7 @@
 namespace trade_ngin {
 
 /**
- * @brief K2 redesigned (T-7b-1 C8a, HD 2026-09-17 / 2026-09-19): the live futures runners'
- *        cost feed, with two inputs.
+ * @brief The live futures runners' cost feed, with two inputs.
  *
  * The cost of a fill of q contracts at the T-1 close P (transaction_cost_manager.cpp,
  * impact_model.cpp, spread_model.cpp):
@@ -28,7 +27,7 @@ namespace trade_ngin {
  *   point_value; total = commission + slippage. k_bps(V) is the liquidity tier (10/20/40/60/80
  *   bps for V above 1M/200k/50k/20k/below).
  *
- * The two inputs, as ruled:
+ * The two inputs:
  *
  *   V        the FILL DAY'S OWN VOLUME: the volume of the symbol's latest bar in the feed,
  *            which is the T-1 bar whose close prices the fill. It prices the participation
@@ -40,15 +39,10 @@ namespace trade_ngin {
  *            of a symbol has no previous close, so it contributes no return (nothing
  *            fabricated); fewer than 2 returns leave the model's neutral 1.0.
  *
- * Before this, both runners fed ONE bar per symbol through ExecutionManager's 3-arg form: V was
- * the same own-day volume, and the one return was log(close / close) = 0, so vol_mult was
- * always 1.0. The impact term is therefore unchanged by construction; only the spread term
- * moves, through vol_mult.
- *
- * The weekend merge (T-7b-2 C8c3, HD 2026-09-25 rulings 25 and 28: "merge the weekend stub into the
- * next session for the participation volume of a weekday fill; a fill in the thin session itself
- * keeps its own volume, per the 09-17 ruling"; a Monday fill's cost comes back to real session
- * liquidity). Only V moves; the volatility walk does not. A run dated T (the fill day) prices its fill
+ * The weekend merge: the weekend stub is merged into the next session for the participation
+ * volume of a weekday fill, so a Monday fill's cost reflects real session liquidity; a fill in
+ * the thin session itself keeps its own volume. Only V moves; the volatility walk does not. A
+ * run dated T (the fill day) prices its fill
  * at the symbol's latest bar B, the T-1 bar. A weekend bar is one dated Saturday or Sunday (UTC); a
  * session is a weekday-dated bar; the weekend block is the run of the symbol's weekend bars with no
  * session between them. The fill day is a weekday or a weekend day by its UTC date.
@@ -70,28 +64,28 @@ namespace trade_ngin {
  * with a Sunday session prints a Monday bar) is a session like any other and takes the block.
  * A symbol whose first bars are a weekend block has no session before it: (2) is the block alone.
  *
- * The feed is the runner's strategy feed (a JUNK symbol's T-1 bar withheld, T-7b-1 C7b R10),
- * already one bar per symbol-instant (the futures loader keeps the max-volume copy, T-6c B0). It
+ * The feed is the runner's strategy feed (a JUNK symbol's T-1 bar withheld),
+ * already one bar per symbol-instant (the futures loader keeps the max-volume copy). It
  * is NOT de-duplicated again here: a repeated instant is fed as given and reported, so a loader
  * regression shows in the log instead of being papered over.
  *
  * Only the cost manager passed in is fed. The live futures runners pass the ExecutionManager's
- * (C8a) and, from the same feed, the PortfolioManager's, whose model prices the optimizer's cost
- * vector (T-7b-1 C8d, H-2). The futures backtest feeds its two managers the same basis one cycle
- * at a time (feed_futures_cost_model_step below, T-7b-2 8c); the equity feed
- * (LiveDailyCycle::feed_cost_model) is untouched; the equity runners' optimizer is off.
+ * and, from the same feed, the PortfolioManager's, whose model prices the optimizer's cost
+ * vector. The futures backtest feeds its two managers the same basis one cycle
+ * at a time (feed_futures_cost_model_step below); the equity feed is
+ * LiveDailyCycle::feed_cost_model; the equity runners' optimizer is off.
  */
 struct FuturesCostFeedSymbol {
     std::string symbol;
     size_t bars = 0;             ///< bars of this symbol in the feed
     size_t returns = 0;          ///< log returns handed to the volatility window (all of them;
                                  ///< the window keeps the last 20)
-    double own_day_volume = 0.0; ///< the latest bar's own volume
+    double own_day_volume = 0.0; ///< the latest bar's own volume (its cost_volume when set)
     Timestamp own_day_time{};    ///< the latest bar's timestamp
-    size_t merged_weekend_bars = 0;       ///< weekend bars in the participation volume (C8c3)
+    size_t merged_weekend_bars = 0;       ///< weekend bars in the participation volume
     double merged_weekend_volume = 0.0;   ///< their volume (B's own included when B is one)
     double previous_session_volume = 0.0; ///< case (2): the last session's volume before the block
-    double participation_volume = 0.0;    ///< the impact model's only input (C8c3 cases 1-3)
+    double participation_volume = 0.0;    ///< the impact model's only input (cases 1-3)
 };
 
 namespace futures_cost_feed_detail {
@@ -110,13 +104,17 @@ inline bool is_weekend_bar(const Bar& bar) {
     return futures_cost_feed_detail::is_weekend_day(bar.timestamp);
 }
 
+/// The volume a bar is fed to the impact model with: its cost_volume when set (a listing
+/// predecessor's copied bar: the full-size contract's own), else its own volume.
+inline double fed_volume(const Bar& bar) { return bar.cost_volume.value_or(bar.volume); }
+
 /// A fill day (a run's date T, or a backtest cycle's) that is a Monday to Friday by its UTC date.
 inline bool is_weekday_fill(Timestamp fill_time) {
     return !futures_cost_feed_detail::is_weekend_day(fill_time);
 }
 
 /**
- * @brief One symbol's volumes for the weekend merge, built from its bars oldest first (C8c3). Both
+ * @brief One symbol's volumes for the weekend merge, built from its bars oldest first. Both
  *        feeds below build it with the same add(), so the one-shot and the per-cycle form agree.
  */
 struct FuturesSessionVolume {
@@ -133,6 +131,7 @@ struct FuturesSessionVolume {
 
     void add(const Bar& bar) {
         const bool weekend = is_weekend_bar(bar);
+        const double volume = fed_volume(bar);
         if (weekend) {
             if (!has_latest || !latest_is_weekend) {  // a block starts after a session (or first)
                 has_previous_session = has_latest;
@@ -140,7 +139,7 @@ struct FuturesSessionVolume {
                 block_volume = 0.0;
                 block_bars = 0;
             }
-            block_volume += bar.volume;
+            block_volume += volume;
             ++block_bars;
         } else if (!has_latest || !latest_is_weekend) {  // a session after a session: no block
             block_volume = 0.0;
@@ -148,7 +147,7 @@ struct FuturesSessionVolume {
         }  // else a session right after a block: the block is merged into it
         has_latest = true;
         latest_is_weekend = weekend;
-        latest_volume = bar.volume;
+        latest_volume = volume;
         latest_time = bar.timestamp;
     }
 
@@ -185,8 +184,8 @@ struct FuturesCostFeedResult {
 
 /**
  * @brief One bar's return into the spread model's volatility window, on the library's rule
- *        (roll_series::RollTracker; this was the feed's own hand copy of it): a change bar's return
- *        enters as 0 (LOOP_SPEC v6.1 section 2.3, L-08); with the per-contract source (rolls step 3)
+ *        (roll_series::RollTracker): a change bar's return
+ *        enters as 0; with the per-contract source
  *        a roll bar's log return is the old contract's own over the bar, and the bar that confirms a
  *        vendor switch is read from the target's close on the switch bar. 0.0 = no previous close.
  */
@@ -234,8 +233,8 @@ inline FuturesCostFeedResult feed_futures_cost_model(
             sessions.add(bars[i]);
         }
 
-        // The impact term: one observation, the participation volume of the weekend merge (C8c3).
-        entry.own_day_volume = bars.back().volume;
+        // The impact term: one observation, the participation volume of the weekend merge.
+        entry.own_day_volume = fed_volume(bars.back());
         entry.own_day_time = bars.back().timestamp;
         tcm.record_volume(symbol, sessions.participation(weekday_fill, entry));
 
@@ -247,8 +246,7 @@ inline FuturesCostFeedResult feed_futures_cost_model(
 }
 
 /**
- * @brief The same two inputs for the futures backtest (T-7b-2 8c, COST-H3, T-VOL §4), one cycle at
- *        a time.
+ * @brief The same two inputs for the futures backtest, one cycle at a time.
  *
  * A live run feeds a fresh manager the whole window ending at T-1 once. The backtest's managers
  * live for the whole run, so each cycle feeds only the bars that are new to them, the cycle's
@@ -263,9 +261,9 @@ inline FuturesCostFeedResult feed_futures_cost_model(
  */
 struct FuturesCostFeedCarry {
     std::map<std::string, double> last_close;  ///< the close of the symbol's last fed bar
-    /// The library's rule on the symbol's fed bars (roll_series::RollTracker; T-ROLLX, rolls step 3)
+    /// The library's rule on the symbol's fed bars (roll_series::RollTracker)
     std::map<std::string, roll_series::RollTracker> trackers;
-    std::map<std::string, FuturesSessionVolume> sessions;  ///< the weekend merge's state (C8c3)
+    std::map<std::string, FuturesSessionVolume> sessions;  ///< the weekend merge's state
     std::map<std::string, double> applied_volume;  ///< the participation volume last set
 };
 
@@ -301,7 +299,7 @@ inline FuturesCostFeedResult feed_futures_cost_model_step(
         }
         carry.last_close[symbol] = prev_close;
 
-        entry.own_day_volume = bars.back().volume;
+        entry.own_day_volume = fed_volume(bars.back());
         entry.own_day_time = bars.back().timestamp;
         const double v = sessions.participation(weekday_fill, entry);
         tcm.set_own_day_volume(symbol, v);

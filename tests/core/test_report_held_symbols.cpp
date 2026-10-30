@@ -1,6 +1,6 @@
 // tests/core/test_report_held_symbols.cpp
 //
-// T-EMAIL N4: the Symbols Reference lists a contract the sleeves hold in opposite directions
+// The Symbols Reference lists a contract the sleeves hold in opposite directions
 // (BASE 2026-04-30 and 05-01, MBT), whose book entry is a zero row.
 
 #include <gtest/gtest.h>

@@ -1,6 +1,6 @@
 // tests/live/test_report_queries.cpp
 //
-// T-8D-2 R55, the part the runners own: the live runners' read of yesterday's position rows for
+// The part the runners own: the live runners' read of yesterday's position rows for
 // the daily report filters by strategy_id and portfolio_id and, since trading.positions carries
 // a portfolio_type, reads the system book only, as the chart queries do. The query text is built
 // by a function called here; that the three runners use it is a labelled source guard.
@@ -125,7 +125,7 @@ TEST(EmailQueriesTwinSourceGuard, TheRunnersReadYesterdaysRowsThroughTheFunction
         npos);
 }
 
-// T-EMAIL Q11: the quantity a closed position had is the latest stored row before the settled day,
+// The quantity a closed position had is the latest stored row before the settled day,
 // one row per symbol, of this book's system portfolio; a quote in a symbol cannot end the list.
 TEST(ReportQueries, TheQuantityBeforeQueryReadsOneBookAndOneRowPerSymbolBeforeTheDate) {
     const std::string q = trade_ngin::quantity_before_report_query(

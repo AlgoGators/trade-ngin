@@ -1,4 +1,4 @@
-// How the daily email prints the netting figures (T-NETTING fix rounds 1 and 2).
+// How the daily email prints the netting figures.
 //
 // One rounding for every figure: the stream's (std::fixed, two decimals), the rounding the email's
 // other dollar figures have always had. The adjustment is printed AS IT ACTS ON THE COST, and as
@@ -14,11 +14,6 @@
 
 namespace trade_ngin {
 namespace email_netting {
-
-/// The note under the book's footer of a day on which a printed cent differs (T-EMAIL, HD ruling
-/// Q3): the totals are the exact stored figures, every line prints rounded to the cent.
-inline constexpr const char* kRoundingNote =
-    "Totals are rounded from exact amounts; rows can differ by a cent.";
 
 /// `value` with two decimals, as the stream rounds it, without separators: "-1234.50".
 inline std::string two_decimals(double value) {

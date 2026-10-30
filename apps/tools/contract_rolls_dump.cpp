@@ -1,8 +1,7 @@
-// contract_rolls_dump: the per-contract roll rule's held series for every root, as CSV, for the
-// independent reference check and the measures (R2). Read only. Nothing in the engine calls the rule
-// yet; this tool and the unit tests are its only callers.
+// contract_rolls_dump: the per-contract roll rule's held series for every root, as CSV, for an
+// independent reference check of the rule. Read only.
 //
-//   CONTRACT_ROLLS_DSN=postgresql://postgres@127.0.0.1:5433/<scratch db> \
+//   CONTRACT_ROLLS_DSN=postgresql://<user>@<host>:<port>/<db> \
 //       contract_rolls_dump <out.csv> [end YYYY-MM-DD] [root ...]
 //
 // The range per root runs from the first grid date on which the root has a contract row to `end`

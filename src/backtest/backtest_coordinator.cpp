@@ -222,9 +222,9 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Reset all state
     reset();
     reset_portfolio_state();
-    // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
+    // The session hold is the futures book's; the equity backtest does not hold.
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
-    // T-ROLLX-FIX: the oracle acceptance's record of what this futures run consumes
+    // The record of what this futures run consumes for an external check
     // (consumed_series_record.hpp), only when the environment names a directory; it writes no log
     // line and changes nothing the run computes or stores.
     consumed_record_ = ConsumedSeriesRecord();
@@ -235,10 +235,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     }
     risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
     size_on_equity_enabled_ = (asset_class == AssetClass::FUTURES);
-    // K1 (T-7b-2 8c): the per-bar re-tier is the equity book's; futures roots keep their static
+    // The per-bar re-tier is the equity book's; futures roots keep their static
     // per-root cost configs.
     equity_cost_retier_enabled_ = (asset_class == AssetClass::EQUITIES);
-    // COST-H3 (T-7b-2 8c): the futures book's cost managers read live's own-day basis.
+    // The futures book's cost managers read live's own-day basis.
     own_day_cost_feed_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
@@ -246,7 +246,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     backtest_end_date_ = end_date;
 
     // The portfolio's risk modules see RiskContext::is_backtest = true, and the PortfolioManager nets
-    // each bar's sleeve reports (K3), which here are the fills the backtest stores (T-7b-2 C8b4)
+    // each bar's sleeve reports, which here are the fills the backtest stores
     if (portfolio) {
         portfolio->set_backtest_mode(true);
     }
@@ -281,7 +281,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         load_equity_cost_retier(symbols, start_date, end_date);
     }
 
-    // T-7b-2 C10a (HD 2026-09-24 ruling 16): the session classifier's instrument-id continuity
+    // The session classifier's instrument-id continuity
     // limb reads each kept bar's vendor id, over the window the bars were loaded for (the query
     // the live runners read). The verdict of a bar reads no later bar, although this classifier
     // holds the cycle's group before it classifies the signal group. The ids are read from the
@@ -306,9 +306,9 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     }
 
     // The estimators' window reaches back W consumed bars before the first sized day: the bars
-    // before the backtest's window are judged by a classifier of their own, K-01 applied, and
-    // handed to the sleeves as history. They are no cycle: nothing is marked, sized or stored on
-    // them, and the window's own classifier and roll status start at the window as before.
+    // before the backtest's window are judged by a classifier of their own, withheld bars left
+    // out, and handed to the sleeves as history. They are no cycle: nothing is marked, sized or
+    // stored on them, and the window's own classifier and roll status start at the window.
     if (session_hold_enabled_) {
         auto seeded = seed_estimator_history(portfolio, symbols, start_date, asset_class, data_freq);
         if (seeded.is_error()) {
@@ -347,7 +347,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     current_run_id_ = generate_portfolio_run_id(strategy_names_for_id, end_date);
     INFO("Generated portfolio backtest run_id: " + current_run_id_);
 
-    // T-8D-2 R49: the id is the strategy ids and the window's end, so it is the id of any earlier
+    // The id is the strategy ids and the window's end, so it is the id of any earlier
     // run of these strategies to this end date. A storing run whose id already has rows is
     // refused here, before its first cycle: nothing of it has been stored
     // (stored_run_refusal.hpp).
@@ -441,7 +441,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                                                    "BacktestCoordinator");
             }
             if (process_result.is_error() && roll_leg_stop_) {
-                // LOOP_SPEC v6.1 section 6.5 (X-3): a leg without a usable close fails the run.
+                // A leg without a usable close fails the run.
                 ERROR(std::string(process_result.error()->what()));
                 return make_error<BacktestResults>(process_result.error()->code(),
                                                    process_result.error()->what(),
@@ -456,7 +456,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
                 }
             }
         } catch (const std::exception& e) {
-            // F-3 (section 6.5, commit 5): the exception path stops on an owed roll exactly as
+            // The exception path stops on an owed roll exactly as
             // the error return above does; it never warns and goes on with the roll un-legged.
             if (auto stop = roll_owed_stop(e.what()); stop.is_error() || roll_leg_stop_) {
                 const std::string what =
@@ -521,7 +521,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     // Sort executions by timestamp: a stable sort that keeps the stored sub-order inside a bar,
     // ROLL legs (closing, then opening, as inserted) before the bar's STRATEGY fills and the
-    // BORROW rows after them (LOOP_SPEC v6.1 section 6.5). The trade statistics do not depend on
+    // BORROW rows after them. The trade statistics do not depend on
     // it: the calculator nets these rows into the account's fills in its own stated order.
     auto type_rank = [](const ExecutionReport& e) {
         return e.execution_type == ExecutionType::ROLL       ? 0
@@ -572,7 +572,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     results.transaction_costs = cost_totals.transaction_costs;
     results.roll_costs = cost_totals.roll_costs;
     results.total_roll_fills = cost_totals.roll_fills;
-    // Rolls step 4 (ruling 18, migration 040): the split's totals, with the switch on only.
+    // Migration 040: the split's totals, with the switch on only.
     if (contract_rolls::PerContractSource::instance().enabled()) {
         const auto split = roll_series::roll_split_totals(all_executions);
         results.roll_bar_moves = split.roll_bar_moves;
@@ -638,28 +638,13 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     return results;
 }
 
-// DEAD-bt-single-strategy-path: RULING = LEAVE (stage 3, T-1, 2026-09-09).
+// Reachable only from run_single_strategy(), which no app and no test calls; every
+// backtest runner uses the portfolio path (run_portfolio_backtest).
+// run_single_strategy() is a documented public entry point (src/strategy/README.md
+// shows it as the way to backtest one strategy), and this path does what its name says.
 //
-// This function is reachable only from run_single_strategy(), which no app and
-// no test calls; the portfolio path (run_portfolio_backtest) is what every
-// backtest runner uses. So it is unreachable today, and the ledger offered
-// "leave, or class A delete of the dead overload".
-//
-// Left, for two reasons rather than inertia:
-//
-//  * run_single_strategy() is a documented public entry point -- src/strategy/
-//    README.md shows it as the way to backtest one strategy -- so deleting it
-//    removes an advertised API in a batch whose whole claim is that it changes
-//    nothing, and the deletion would have to reach into a doc as well, which
-//    this batch's commits do not do.
-//  * unlike the LivePriceManager stubs removed in the same batch, this path is
-//    not misleading: it does what its name says, and calling it would work. A
-//    stub that silently returns nothing is a trap; an unused but correct
-//    function is only unused.
-//
-// `is_warmup` is genuinely ignored inside, which is the part worth knowing if
-// this is ever revived: the caller passes it, the body does not consult it, so
-// warm-up days would be treated exactly like live days. Fix that before using
+// `is_warmup` is ignored inside: the caller passes it, the body does not consult it,
+// so warm-up days would be treated exactly like live days. Fix that before using
 // this for anything.
 Result<void> BacktestCoordinator::process_day(
     const Timestamp& timestamp, const std::vector<Bar>& bars,
@@ -723,23 +708,20 @@ Result<void> BacktestCoordinator::process_day(
                 }
             }
             if (!found_prev) {
-                // E2-F3: record the VOLUME anyway; omit only the return.
+                // Record the VOLUME anyway; omit only the return.
                 //
-                // This used to `continue`, dropping update_volume along with the log return.
                 // Today's volume is a valid, correct observation regardless of whether a
-                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
-                // 20-observation ADV window that systematically excluded Mondays for the ten
-                // agricultural/livestock symbols, which have no Sunday session while the rest
-                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
-                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
-                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
-                // purely as a function of which days got counted.
+                // prior bar exists, and ADV is what sizes market impact. Skipping the bar
+                // would leave a 20-observation ADV window that systematically excludes Mondays
+                // for the agricultural/livestock symbols, which have no Sunday session while
+                // the rest of the universe does, and a symbol near an ADV bucket boundary
+                // would change its impact coefficient purely by which days got counted.
                 //
                 // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
                 // records volume unconditionally and gates update_log_returns on
                 // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
                 //
-                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // Do NOT set `prev_close = close`. That injects a
                 // log(close/close) = 0 return -- a false observation that biases the
                 // volatility estimate downward on 1 day in 5 for the affected symbols.
                 WARN("No T-1 bar found for " + bar.symbol +
@@ -789,12 +771,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                     "BacktestCoordinator");
         }
 
-        // T-7a C4: every group enters the session classifier as it arrives, so a group is
+        // Every group enters the session classifier as it arrives, so a group is
         // classified later (as the signal group) against strictly earlier bars only.
         if (session_hold_enabled_) session_classifier_.add_bars(bars);
 
-        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): this cycle's bar group as the marks
-        // consume it. A WITHHELD bar (K-01) books no P&L and does not move the symbol's previous
+        // This cycle's bar group as the marks
+        // consume it. A WITHHELD bar books no P&L and does not move the symbol's previous
         // close, so its next consumed bar books against the last consumed close. Its verdict reads
         // no later bar, so it is the verdict the next cycle's signal feed acts on.
         mark_withheld_.clear();
@@ -809,7 +791,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // K1 (T-7b-2 8c; T-4b BT-cost-tier-warmup): before this group reaches the cost models or
+        // Before this group reaches the cost models or
         // the PortfolioManager, both cost managers are re-tiered from the 20 bars ending at the
         // PREVIOUS group, the signal bar whose close prices this cycle's fills (live re-tiers on
         // every run from the 20 bars ending at T-1), in the window-end share unit
@@ -842,18 +824,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Update transaction cost manager with market data for ADV and volatility tracking.
-        // COST-H3 (T-7b-2 8c): the futures book (own_day_cost_feed_enabled_) is fed below from the
-        // signal feed, live's basis. C8c4 (HD 2026-09-25 ruling 26): the equity book is fed its
+        // The futures book (own_day_cost_feed_enabled_) is fed below from the
+        // signal feed, live's basis. The equity book is fed its
         // SIGNAL group (T-1, the bar whose close prices this cycle's fills), with each bar's return
         // against the group fed on the previous cycle, so its 20-bar ADV and its volatility window
-        // end at T-1 as the live equity runner's do (LiveDailyCycle::feed_cost_model); it used to be
-        // fed this cycle's own group, day T, before its fills were priced (a one-bar look-ahead).
+        // end at T-1 as the live equity runner's do (LiveDailyCycle::feed_cost_model); feeding this
+        // cycle's own group, day T, before its fills are priced would be a one-bar look-ahead.
         static const std::vector<Bar> kNotFedHere;
         const std::vector<Bar>& signal_group_cost_feed =
             own_day_cost_feed_enabled_ ? kNotFedHere : portfolio_previous_bars_;
         for (const auto& bar : signal_group_cost_feed) {
             double close = static_cast<double>(bar.close);
-            // K1 (T-7b-2 8c; T-4b ADVERSARIAL A-3): an equity's volume in the window-end share
+            // An equity's volume in the window-end share
             // unit, so the ADV that scales participation is in the unit of the traded quantity and
             // of the tier's ADV (live's two ADVs are the same twenty observations).
             double volume = equity_cost_retier_enabled_
@@ -871,23 +853,20 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
             }
             if (!found_prev) {
-                // E2-F3: record the VOLUME anyway; omit only the return.
+                // Record the VOLUME anyway; omit only the return.
                 //
-                // This used to `continue`, dropping update_volume along with the log return.
                 // Today's volume is a valid, correct observation regardless of whether a
-                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
-                // 20-observation ADV window that systematically excluded Mondays for the ten
-                // agricultural/livestock symbols, which have no Sunday session while the rest
-                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
-                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
-                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
-                // purely as a function of which days got counted.
+                // prior bar exists, and ADV is what sizes market impact. Skipping the bar
+                // would leave a 20-observation ADV window that systematically excludes Mondays
+                // for the agricultural/livestock symbols, which have no Sunday session while
+                // the rest of the universe does, and a symbol near an ADV bucket boundary
+                // would change its impact coefficient purely by which days got counted.
                 //
                 // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
                 // records volume unconditionally and gates update_log_returns on
                 // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
                 //
-                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // Do NOT set `prev_close = close`. That injects a
                 // log(close/close) = 0 return -- a false observation that biases the
                 // volatility estimate downward on 1 day in 5 for the affected symbols.
                 WARN("No T-1 bar found for " + bar.symbol +
@@ -914,24 +893,26 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Use previous day's bars for signal generation
         const auto& bars_for_signals = had_previous_bars ? portfolio_previous_bars_ : bars;
 
-        // The backtest predicate (T-7a C4; T-4c J1 on the classifier): a symbol trades on this
+        // The backtest predicate: a symbol trades on this
         // cycle only when its bar in the signal group is a SESSION. A symbol with no bar there,
         // or a JUNK bar, gets no fill and no book change (the PM holds it at its filled ledger).
         std::unordered_set<std::string> signal_group_sessions;
         const std::unordered_set<std::string>* session_symbols = nullptr;
-        // LOOP_SPEC v6.1 section 2.1 (K-01, LOCKED; it supersedes T-7b-1 7a's one-cycle delayed
-        // feed): a JUNK bar and a thin first print of the signal group are WITHHELD. They leave this
+        // A JUNK bar and a thin first print of the signal group are WITHHELD. They leave this
         // cycle's feed and are never fed later, so no consumer (the strategies, the
         // PortfolioManager's history, the cost models fed below, the roll status) ever consumes
         // them, and the next consumed bar's return is taken against the last consumed close. An
-        // unconfirmed instrument-id change the classifier holds is NOT withheld: it is the change bar
-        // (section 2.2), consumed and held. Every non-SESSION symbol is held on this cycle (no fill,
-        // no book change). Warm-up included, as the hold is.
+        // unconfirmed instrument-id change the classifier holds is NOT withheld: it is the change
+        // bar, consumed and held. Every non-SESSION symbol is held on this cycle (no fill, no book
+        // change). Warm-up included, as the hold is.
         const std::vector<Bar>* signal_feed = &bars_for_signals;
         std::vector<Bar> k01_feed;
         // The symbols whose bar fed on this cycle CONFIRMED a roll, with that bar's date: their legs
-        // are booked on this cycle, once (section 6.5).
+        // are booked on this cycle, once.
         std::map<std::string, std::string> confirmed_now;
+        // The micros' changes of price source confirmed on this cycle: read as
+        // rolls by the series, never legged (no execution, no cost); logged with their gap.
+        std::map<std::string, std::string> source_changes_now;
         if (session_hold_enabled_ && had_previous_bars) {
             std::set<std::string> withheld_symbols;
             const std::vector<SymbolDayVerdict> verdicts =
@@ -961,7 +942,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     INFO("BT_JUNK_FEED withheld " + b.symbol + " " +
                          SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp)) + " " + cycle +
                          "kept out of the strategies, the PortfolioManager's history and the cost "
-                         "models; never fed later (LOOP_SPEC v6.1 section 2.1, K-01)");
+                         "models; never fed later");
                 }
                 k01_feed = std::move(k01.feed);
                 signal_feed = &k01_feed;
@@ -973,7 +954,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     SessionClassifier::ymd(SessionClassifier::day_of(bars_for_signals.front().timestamp)),
                     verdicts, {}, *signal_feed);
             }
-            // LOOP_SPEC v6.1 sections 2.1, 2.2 (D37): each symbol's roll status on its CONSUMED
+            // Each symbol's roll status on its CONSUMED
             // sequence (the bars fed this cycle; a withheld bar never walks it), one bar at a time. A
             // symbol whose LAST consumed bar is pending (a change bar, either bar of a flip, an id-less
             // bar inside a pending roll) is HELD at this rebalance: out of the session set, so the
@@ -986,8 +967,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     b.instrument_id, static_cast<double>(b.close), b.roll_from);
                 fed_now.insert(b.symbol);
                 if (signal_roll_status_[b.symbol].confirm) {
-                    confirmed_now[b.symbol] =
-                        SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp));
+                    auto& into = signal_roll_status_[b.symbol].price_source_change ? source_changes_now
+                                                                                    : confirmed_now;
+                    into[b.symbol] = SessionClassifier::ymd(SessionClassifier::day_of(b.timestamp));
                 }
             }
             for (const auto& [symbol, st] : signal_roll_status_) {
@@ -1008,16 +990,14 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // COST-H3 (T-7b-2 8c; T-VOL §4 proved the parent's order: day T's bar reached both cost
-        // managers before the book was sized on the T-1 group and filled at the T-1 close). The
-        // futures book's two managers are fed the cycle's SIGNAL feed, the bars the strategies and
-        // the PortfolioManager are fed below (a JUNK bar withheld on its cycle, as live's strategy
-        // feed withholds it), on live's basis (futures_cost_feed.hpp): each symbol's own-day volume
-        // (its signal bar's) is the impact model's only observation, and its returns walk ends at
-        // that bar. So the optimizer's cost vector and every fill's cost read what a live run with
-        // this T-1 reads, and nothing of day T.
+        // The futures book's two cost managers are fed the cycle's SIGNAL feed, the bars the
+        // strategies and the PortfolioManager are fed below (a JUNK bar withheld on its cycle, as
+        // live's strategy feed withholds it), on live's basis (futures_cost_feed.hpp): each
+        // symbol's own-day volume (its signal bar's) is the impact model's only observation, and
+        // its returns walk ends at that bar. So the optimizer's cost vector and every fill's cost
+        // read what a live run with this T-1 reads, and nothing of day T.
         if (own_day_cost_feed_enabled_) {
-            // C8c3 (HD 2026-09-25 rulings 25 and 28): the participation volume is the weekend
+            // The participation volume is the weekend
             // merge's on this cycle's fill day (futures_cost_feed.hpp, rules 1-3): a weekday
             // signal bar takes the weekend stub(s) right before it; a weekend signal bar on a
             // weekday cycle is priced on the last session before the stub(s) plus the stub(s).
@@ -1064,7 +1044,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // LOOP_SPEC section 3.1 (D19, half compounding): the book is sized on the starting capital
+        // Half compounding: the book is sized on the starting capital
         // less the drawdown of the cumulative net P&L from its running peak, never above the
         // starting capital. The settled history is the equity curve's own rows up to its LAST row,
         // the previous cycle's (this cycle's row is appended below, after its fills and its marks);
@@ -1092,10 +1072,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Section 6.5: the held book at the START of the bar, per sleeve, the quantity the roll legs
         // are booked at. The book is the FILLED one: a sleeve's target that warm-up set and no fill
         // stands behind is not held, and a roll confirmed on the first traded cycle has no leg.
-        const auto start_of_bar_book = confirmed_now.empty()
+        const auto start_of_bar_book = confirmed_now.empty() && source_changes_now.empty()
                                            ? std::unordered_map<std::string, std::unordered_map<std::string, Position>>{}
                                            : portfolio->get_filled_strategy_positions();
-        // F-3 (commit 5): the rolls owed from here until the legs are booked below (the tracker has
+        // The rolls owed from here until the legs are booked below (the tracker has
         // consumed their confirming bars); the day's catch and the run loop's read it.
         if (!is_warmup) {
             for (const auto& [symbol, confirm_date] : confirmed_now) {
@@ -1127,7 +1107,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             auto data_result = portfolio->process_market_data(*signal_feed, is_warmup, timestamp,
                                                               session_symbols);
             if (data_result.is_error()) {
-                // F-3 (section 6.5): the tracker has consumed this cycle's confirming bars, so a
+                // The tracker has consumed this cycle's confirming bars, so a
                 // cycle that returns here would leave a held symbol's roll un-legged for good. A
                 // STOP, never a loss.
                 if (!is_warmup) {
@@ -1153,11 +1133,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // LOOP_SPEC v6.1 section 6.5: the two ROLL legs of every roll the signal feed CONFIRMED on
+        // The two ROLL legs of every roll the signal feed CONFIRMED on
         // this cycle, per sleeve holding the symbol at the start of the bar, inserted ahead of this
         // bar's STRATEGY fills (stored order: closing leg, opening leg, then the fills), priced by the
         // PortfolioManager's cost model (the model the stored fills use), STRICT: a leg without a
-        // usable close fails the run (X-3). Post-warm-up only (warm-up clears every execution).
+        // usable close fails the run. Post-warm-up only (warm-up clears every execution).
         if (!is_warmup && had_previous_bars) {
             // The cost model's inputs on each ROLL_LEG line (ADV, volatility multiplier), so a reader can
             // recompute the leg's implicit cost.
@@ -1167,6 +1147,22 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 o << std::setprecision(12) << x;
                 return o.str();
             };
+            for (const auto& [symbol, confirm_date] : source_changes_now) {
+                const auto& st = signal_roll_status_.at(symbol);
+                const double points = st.change_bar_close - st.last_close_before_change;
+                const double point_value = pnl_manager_ ? pnl_manager_->get_point_value(symbol) : 1.0;
+                for (const auto& [strategy_id, book] : start_of_bar_book) {
+                    const auto held = book.find(symbol);
+                    const double q = held == book.end() ? 0.0 : static_cast<double>(held->second.quantity);
+                    INFO("PRICE_SOURCE_CHANGE " + strategy_id + " " + symbol + " date=" + confirm_date + " " +
+                         st.previous_held_id + "->" + st.held_id + " old_close=" +
+                         model_input(st.last_close_before_change) + " new_close=" +
+                         model_input(st.change_bar_close) + " qty=" + model_input(q) + " gap_points=" +
+                         model_input(points) + " gap_value=" + model_input(points * q * point_value) +
+                         ": the micro's price source changes to its own contract; no trade, no legs, "
+                         "no cost (the gap is not P&L)");
+                }
+            }
             for (const auto& [symbol, confirm_date] : confirmed_now) {
                 const auto& st = signal_roll_status_.at(symbol);
                 INFO("ROLL_CONFIRMED " + symbol + " date=" + confirm_date + " " + st.previous_held_id +
@@ -1241,7 +1237,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
             }
         }
-        cycle_rolls_owed_.clear();  // booked (or none owed): a later failure of the cycle is not F-3's
+        cycle_rolls_owed_.clear();  // booked (or none owed): a later failure of the cycle owes no roll
 
         // WARMUP HANDLING: keep equity flat, no executions
         if (is_warmup) {
@@ -1249,7 +1245,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             portfolio->clear_all_executions();
 
             // Update previous close prices for first post-warmup day (a withheld bar is never
-            // a previous close: K-01)
+            // a previous close)
             std::unordered_map<std::string, double> warmup_closes;
             for (const auto& bar : bars) {
                 if (mark_withheld_.count(bar.symbol)) continue;
@@ -1269,7 +1265,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         // POST-WARMUP: Normal trading logic
 
-        // RA-01 (T-7b-1 C7): the rebalance's applied risk scale, once per post-warmup cycle, from
+        // The rebalance's applied risk scale, once per post-warmup cycle, from
         // the PortfolioManager's own record of the call above (risk_scale_report.hpp defines each
         // field). reporter=na: the backtest has no snapshot RiskManager and stores no risk figure.
         // date = this cycle's timestamp (UTC), the date its fills and equity row carry. Log only.
@@ -1282,7 +1278,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                      : portfolio->last_risk_decisions();
             INFO(format_risk_scale_report(std::string("na"), summarize_applied_risk(this_cycle),
                                           core::format_utc_date(timestamp)));
-            // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request, from the same call's
+            // The delivered cut beside the request, from the same call's
             // measurement (risk_scale_report.hpp defines each field); an all-JUNK cycle ran no
             // rebalance and reports the empty measurement (every figure na). Log only.
             INFO(format_risk_delivered(
@@ -1313,10 +1309,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // The period's fills are reported as the PortfolioManager stored them (T-7b-3 R-2): these
+        // The period's fills are reported as the PortfolioManager stored them: these
         // reports are the rows save_portfolio_results_to_db writes to backtest.executions and the
         // costs the equity curve charges (calculate_period_transaction_costs), priced by the
-        // PortfolioManager's cost model and netted per symbol-day with that same model (K3), and
+        // PortfolioManager's cost model and netted per symbol-day with that same model, and
         // stamped with this cycle's timestamp (process_market_data's current_timestamp). They are
         // not re-priced here: a second model's costs beside the first model's netting_adjustment
         // would break "the net costs of a symbol-day sum to C(Q)" on the rows the trade statistics
@@ -1347,7 +1343,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             current_close_prices[bar.symbol] = static_cast<double>(bar.close);
         }
 
-        // T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.2, 6.6, 7): each consumed bar of this group read
+        // Each consumed bar of this group read
         // against its symbol's roll status (the trackers hold every consumed bar before it: the
         // signal feed walked them above), without moving the tracker (the next cycle's signal
         // feed walks this bar). A change bar (a roll's switch day or either bar of a flip) books
@@ -1362,7 +1358,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 roll_series::RollTracker probe = roll_trackers_[bar.symbol];
                 const auto st =
                     probe.add(bar.instrument_id, static_cast<double>(bar.close), bar.roll_from);
-                // Rolls step 3: a per-contract roll bar books the old contract's own move over
+                // A per-contract roll bar books the old contract's own move over
                 // it (to its close on the bar); only a change bar with no old close books 0.
                 if (st.change && !st.mark_close && !st.previous_close) mark_change_.insert(bar.symbol);
                 if (st.mark_close) mark_close_[bar.symbol] = *st.mark_close;
@@ -1393,32 +1389,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
 
-        // Phase 4 §1.14: build per-strategy PnL accounting method lookup so
+        // Build a per-strategy PnL accounting method lookup so
         // we can branch on REALIZED_ONLY (futures: daily MTM IS realized) vs
         // MIXED/UNREALIZED_ONLY (equities: realized_pnl only on actual close,
         // written by on_execution -- coordinator must NOT stamp realized_pnl
         // here for equities).
         std::unordered_map<std::string, PnLAccountingMethod> pnl_method_by_strategy;
-        // E2-F8: and a lookup of each strategy's OWN fill-maintained holdings, which is
+        // And a lookup of each strategy's OWN fill-maintained holdings, which is
         // where a real cost basis lives.
         //
         // The positions this loop iterates come from get_strategy_positions() ==
         // info.current_positions == the TARGET positions the strategy produced, and
         // MeanReversionStrategy::get_target_positions() sets
-        // `pos.average_price = inst_data.current_price` (mean_reversion.cpp:214) -- a MARK,
-        // not a basis. Measured: the mark implied by day D's stored unrealized equals day
-        // D+1's stored average_price on ~87% of consecutive rows, i.e. the column was a
-        // one-day mark change rather than a position-lifetime unrealized.
+        // `pos.average_price = inst_data.current_price` -- a MARK, not a basis.
         //
         // BaseStrategy::on_execution() is the sole legitimate writer of a volume-weighted
-        // basis (base_strategy.cpp:216-252) and keeps it in positions_, which
-        // get_target_positions() deliberately does NOT read. on_execution has already run
-        // for this bar by the time we get here (executions are applied ~40 lines above), so
-        // positions_ carries the post-fill basis.
+        // basis and keeps it in positions_, which get_target_positions() deliberately does
+        // NOT read. on_execution has already run for this bar by the time we get here
+        // (executions are applied above), so positions_ carries the post-fill basis.
         //
-        // This is the backtest half of the fix documented in docs/AVERAGE_PRICE_LIFECYCLE.md
-        // -- the live path closes the same gap in LiveDailyCycle::resolve_and_apply_basis
-        // (its "step 8"), and the backtest never had an equivalent.
+        // This is the backtest half of docs/AVERAGE_PRICE_LIFECYCLE.md -- the live path
+        // closes the same gap in LiveDailyCycle::resolve_and_apply_basis (its "step 8").
         //
         // Futures are unaffected: TrendFollowingStrategy::on_execution only bumps a counter
         // and never populates positions_, so the lookup misses and the basis is untouched --
@@ -1433,9 +1424,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         for (const auto& [strategy_id, positions_map] : strategy_positions) {
-            // E2-F54: the accounting method decides whether this strategy's rows carry a
-            // realized FLOW at all. Everything added below is gated on it, so futures
-            // (REALIZED_ONLY) take exactly the path they took before.
+            // The accounting method decides whether this strategy's rows carry a
+            // realized FLOW at all. The flow paths below are gated on it; futures
+            // (REALIZED_ONLY) carry none.
             auto strategy_method_it = pnl_method_by_strategy.find(strategy_id);
             const PnLAccountingMethod strategy_method =
                 (strategy_method_it != pnl_method_by_strategy.end())
@@ -1445,13 +1436,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
 
-                // E2-F54 (a): the cumulative comes from the strategy's FILL-maintained
+                // The cumulative comes from the strategy's FILL-maintained
                 // record, not the target snapshot this loop iterates. `pos` was copied
-                // before on_execution ran (~40 lines above), so `pos.realized_pnl` is
+                // before on_execution ran (above), so `pos.realized_pnl` is
                 // realized through YESTERDAY's fills -- reading it here puts a sale on the
                 // next bar.
                 //
-                // E2-F59: the ledger is advanced ONLY where the row is actually written.
+                // The ledger is advanced ONLY where the row is actually written.
                 // Three paths below return without writing (no close for this symbol, no
                 // previous close, invalid P&L); advancing before them does not defer the
                 // realized, it loses it. Hence peek here, commit at each write site.
@@ -1469,8 +1460,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 };
 
                 // Skip zero quantity positions -- unless this is the close-day row and it
-                // realized something (E2-F54 (c): the live is_dead_row rule). Futures are
-                // unaffected: under REALIZED_ONLY this is the original unconditional skip.
+                // realized something (the live is_dead_row rule). Under REALIZED_ONLY
+                // (futures) the skip is unconditional.
                 if (std::abs(qty) < 1e-8) {
                     if (strategy_method == PnLAccountingMethod::REALIZED_ONLY) continue;
                     // The exit's P&L needs somewhere to live. AVERAGE_PRICE_LIFECYCLE
@@ -1482,10 +1473,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // save_daily_positions persists that whole map once per bar. Skipping
                     // the write on a later flat bar leaves the CLOSING bar's realized
                     // sitting in the map, and it is then re-persisted every day for the
-                    // rest of the backtest -- measured on DD, whose 76.145406 exit repeated
-                    // on all 22 rows from 2026-08-03 to 2026-09-02 and made the column sum
-                    // to 137x the position's actual realized. Writing the zero lets the
-                    // persist layer's dead-row filter drop the row instead.
+                    // rest of the backtest, multiplying the column's sum. Writing the zero
+                    // lets the persist layer's dead-row filter drop the row instead.
                     const double closed_cumulative = fill_cumulative();
                     const auto closed_flow = BacktestPnLManager::realized_row_peek(
                         qty, closed_cumulative, last_cumulative_realized_[flow_key]);
@@ -1512,7 +1501,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // the PortfolioManager rebuilt this cycle keeps the sleeve's own figure (its
                 // unrounded position times its last bar's move), on a day the symbol printed no
                 // bar. The other accounting methods defer their realized flow to the next written
-                // row (E2-F59) and are not written here.
+                // row and are not written here.
                 auto write_unbooked_row = [&]() {
                     if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) return false;
                     Position unbooked = pos;
@@ -1537,7 +1526,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
                 double current_close = curr_it->second;
 
-                // Check if we have previous close (a withheld bar never becomes one: K-01)
+                // Check if we have previous close (a withheld bar never becomes one)
                 if (!pnl_manager_->has_previous_close(symbol)) {
                     if (!mark_withheld_.count(symbol)) pnl_manager_->set_previous_close(symbol, current_close);
                     write_unbooked_row();
@@ -1545,7 +1534,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
 
                 double prev_close = pnl_manager_->get_previous_close(symbol);
-                // Rolls step 3: a roll bar's move is to the old contract's close on it; the bar
+                // A roll bar's move is to the old contract's close on it; the bar
                 // that confirms a vendor switch moves from the target's close on the switch bar.
                 double move_to = current_close;
                 if (auto m = mark_close_.find(symbol); m != mark_close_.end()) move_to = m->second;
@@ -1556,7 +1545,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // Calculate PnL using BacktestPnLManager
                 auto pnl_result =
                     pnl_manager_->calculate_position_pnl(symbol, qty, prev_close, move_to);
-                // T-ROLLX-FIX (sections 2.1, 6.6): no P&L on a withheld bar (never consumed) or on a
+                // No P&L on a withheld bar (never consumed) or on a
                 // change bar (the splice's gap).
                 if (pnl_result.valid &&
                     (mark_withheld_.count(symbol) || mark_change_.count(symbol))) {
@@ -1566,7 +1555,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
-                    // Phase 4 §1.14: only stamp realized_pnl with daily MTM
+                    // Only stamp realized_pnl with daily MTM
                     // when the strategy uses REALIZED_ONLY accounting
                     // (futures). For equities (MIXED / UNREALIZED_ONLY),
                     // leave realized_pnl untouched -- on_execution writes
@@ -1577,14 +1566,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
                                                      ? pnl_method_it->second
                                                      : PnLAccountingMethod::REALIZED_ONLY;
-                    // The §1.14 branch itself lives in BacktestPnLManager::realized_for_row
-                    // so it can be asserted; the pin 7e3d07c2 claimed for it tested only the
-                    // accessor and passed with this file reverted (C-5 §9-A2).
+                    // The branch itself lives in BacktestPnLManager::realized_for_row
+                    // so it can be asserted.
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
                             method, pnl_result.daily_pnl, 0.0));
                     } else {
-                        // E2-F19 / E2-F54 / E2-F59: a per-bar FLOW, taken from the
+                        // A per-bar FLOW, taken from the
                         // fill-maintained record and computed HERE -- on the path that
                         // actually writes the row -- so a bar the symbol had no close for
                         // defers its realized to the next written row instead of losing it.
@@ -1596,11 +1584,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                         BacktestPnLManager::commit_realized_row(
                             held_cumulative, last_cumulative_realized_[flow_key]);
                     }
-                    // E2-F8: prefer the strategy's fill-maintained basis over the target
+                    // Prefer the strategy's fill-maintained basis over the target
                     // position's average_price, which for mean reversion is the day's close
                     // (a mark) rather than what the position cost. A basis of 0 means "no
                     // basis known" and is left as such -- it must never be replaced by a
-                    // mark, which is the substitution this fix exists to remove.
+                    // mark.
                     double cost_basis = static_cast<double>(pos.average_price);
                     if (method != PnLAccountingMethod::REALIZED_ONLY) {
                         auto fp_it = fill_positions_by_strategy.find(strategy_id);
@@ -1620,16 +1608,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                         // wrong, and measurably so. This position goes to
                         // PortfolioManager::update_strategy_position() -> current_positions,
                         // and RiskManager reads average_price off those as a MARK to size
-                        // notional and leverage (risk_manager.cpp:64, :236, :243). On a book
+                        // notional and leverage. On a book
                         // holding gains the basis sits below the mark, so leverage is
                         // understated, less risk scaling is applied, and positions come out
                         // bigger.
-                        //
-                        // NOTE ON EVIDENCE: an equity-backtest sizing shift of 1.29x-1.75x was
-                        // observed in the same run this was written in, and initially blamed on
-                        // this line. Reverting it did NOT restore the baseline, so this is NOT
-                        // the cause of that shift -- the reasoning below stands on the code
-                        // path alone, not on a measurement.
                         //
                         // This is exactly the ambiguity docs/AVERAGE_PRICE_LIFECYCLE.md maps:
                         // the field carries THREE meanings and risk wants the mark while P&L
@@ -1638,12 +1620,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                         // needs its OWN column -- do not reuse this one.
                     }
 
-                    // E2-F2: unrealized is gated on the SAME accounting method as
-                    // realized, and dollarised with point_value. Both were missing here:
-                    // futures rows carried the settled move a second time, divided by the
-                    // contract multiplier. The rule and the full rationale live in
-                    // BacktestPnLManager::unrealized_for_accounting -- read it before
-                    // changing this line.
+                    // Unrealized is gated on the SAME accounting method as
+                    // realized, and dollarised with point_value. The rule and the full
+                    // rationale live in BacktestPnLManager::unrealized_for_accounting --
+                    // read it before changing this line.
                     updated_pos.unrealized_pnl =
                         Decimal(BacktestPnLManager::unrealized_for_accounting(
                             method, qty, cost_basis, current_close, pnl_result.point_value));
@@ -1658,14 +1638,14 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // Update previous closes for next iteration (not from a withheld bar: K-01)
+        // Update previous closes for next iteration (not from a withheld bar)
         {
             std::unordered_map<std::string, double> consumed_closes = current_close_prices;
             for (const auto& symbol : mark_withheld_) consumed_closes.erase(symbol);
             pnl_manager_->update_previous_closes(consumed_closes);
         }
 
-        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // Accrue overnight borrow fees on open short equity
         // positions. Per-strategy attribution: iterate strategy_positions,
         // compute each strategy's borrow fee on its own shorts, both add to
         // today's transaction costs (equity curve) AND emit a synthetic
@@ -1703,7 +1683,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     borrow_exec.total_transaction_costs = Decimal(fee);
                     borrow_exec.is_partial = false;
                     portfolio->append_synthetic_execution(strategy_id, borrow_exec);
-                    // X-4: the row reaches the run's executions too (the period's fills were
+                    // The row reaches the run's executions too (the period's fills were
                     // collected before this block), so 018's transaction_costs and the metrics
                     // carry the borrow cost the equity curve charged.
                     executions.push_back(borrow_exec);
@@ -1833,7 +1813,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                     ": " + e.what() + ". Failing the run",
                                 "BacktestCoordinator");
     } catch (const std::exception& e) {
-        // F-3 (section 6.5, commit 5): an exception while a roll is owed is a STOP, as the
+        // An exception while a roll is owed is a STOP, as the
         // PortfolioManager's error return is; the run loop fails the run on roll_leg_stop_.
         if (auto stop = roll_owed_stop(e.what()); stop.is_error()) return stop;
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
@@ -1870,7 +1850,7 @@ Result<void> BacktestCoordinator::seed_estimator_history(
                                     std::string(loaded.error()->what()),
                                 "BacktestCoordinator");
     }
-    // LOOP_SPEC v6.2 section 2.1 (N-2): a bar's K-01 verdict reads the classifier's trailing
+    // A bar's withholding verdict reads the classifier's trailing
     // history, the same in every engine. The window's classifier is given the prefix the live
     // runners give theirs (live/live_roll_legs.hpp: the bars of kK01ClassifierHistoryDays
     // calendar days before the window), from the history loaded here, so the window's first bars
@@ -1880,7 +1860,7 @@ Result<void> BacktestCoordinator::seed_estimator_history(
     session_classifier_.add_bars(k01_classifier_history(loaded.value(), start_date));
     // The same rule as the live runners' (live/live_estimator_history.hpp): the history's bars are
     // judged in date order by their own classifier, with their vendor ids, each against the bars
-    // before it; the withheld ones (K-01) are never consumed.
+    // before it; the withheld ones are never consumed.
     auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
     std::vector<SymbolDayVerdict> withheld;
     const std::vector<Bar> history = estimator_history_consumed(
@@ -2021,7 +2001,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     cost_feed_previous_group_.clear();
     current_run_id_.clear();
     sleeve_previous_positions_.clear();
-    // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
+    // Without this, a second portfolio backtest in the same process opens with
     // the previous book's cumulative realized and reports its first bar as a difference.
     last_cumulative_realized_.clear();
     csv_exporter_.reset();
@@ -2033,7 +2013,7 @@ void BacktestCoordinator::load_equity_cost_retier(const std::vector<std::string>
     equity_cost_retier_.reset();
     equity_cost_retier_cycles_ = 0;
     equity_cost_retier_changes_ = 0;
-    // The first window is the cost warm-up's (equity_cost_warmup.hpp, H-13): the 30 calendar
+    // The first window is the cost warm-up's (equity_cost_warmup.hpp): the 30 calendar
     // days before start_date, ending strictly before it, so the first cycle's tier is set from
     // bars that existed when the backtest starts.
     const auto window = equity_cost_warmup_window(start_date);
@@ -2129,16 +2109,15 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
         for (const auto& [symbol, pos] : positions_map) {
             Position pos_with_date = pos;
             pos_with_date.last_update = timestamp;
-            // T-ROLLX-FIX (section 7, migration 016): the contract held after this cycle's bar.
+            // Migration 016: the contract held after this cycle's bar.
             if (const auto held = row_held_id_.find(symbol); held != row_held_id_.end()) {
                 pos_with_date.instrument_id = held->second;
             }
             positions_vec.push_back(pos_with_date);
         }
 
-        // E2-F54: a cash book keeps the close-day row so the exit's realized flow has a
-        // date to live on. Futures (REALIZED_ONLY) keep the historical filter, which drops
-        // every zero-quantity row, so their stored rows are unchanged.
+        // A cash book keeps the close-day row so the exit's realized flow has a
+        // date to live on. Futures (REALIZED_ONLY) drop every zero-quantity row.
         const bool keep_closed_rows = keeps_closed_rows(portfolio, strategy_id);
 
         if (!positions_vec.empty()) {
@@ -2417,7 +2396,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     hyperparameters["portfolio_config"] = portfolio_config;
 
     // The start is the one run_portfolio() was given; the end is the run's data boundary, the
-    // last bar it consumed (OPT-N5/N6), not the end it was asked for.
+    // last bar it consumed, not the end it was asked for.
     results_manager->set_metadata(backtest_start_date_,
                                   data_boundary(results.equity_curve, backtest_start_date_),
                                   hyperparameters, "Portfolio Backtest Run: " + portfolio_run_id,

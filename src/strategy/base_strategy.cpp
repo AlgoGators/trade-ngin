@@ -195,7 +195,7 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
 }
 
 Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
-    // T-ROLLX (LOOP_SPEC v6.1 section 6.5): a ROLL leg or a BORROW row is not a trade of the
+    // A ROLL leg or a BORROW row is not a trade of the
     // strategy: no basis arithmetic, no count, no win-rate.
     if (report.execution_type != ExecutionType::STRATEGY) return Result<void>();
 
@@ -206,16 +206,16 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         // Calculate realized PnL if closing position.
         //
-        // E2-F27 / T-OR.4: realize on the CLOSED quantity, not on the whole fill. A fill that
+        // Realize on the CLOSED quantity, not on the whole fill. A fill that
         // crosses zero -- long 100, SELL 150 -- closes 100 shares against the existing basis and
         // OPENS 50 new ones at the fill price. Multiplying the price difference by the full 150
-        // books P&L on 50 shares that were never held (measured: 3000 where the trade made 2000),
-        // and the overstatement is permanent: it lands in pos.realized_pnl and metrics_.realized_pnl,
-        // which live_results and trading.positions.daily_realized_pnl are built from.
+        // would book P&L on 50 shares that were never held, and the overstatement would be
+        // permanent: it lands in pos.realized_pnl and metrics_.realized_pnl, which live_results
+        // and trading.positions.daily_realized_pnl are built from.
         //
-        // Latent rather than live today only because MeanReversionStrategy cannot flip in a single
-        // bar and TF/TFF/TFS override on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on
-        // any non-overriding strategy reaches this path.
+        // MeanReversionStrategy cannot flip in a single bar and TF/TFF/TFS override
+        // on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on any non-overriding
+        // strategy reaches this path.
         if ((pos.quantity > 0 && report.side == Side::SELL) ||
             (pos.quantity < 0 && report.side == Side::BUY)) {
             const double closed_quantity =
@@ -276,25 +276,25 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
-        // E2-F1 / E2-F9: `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
+        // `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
         // netted into it.
         //
         // This field is persisted as trading.positions.daily_realized_pnl (via
         // LiveDailyCycle::resolve_and_apply_basis), while live_results carries costs in
-        // their own column. Netting costs here made the row net-of-cost and the aggregate
-        // net-of-commission-only, so the two reconciled against different cost bases in the
-        // same run and the row-sums-to-aggregate check could never be exact.
+        // their own column. Netting costs here would make the row net-of-cost and the
+        // aggregate net-of-commission-only, so the two would reconcile against different
+        // cost bases and the row-sums-to-aggregate check could never be exact.
         //
-        // The reporting model now mirrors futures: realized is gross, costs are a separate
+        // The reporting model mirrors futures: realized is gross, costs are a separate
         // column, and the consumer subtracts once --
         //     daily_pnl = (daily_realized_pnl - daily_transaction_costs) + daily_unrealized_pnl
         // Netting here as well would subtract them twice.
         //
         // metrics_ is deliberately left net. It is internal strategy bookkeeping, and
         // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
-        // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
+        // gross would quietly loosen a risk limit. The asymmetry
         // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
-        // The cost after netting (HD 2026-10-09), as every other total charges it.
+        // The cost after netting, as every other total charges it.
         const double net_transaction_cost = static_cast<double>(transaction_cost::net_cost(report));
         metrics_.realized_pnl -= net_transaction_cost;
         metrics_.total_pnl -= net_transaction_cost;
@@ -458,12 +458,11 @@ Result<void> BaseStrategy::check_risk_limits() {
     double drawdown = (metrics_.total_pnl / config_.capital_allocation);
     const double MIN_DRAWDOWN_THRESHOLD = 0.001;  // Only trigger if drawdown is at least 0.1%
 
-    // A breach WARNS; it does not fail the strategy (HD's ruling, STAGE3_PLAN §27/§28b item 11).
-    // Returning an error here failed on_data and every caller above it, so a drawdown past the
-    // limit stopped the strategy from updating its targets -- a kill switch nobody configured as
-    // one, reachable from realised P&L alone. Sizing and the risk modules own the response to a
-    // loss; this line makes the breach visible. Byte-identical on every stored run: no run of the
-    // gate has ever reached it (0 "Drawdown exceeds limit" lines).
+    // A breach WARNS; it does not fail the strategy. Returning an error here would fail on_data
+    // and every caller above it, so a drawdown past the limit would stop the strategy from
+    // updating its targets -- a kill switch nobody configured as one, reachable from realised
+    // P&L alone. Sizing and the risk modules own the response to a loss; this line makes the
+    // breach visible.
     if (drawdown < -static_cast<double>(risk_limits_.max_drawdown) &&
         std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
         WARN("Drawdown exceeds limit: " + std::to_string(drawdown) + " against max_drawdown " +

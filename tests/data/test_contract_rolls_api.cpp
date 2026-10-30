@@ -71,7 +71,7 @@ std::filesystem::path template_with(const std::string& key, const std::string& v
 
 }  // namespace
 
-// Rolls step 4, ruling 19: per_contract_switch_bar is "held" in both templates, "held" when absent,
+// per_contract_switch_bar is "held" in both templates, "held" when absent,
 // "vendor" when set so, refused otherwise, and not written to the stored run metadata.
 TEST(PerContractRollsSwitch, TheSwitchBarSettingIsHeldInBothTemplatesAndParsedStrictly) {
     const auto dir = template_dir();
@@ -101,18 +101,18 @@ TEST(PerContractRollsSwitch, TheSwitchBarSettingIsHeldInBothTemplatesAndParsedSt
     }
 }
 
-TEST(PerContractRollsSwitch, OffInBothTemplatesAndNotInTheStoredConfig) {
+TEST(PerContractRollsSwitch, OnInEveryFuturesTemplateAndNotInTheStoredConfig) {
     const auto dir = template_dir();
     ASSERT_FALSE(dir.empty()) << "config_template/ not found; this test must not skip";
-    for (const char* book : {"base", "conservative"}) {
+    for (const char* book : {"base", "conservative", "qt_conservative", "qt_conservative_model", "qt_e2e"}) {
         std::ifstream in(dir / "portfolios" / book / "portfolio.json");
         const nlohmann::json j = nlohmann::json::parse(in);
         ASSERT_TRUE(j.contains("per_contract_rolls")) << book;
-        EXPECT_EQ(j.at("per_contract_rolls"), false) << book;
+        EXPECT_EQ(j.at("per_contract_rolls"), true) << book;
     }
     auto loaded = ConfigLoader::load(dir, "conservative");
     ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
-    EXPECT_FALSE(loaded.value().per_contract_rolls);
+    EXPECT_TRUE(loaded.value().per_contract_rolls);
     EXPECT_FALSE(loaded.value().to_json().contains("per_contract_rolls"));
 }
 
@@ -255,4 +255,33 @@ TEST_F(ContractRollsApiDbTest, TheMicrosBeforeTheChangeAreWaitingOnData) {
     auto from_change = build_held_series(t, "MES", start.value(), d("2026-10-02"), cal);
     ASSERT_TRUE(from_change.is_ok()) << from_change.error()->what();
     EXPECT_EQ(from_change.value().days().front().held.raw_symbol, "MESH6");
+}
+
+// With ES contract bars loaded, MES's series runs from the vendor's first bar on ES contracts and
+// rolls once into MES's own on Monday 2026-02-23 (trigger alias), the two contracts of one expiry.
+TEST_F(ContractRollsApiDbTest, TheMicrosReadTheFullSizeContractsBeforeTheChange) {
+    pqxx::read_transaction t(*conn_);
+    const FuturesCalendar& cal = contract_rolls_test::shipped_calendars();
+    auto start = series_start(t, "MES");
+    ASSERT_TRUE(start.is_ok());
+    if (start.value() >= d("2026-02-22")) GTEST_SKIP() << "ES contracts are not loaded on this database";
+    auto s = build_held_series(t, "MES", start.value(), d("2026-03-06"), cal);
+    ASSERT_TRUE(s.is_ok()) << s.error()->what();
+    int alias = 0;
+    for (const auto& day : s.value().days()) {
+        if (day.date < d("2026-02-23")) {
+            EXPECT_EQ(day.held.root, "ES") << ymd(day.date);
+        } else {
+            EXPECT_EQ(day.held.root, "MES") << ymd(day.date);
+        }
+        if (day.trigger == RollTrigger::ALIAS) {
+            ++alias;
+            EXPECT_EQ(ymd(day.date), "2026-02-23");
+            ASSERT_TRUE(day.old.has_value());
+            EXPECT_EQ(day.old->raw_symbol, "ESH6");
+            EXPECT_EQ(day.held.raw_symbol, "MESH6");
+            EXPECT_EQ(day.old->expiration, day.held.expiration);
+        }
+    }
+    EXPECT_EQ(alias, 1);
 }

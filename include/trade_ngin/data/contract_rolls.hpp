@@ -17,13 +17,12 @@
 namespace trade_ngin::contract_rolls {
 
 /**
- * @brief The one call a caller makes for the per-contract roll series of a root
- *        (ROLLS_STEP1_PLAN step 2; HD's rule in contract_roll_rule.hpp).
+ * @brief The one call a caller makes for the per-contract roll series of a root (the rule is in
+ *        contract_roll_rule.hpp).
  *
- * NOT WIRED: nothing in the engine calls this yet. Step 3 (the bar source) and step 4 (the email's
- * "Currently holding X, switch to Y by <date>") will, behind portfolio.json's per_contract_rolls
- * switch (AppConfig::per_contract_rolls, off by default). Today only the unit tests and the
- * contract_rolls_dump tool call it.
+ * The bar source (per_contract_source.hpp) and the email's roll view (report_roll_view.hpp) call
+ * it, behind portfolio.json's per_contract_rolls switch (AppConfig::per_contract_rolls, off by
+ * default); so do the unit tests and the contract_rolls_dump tool.
  *
  * Per grid date the series gives: the held contract (identity and the id string of the row read),
  * its bar, the roll flag, the old contract's close on a roll bar, and the trigger (start, vendor,
@@ -50,6 +49,8 @@ public:
     const HeldSeries& series() const { return series_; }
     const std::vector<HeldDay>& days() const { return series_.days; }
     const RuleReport& report() const { return series_.report; }
+    /// The contracts the series was built on (carry reads the held contract's neighbour there).
+    const ContractBook& book() const { return *book_; }
 
     /// The held contract's dates and target on `date` (the latest grid date on or before it).
     /// An error before the series' first date, or outside the calendar.
@@ -63,8 +64,38 @@ private:
     TradingCalendar cal_;
 };
 
+/// The rows of futures_data.ohlcv_1d (aliased `o`) that are `root`'s vendor grid, as a predicate
+/// whose placeholders start at $first_param, and the values they take: `<root>.v.0`, or, for a micro
+/// whose alias reads the full-size grid before its change (MGC, SIL), `<root>.v.0` from the change
+/// and `<full_root>.v.0` before it.
+struct GridRows {
+    std::string predicate;
+    pqxx::params params;
+};
+GridRows grid_rows(const std::string& root, int first_param);
+
+/// One read of the vendor's grid: the rows of `symbol` over [from, to].
+struct GridRead {
+    std::string symbol;
+    Day from{};
+    Day to{};
+};
+/// The reads of `root`'s grid over [start, end], in date order: `<root>.v.0` over the range, or for a
+/// micro whose alias reads the full-size grid before its change, `<full_root>.v.0` to the day before
+/// the change and `<root>.v.0` from it (the second left out when the range ends before the change).
+std::vector<GridRead> root_grid_reads(const std::string& root, Day start, Day end);
+
+/// The vendor's grid of `root` over [start, end]: root_grid_reads, each read with read_vendor_grid.
+/// Read only; throws what pqxx throws.
+std::vector<VendorBar> read_root_grid(pqxx::transaction_base& txn, const std::string& root,
+                                      Day start, Day end);
+
+/// series_start's SELECT and its parameters: $1 to $3 the root the contracts are read under before the
+/// change, the change date and the root itself; grid_rows from $4.
+std::pair<std::string, pqxx::params> series_start_query(const std::string& root);
+
 /// The first grid date of `root`'s vendor series on which the contracts the series reads that day
-/// have a row (for a micro before 2026-02-22, its full-size root's). Read only.
+/// have a row (for a micro before its change, its full-size root's). Read only.
 Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
 
 /**
@@ -76,7 +107,7 @@ Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
  *
  * Errors: a root with no cycle or no futures calendar; a contract the rule needs with no expiration (named); a date
  * outside the calendar; for a micro whose range starts before 2026-02-22, no full-size contract
- * bars before the change ("waiting on data": ES, NQ, YM and RTY are not loaded yet); a database
+ * bars before the change ("waiting on data": a copy without ES, NQ, YM or RTY loaded); a database
  * error.
  */
 Result<ContractRollSeries> build_held_series(pqxx::transaction_base& txn, const std::string& root,
