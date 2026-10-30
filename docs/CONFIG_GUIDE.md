@@ -572,7 +572,7 @@ Configures the book e-mail. It is read by the Python report module
 | `password` | string | SMTP authentication password |
 | `from_email` | string | The sender address of every report; the `username` when empty or a `YOUR_` placeholder |
 | `use_tls` | boolean | On a port other than 465, `true` asks for STARTTLS and `false` sends in the clear. Absent means `true` |
-| `to_emails` | array | The To recipients of the book e-mail. The QT approvers (`QT_APPROVERS`) and `QT_MAIL_CC` go in Cc; `dhebrank@msn.com` is never mailed |
+| `to_emails` | array | The To recipients of the book e-mail. The QT approvers (`QT_APPROVERS`) and `QT_MAIL_CC` go in Cc. An address listed twice is mailed once. |
 | `enabled` | boolean | Optional. `false` turns the e-mail off: the module sends nothing and fails |
 
 A live run mails only with `--send-email`; a run with no date is refused with the usage, exit 2

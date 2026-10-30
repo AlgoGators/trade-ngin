@@ -36,15 +36,11 @@ from .daily import parse_daily_report
 from .mailer import send_message
 from .renderer import HtmlReportRenderer
 
-# Never mailed, whatever the config says.
-EXCLUDED = {"dhebrank@msn.com"}
-
-
 def _clean(addrs, seen):
     out = []
     for a in addrs:
         a = (a or "").strip()
-        if a and a.lower() not in EXCLUDED and a.lower() not in seen:
+        if a and a.lower() not in seen:
             seen.add(a.lower())
             out.append(a)
     return out
@@ -70,10 +66,11 @@ def book_recipients(settings, portfolio_dir: str, extra_cc: str = ""):
 RISK_PREFIX = "[RISK MODULE FAILED - BOOK HELD] "
 
 
-def build_email(conn, portfolio_id: str, day, flags: ReportFlags = ReportFlags()):
+def build_email(conn, portfolio_id: str, day, flags: ReportFlags = ReportFlags(),
+                strategy_id: str | None = None):
     """The rendered e-mail for the portfolio's day, from the database and the run's flags."""
     with conn.cursor() as cur:
-        cfg = data.fetch_registry(cur, portfolio_id)
+        cfg = data.fetch_registry(cur, portfolio_id, strategy_id)
         rows = data.fetch_detail_rows(cur, cfg["strategy_type"], portfolio_id, day)
     detail = build_strategy_detail(cfg, rows)
     if detail is None:
@@ -100,6 +97,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--portfolio-id", required=True)
     ap.add_argument("--date", required=True)
+    ap.add_argument("--strategy-id", help="the strategy the day is stored under (the engine's id); "
+                    "default: the portfolio's first registered strategy")
     ap.add_argument("--to", help="send to this address only (no Cc)")
     ap.add_argument("--preview-dir", help="write the HTML and images here and send nothing")
     ap.add_argument("--no-session", action="store_true",
@@ -113,7 +112,7 @@ def main(argv=None) -> int:
         day = data.report_day(args.date)
         settings = load_settings()
         with psycopg.connect(**settings.db.conninfo_kwargs(), row_factory=dict_row) as conn:
-            email = build_email(conn, args.portfolio_id, day, flags)
+            email = build_email(conn, args.portfolio_id, day, flags, args.strategy_id)
     except (data.ReportDataError, ConfigError, psycopg.Error) as exc:
         print(f"report: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

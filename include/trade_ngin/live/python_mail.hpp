@@ -38,6 +38,7 @@ inline int futures_run_exit_code(const std::optional<nlohmann::json>& risk_modul
 struct PythonMailRequest {
     std::string portfolio_id;
     std::string date;  ///< YYYY-MM-DD, the day being sent
+    std::string strategy_id;  ///< the strategy the day is stored under (combined id); may be empty
     bool no_session{false};  ///< the run found no session on the day before and carried its book
     std::string alert;       ///< the run's risk-module failure (risk_module_failure_text), or empty
     std::vector<std::string> attachments;  ///< files the run exported, as paths

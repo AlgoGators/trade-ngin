@@ -20,10 +20,10 @@ def test_to_is_the_book_list_and_the_approvers_are_cc(tmp_path):
     assert cc == ["vp@x.org", "pres@x.org"]
 
 
-def test_excluded_and_duplicate_addresses_are_never_addressed(tmp_path):
-    s = _settings(tmp_path, ["a@x.org", "DHebrank@msn.com", "A@x.org"])
+def test_duplicate_addresses_are_addressed_once(tmp_path):
+    s = _settings(tmp_path, ["a@x.org", "DHebrank@msn.com", "A@x.org", " b@x.org "])
     to, cc = book_recipients(s, "qt", extra_cc="dhebrank@msn.com, a@x.org, c@x.org")
-    assert to == ["a@x.org"]
+    assert to == ["a@x.org", "DHebrank@msn.com", "b@x.org"]  # everyone on the list is mailed
     assert cc == ["c@x.org", "vp@x.org", "pres@x.org"]
 
 
@@ -108,3 +108,39 @@ def test_symbols_lists_rows_and_names_the_roots_with_no_metadata():
     s = data.fetch_symbols(cur, ["ES", "ZZ"])
     assert s["rows"] == [{"db": "ES", "ib": "ES", "name": "E-mini S&P", "months": "HMUZ"}]
     assert s["missing"] == ["ZZ"]
+
+
+class _OneCur:
+    """A dict-row cursor answering fetchone from a list, recording the parameters."""
+
+    def __init__(self, *rows):
+        self.rows = list(rows)
+        self.params = []
+
+    def execute(self, sql, params=None):
+        self.params.append(params)
+
+    def fetchone(self):
+        return self.rows.pop(0)
+
+
+def test_the_strategy_the_engine_names_picks_the_registry_row():
+    row = {"id": 2, "strategy_type": "S2", "portfolio_id": "P", "name": "Two", "description": "",
+           "initial_equity": 1.0}
+    cur = _OneCur(row)
+    assert data.fetch_registry(cur, "P", "S2")["strategy_type"] == "S2"
+    assert cur.params[0] == {"p": "P", "s": "S2"}
+
+
+def test_an_unregistered_strategy_is_read_under_the_engines_id():
+    first = {"id": 1, "strategy_type": "S1", "portfolio_id": "P", "name": "One", "description": "",
+             "initial_equity": 1.0}
+    cfg = data.fetch_registry(_OneCur(None, first), "P", "S9")
+    assert (cfg["strategy_type"], cfg["name"]) == ("S9", "One")
+
+
+def test_no_registry_row_at_all_is_refused():
+    import pytest
+
+    with pytest.raises(data.ReportDataError):
+        data.fetch_registry(_OneCur(None, None), "P", "S9")

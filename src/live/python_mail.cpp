@@ -69,6 +69,7 @@ std::string python_mail_command(const PythonMailRequest& r, const PythonMailSett
                       " PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/mpl " + shell_quote(s.python) +
                       " -m algogators_rpc.services.report --portfolio-id " +
                       shell_quote(r.portfolio_id) + " --date " + shell_quote(r.date);
+    if (!r.strategy_id.empty()) cmd += " --strategy-id " + shell_quote(r.strategy_id);
     if (r.no_session) cmd += " --no-session";
     if (!r.alert.empty()) cmd += " --alert " + shell_quote(r.alert);
     for (const auto& path : r.attachments) {

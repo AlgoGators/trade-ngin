@@ -6129,6 +6129,7 @@ int main(int argc, char* argv[]) {
             live::PythonMailRequest mail;
             mail.portfolio_id = portfolio_id;
             mail.date = date_str;
+            mail.strategy_id = kEquityStrategyId;
             mail.test_to = live::python_mail_test_to();
             INFO("Sending the book e-mail for " + portfolio_id + " " + date_str);
             if (auto why = live::send_via_python(mail, live::python_mail_settings_from_env())) {

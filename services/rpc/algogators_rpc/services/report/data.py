@@ -21,10 +21,12 @@ class ReportDataError(RuntimeError):
     """The inputs for the report could not be read (the message is safe to log)."""
 
 
+# The portfolio's strategy: the one the engine names (--strategy-id, the id it stored the day
+# under), else the portfolio's first. A portfolio can register several (BASE_PORTFOLIO has two).
 REGISTRY_SQL = """
 SELECT id, strategy_type, portfolio_id, name, description, initial_equity
   FROM trading.strategy_registry
- WHERE portfolio_id = %s
+ WHERE portfolio_id = %(p)s AND (%(s)s::text IS NULL OR strategy_type = %(s)s::text)
  ORDER BY sort_order ASC, id ASC
  LIMIT 1
 """
@@ -146,9 +148,16 @@ def _points(rows, index):
     ]
 
 
-def fetch_registry(cur, portfolio_id: str) -> dict[str, Any]:
-    cur.execute(REGISTRY_SQL, (portfolio_id,))
+def fetch_registry(cur, portfolio_id: str, strategy_id: str | None = None) -> dict[str, Any]:
+    cur.execute(REGISTRY_SQL, {"p": portfolio_id, "s": strategy_id or None})
     row = cur.fetchone()
+    if row is None and strategy_id:
+        # The engine's strategy is not registered under that id: the portfolio's row gives the
+        # name and the capital, and the day is still read under the id it was stored under.
+        cur.execute(REGISTRY_SQL, {"p": portfolio_id, "s": None})
+        row = cur.fetchone()
+        if row is not None:
+            return {**dict(row), "strategy_type": strategy_id}
     if row is None:
         raise ReportDataError(f"portfolio {portfolio_id} is not in trading.strategy_registry")
     return dict(row)

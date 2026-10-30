@@ -63,7 +63,7 @@ TEST(PythonMailPure, TheCommandNamesTheModuleThePortfolioAndTheDayAndQuotesThem)
     EXPECT_NE(cmd.find("-m algogators_rpc.services.report"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("--date '2026-10-23'"), std::string::npos) << cmd;
     // an ordinary day: no flag, no attachment, the portfolio's own recipients
-    for (const char* absent : {"--no-session", "--alert", "--attach", "--to"}) {
+    for (const char* absent : {"--no-session", "--alert", "--attach", "--to", "--strategy-id"}) {
         EXPECT_EQ(cmd.find(absent), std::string::npos) << absent << ": " << cmd;
     }
 #ifndef _WIN32
@@ -78,7 +78,10 @@ TEST(PythonMailPure, TheRunsFlagsFilesAndTestAddressAreHandedOver) {
     r.alert = "The portfolio risk module carver could not evaluate today's book (boom).";
     r.attachments = {"/app/results/positions.csv", "", "/app/results/finalized.csv"};
     r.test_to = "someone@example.org";
+    r.strategy_id = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
     const std::string cmd = python_mail_command(r, PythonMailSettings{});
+    EXPECT_NE(cmd.find("--strategy-id"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find(" --no-session"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("--alert"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("could not evaluate today"), std::string::npos) << cmd;

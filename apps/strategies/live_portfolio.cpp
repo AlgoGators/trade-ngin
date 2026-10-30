@@ -5316,6 +5316,7 @@ int main(int argc, char* argv[]) {
                 live::PythonMailRequest mail;
                 mail.portfolio_id = portfolio_id;
                 mail.date = qt_date;
+                mail.strategy_id = combined_strategy_id;
                 mail.no_session = skip_strategy_processing;
                 if (risk_module_failure) {
                     mail.alert = risk_module_failure_text(*risk_module_failure);
