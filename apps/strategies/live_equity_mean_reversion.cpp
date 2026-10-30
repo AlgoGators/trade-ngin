@@ -130,7 +130,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // A run names its date (live/run_args.hpp, T-EMAIL P2-5): without one nothing is run and
+        // A run names its date (live/run_args.hpp): without one nothing is run and
         // nothing is sent.
         if (!use_override_date) {
             std::cerr << live::dateless_run_message(argv[0]);
@@ -146,13 +146,13 @@ int main(int argc, char* argv[]) {
         logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
-        // drift-F: a REPLAY keeps its logs under the date it replayed.
+        // A REPLAY keeps its logs under the date it replayed.
         //
-        // Retention is 10 files per prefix per directory. A 126-day chain therefore left
-        // eight logs behind and evicted the other 118 -- including every dividend-applying
-        // run and the holiday case, which are exactly the days E2's log-vs-DB reconciliation
-        // needs to read afterwards. A real-time run keeps the flat `logs/` path it always
-        // had (empty subdirectory); a dated run gets `logs/<YYYY-MM-DD>/`, so each replayed
+        // Retention is 10 files per prefix per directory, so a long replay chain in one
+        // directory would keep only its last few logs and evict the rest -- including every
+        // dividend-applying run and the holiday case, which are exactly the days a log-vs-DB
+        // reconciliation needs to read afterwards. A real-time run keeps the flat `logs/`
+        // path (empty subdirectory); a dated run gets `logs/<YYYY-MM-DD>/`, so each replayed
         // date has its own budget and no date can evict another.
         if (use_override_date) {
             logger_config.log_subdirectory = core::format_utc_date(target_date);
@@ -471,13 +471,13 @@ int main(int argc, char* argv[]) {
                 held_syms.reserve(seed_held.size());
                 for (const auto& [sym, pos] : seed_held) held_syms.push_back(sym);
 
-                // BA-2 / C-3 D1: the class-2 era test needs the start of the CURRENT
+                // The class-2 era test needs the start of the CURRENT
                 // holding, not the lifetime min(date) class 1 uses. A ticker closed years
                 // ago and re-bought last month otherwise satisfies the era test for an
                 // alias from the previous issuer's lifetime and gets re-keyed onto a
-                // symbol with no bars. Measured on this book on 2026-09-03: META's
-                // lifetime inception is 2026-06-11, its current holding began 2026-07-31.
-                // BA-19: bounded at the run's own T-1. Rows dated after it can only come
+                // symbol with no bars. (On this book META's lifetime inception is
+                // 2026-06-11 and its current holding began 2026-07-31.)
+                // Bounded at the run's own T-1. Rows dated after it can only come
                 // from an interrupted reset or an abandoned replay, and either shape moves
                 // the rename era silently -- see the header.
                 auto holding_start = db->get_current_holding_start_dates(
@@ -525,12 +525,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Phase 2 leverage guardrail (audit §3.3): CASH-mode equities cannot
+        // Leverage guardrail: CASH-mode equities cannot
         // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
         // can't borrow, so a leverage cap above 1.0 is structurally invalid.
-        // The optimizer is hard-coded off below (HD 2026-09-01). A config that says
+        // The optimizer is hard-coded off below. A config that says
         // otherwise is a contradiction, and silently winning it would leave the operator
-        // believing a setting that does nothing. Silent on today's config, which says false.
+        // believing a setting that does nothing. Silent on a config that says false.
         if (auto optimizer_guard =
                 apps::refuse_if_optimizer_requested(app_config.use_optimization);
             optimizer_guard.is_error()) {
@@ -603,15 +603,14 @@ int main(int argc, char* argv[]) {
         portfolio_config.total_capital = initial_capital;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
-        // Mean reversion does NOT use dynamic optimization (HD, 2026-09-01). The optimizer
+        // Mean reversion does NOT use dynamic optimization. The optimizer
         // is a trend-following construct -- position-buffered contract optimization over a
         // futures universe -- and it cannot even see this strategy: PortfolioManager
-        // populates its symbol data only for TrendFollowingStrategy
-        // (portfolio_manager.cpp:993), so every equity symbol fell through to a flat 0.01
-        // weight (the true weight is price/capital, wrong by 1.4x-7.7x) and zero cost
-        // against a cost penalty of 50 -- 30,692 "not found in trading data" warnings in a
-        // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
-        // agree rather than optimising on values it made up.
+        // populates its symbol data only for TrendFollowingStrategy, so every equity
+        // symbol would fall through to a flat 0.01 weight (the true weight is
+        // price/capital) and zero cost against a cost penalty of 50, with a "not found in
+        // trading data" warning each time. bt_equity_mean_reversion.cpp disables it too,
+        // so live and backtest agree.
         portfolio_config.use_optimization = false;
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         portfolio_config.covariance_stale_dates = app_config.covariance_stale_dates;
@@ -640,7 +639,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Configure mean reversion parameters from config via the shared builder so
-        // live and backtest construct the strategy identically (review T-OR.5).
+        // live and backtest construct the strategy identically.
         trade_ngin::MeanReversionConfig mean_rev_config =
             trade_ngin::apps::build_mean_reversion_config(mr_cfg);
 
@@ -793,31 +792,29 @@ int main(int argc, char* argv[]) {
         }
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
-        // Data-freshness guard (review T2.9): the newest bar actually loaded for our
+        // Data-freshness guard: the newest bar actually loaded for our
         // symbols tells us how current the feed is. If it lags end_date by more than
         // the configured tolerance, the run is on stale data -- WARN in historical-
         // replay mode, ERROR (refuse) in true-live mode. (Computed from the loaded
         // bars rather than a separate query: symbol-scoped and no extra round-trip.)
         //
-        // BA-12: measured from the STALEST symbol, not the freshest. This used to take
-        // the global max bar timestamp, so one symbol printing today reported the whole
-        // feed current however far behind the other 851 were -- a guard that cannot
-        // fail is not a guard. It also skipped entirely on an empty load and measured
-        // in instants rather than calendar days.
-        // Annualization anchor (E2-F32). trading.get_trading_days() takes its start
+        // Measured from the STALEST symbol, not the freshest: one symbol printing today
+        // would otherwise report the whole feed current however far behind the others
+        // are, and a guard that cannot fail is not a guard. The lag is counted in
+        // calendar days.
+        // Annualization anchor. trading.get_trading_days() takes its start
         // date from strategy_trading_days_metadata and only falls back to MIN(date)
         // over live_results when NO row exists -- so a metadata row dated after the
         // book's own first day is worse than no row at all, and the function cannot
-        // notice because it stops looking the moment it finds one. Measured on this
-        // book: anchor 2026-07-24 against a book starting 2026-04-01 gave 1 trading
-        // day for 115 of 126 rows and annualized -3.5 % into -1674 % on 07-27. The
-        // run exited 0 and stored it.
+        // notice because it stops looking the moment it finds one: an anchor months
+        // after the book's start gives 1 trading day for every row before it and
+        // annualizes a small return into a number with no meaning.
         //
         // The check is one comparison the function cannot make. On a mismatch the
         // runner WARNs and leaves the count as the function computed it: the metadata
         // row is authoritative and bad data is corrected in the data.
         // The book's start date as its metadata row gives it (empty when it could not be read):
-        // the daily report's footer prints it (T-8D-2 R59).
+        // the daily report's footer prints it.
         std::string book_live_start_date;
         {
             auto anchor_q = db->execute_query(
@@ -907,10 +904,10 @@ int main(int argc, char* argv[]) {
             // unpriced and is carried unpriceable (E2-F34).
             const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
 
-            // The arms are the shared ruling's (live/data_freshness.hpp, rule_feed_freshness; HD
-            // 2026-10-10): an empty feed refuses every run; a requested symbol with no bar and a
-            // feed staler than the tolerance refuse a run with no date. A dated run goes on: its
-            // book stops only for what it HOLDS, and the held-symbol check below names them.
+            // The arms are rule_feed_freshness's (live/data_freshness.hpp): an empty feed refuses
+            // every run; a requested symbol with no bar and a feed staler than the tolerance refuse
+            // a run with no date. A dated run goes on: its book stops only for what it HOLDS, and
+            // the held-symbol check below names them.
             const auto freshness_ruling = rule_feed_freshness(freshness, tolerance_days, as_of_ymd,
                                                               use_override_date, "Equity");
             for (const auto& line : freshness_ruling.warnings) WARN(line);
@@ -938,22 +935,18 @@ int main(int argc, char* argv[]) {
         }
 
         // Register tier-appropriate equity cost configs using actual recent
-        // ADV per symbol from the bars we just loaded. Closes audit §1.1:
-        // before this, unconfigured equities fell through to the futures
-        // default ($1.50/share commission, point_value=100).
+        // ADV per symbol from the bars we just loaded. Unconfigured equities
+        // would otherwise fall through to the futures default ($1.50/share
+        // commission, point_value=100).
         //
-        // E2-F62: registering the tier is only half of what the cost model needs. The
+        // Registering the tier is only half of what the cost model needs. The
         // tier supplies the spread ticks and the impact caps; the ADV the impact model
         // DIVIDES BY, and the volatility that widens the spread, live in two separate
-        // deques that only update_market_data fills. This runner never called it -- the
-        // only runner in the tree that did not -- so every live equity fill was priced
-        // against transaction_cost_manager.cpp's fallbacks (adv = 100000 at :33,
-        // vol_mult = 1.0 at :37) instead of the symbol's real ~5.4 M ADV: participation
-        // 54x too high, the 40 bps impact bucket where the truth is 10, spread never
-        // widened by realised vol. Measured on the 2026-04-01..21 window before this
-        // fix, that is +8.6 % of transaction cost against what the backtest predicts
-        // (5.947 bps vs 5.477 bps of identical notional, D-4 6.7), and it grows with
-        // clip size because the error is in the participation rate.
+        // deques that only update_market_data fills. Without this feed every equity fill
+        // would be priced against transaction_cost_manager.cpp's fallbacks (adv = 100000,
+        // vol_mult = 1.0) instead of the symbol's real ADV (about 5.4 M): participation
+        // far too high, the wrong impact bucket, a spread never widened by realised vol,
+        // and an error that grows with clip size because it is in the participation rate.
         //
         // Fed from the SAME bars the tier is registered from, so the ADV that picks the
         // tier and the ADV that scales the impact are the same twenty observations
@@ -998,26 +991,21 @@ int main(int argc, char* argv[]) {
         }
 
 
-        // E2-F14: extract T-1/T-2 prices keyed on the trading day we just resolved, NOT on
+        // Extract T-1/T-2 prices keyed on the trading day just resolved, NOT on
         // `now - 24h`.
         //
-        // This call used to sit ~70 lines above, before `previous_date` existed, and passed
-        // only `now`. LivePriceManager then derived T-1 as `now - 24h` with no fallback,
-        // while the book being finalized came from find_previous_trading_day(). On a Sunday
-        // or Monday run those disagree -- the book says FRIDAY, the price lookup asks for
-        // Saturday/Sunday, and equities_data.ohlcv_1d has no weekend rows -- so an
-        // already-finalized Friday was re-finalized against an empty price map and its
+        // The book being finalized comes from find_previous_trading_day(). Given only
+        // `now`, LivePriceManager would derive T-1 as `now - 24h` with no fallback, and on a
+        // Sunday or Monday run the two disagree -- the book says FRIDAY, the price lookup
+        // asks for Saturday/Sunday, and equities_data.ohlcv_1d has no weekend rows -- so an
+        // already-finalized Friday would be re-finalized against an empty price map and its
         // position rows overwritten with 0/0 by the store_positions call in STEP 1, which
         // runs outside the `yesterday_total_pnl != 0.0` gate that protects live_results.
-        //
-        // Measured on the 2026-07-24..08-04 weekend-inclusive replay: Sat 08-01 correctly
-        // finalized Friday at $864.759444, then Sun 08-02 and Mon 08-03 each re-zeroed it.
-        // L5 residual was -864.7594 on 07-31 and -14.6574 on 07-24, 0.0000 elsewhere.
         //
         // Passing the resolved date makes the two lookups agree by construction and makes
         // re-finalization idempotent. Futures is unaffected: both futures runners pass no
         // t1_date and their own book lookup is `now - 24h`, the same value this defaults to.
-        // Do NOT move this call back above the resolution, and do NOT "simplify" it by
+        // Do NOT move this call above the resolution, and do NOT "simplify" it by
         // dropping the argument.
         {
             auto price_update_result = price_manager->update_from_bars(all_bars, now, previous_date);
@@ -1033,8 +1021,7 @@ int main(int argc, char* argv[]) {
         std::ostringstream today_oss;
         today_oss << std::put_time(now_tm, "%Y-%m-%d");
         std::string today_date_str = today_oss.str();
-        // T-OR.3: one predicate, in a testable place. This was five inline copies of the
-        // weekend/holiday test and nothing covered any of them.
+        // One predicate for the weekend/holiday test, in a testable place.
         const bool today_is_non_trading =
             LiveDailyCycle::is_non_trading_day(*now_tm, holiday_checker);
 
@@ -1176,7 +1163,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // THE HELD-SYMBOL FEED CHECK (T-DATED R2; HD 2026-10-10), the futures runners' rule through
+        // THE HELD-SYMBOL FEED CHECK, the futures runners' rule through
         // the same functions (live/session_book_gate.hpp): a HELD symbol whose newest bar is more
         // than live.data_staleness_tolerance_days before the run's as-of date, or that has no bar at
         // all, refuses the run when the run date is the host's own date and is a warning when the
@@ -1206,21 +1193,19 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // T-DATED R5 (HD 2026-10-10): written HERE, below the guards that refuse before anything
+        // Written HERE, below the guards that refuse before anything
         // of the day is stored (config, calendar, bars, feed freshness, the missed-run guard and
         // the held-symbol feed check), as the futures runners do: a refused run leaves no row.
-        // Per-run provenance: what this run was configured with. The futures runners have
-        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
-        // did, so trading.live_run_metadata held 245 futures rows and nothing for
-        // equities. Nothing reads this table -- it exists so a past run's allocations and
+        // Per-run provenance: what this run was configured with, as the futures runners
+        // write it. Nothing reads this table -- it exists so a past run's allocations and
         // config can be reconstructed after the fact, which is exactly what you want when
         // a number from months ago has to be explained.
         //
-        // T-8D-2 R48: the row is BUILT here, from the run's configuration as it stands here, and
+        // The row is BUILT here, from the run's configuration as it stands here, and
         // WRITTEN at the first point below where the run stores anything else (directly above the
         // corp-action unit of work, or below the class-1 block on a run that persists no
         // adjustment). The corp-action refusals between here and there (the dedup record, the
-        // spinoff deal terms, the E2-F15 and E2-F17 frame guards) then leave no row either. It
+        // spinoff deal terms, the two price-frame guards) then leave no row either. It
         // is still the run's first write.
         trade_ngin::DeferredRunRecord run_metadata_row;
         {
@@ -1230,7 +1215,7 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;
-            // The sessions a year this run's statistics are annualised with (LOOP_SPEC 7.5.1).
+            // The sessions a year this run's statistics are annualised with.
             portfolio_config_json[trade_ngin::kStatisticsKKey] =
                 app_config.statistics.equity_sessions_per_year;
 
@@ -1286,10 +1271,9 @@ int main(int argc, char* argv[]) {
         // The corp-action blocks below mutate `previous_positions` IN PLACE (non-const ref
         // by design -- see AVERAGE_PRICE_LIFECYCLE.md step 2). The Day T-1 finalization then
         // builds its input from that same map and writes the result back at the T-1 DATE, so
-        // the post-action quantities and basis landed on a row for a day the action had not
-        // yet happened. Measured: a position seeded at 10 @ 4194.31 on 2026-04-02 came back
-        // as 250 @ 167.7724 on 2026-04-02 after the 2026-04-06 split was applied -- history
-        // restated four days before the ex-date.
+        // without this snapshot the post-action quantities and basis would land on a row for
+        // a day the action had not yet happened (a 25:1 split's 10 shares stored as 250 on a
+        // date before the ex-date).
         //
         // For a split that is "only" falsified quantity history, since notional is
         // preserved. For a DIVIDEND it is worse: the basis changes without notional being
@@ -1334,7 +1318,7 @@ int main(int argc, char* argv[]) {
         // Booking it here touches NO shared file, so the futures binaries are unchanged by
         // construction rather than by argument.
         double corp_action_realized_total = 0.0;
-        // E2-F19 (R4): the same deltas, per symbol, so the terminated symbol's day-T
+        // The same deltas, per symbol, so the terminated symbol's day-T
         // ROW carries what the aggregate carries. Filled under the identical gate as
         // corp_action_realized_total so the two can never disagree about which events
         // were recognised.
@@ -1369,9 +1353,7 @@ int main(int argc, char* argv[]) {
         //
         // Class 1 PRICE_RESTATING (splits, ADR ratios, spin-offs, dividends):
         //   sourced from the per-bar div_cash / split_factor columns on
-        //   equities_data.ohlcv_1d -- current and never restated. (Until
-        //   Phase 4.3 this read equities_data.corporate_action, whose feed
-        //   stopped on 2025-08-29, so the applier silently saw zero events.)
+        //   equities_data.ohlcv_1d -- current and never restated.
         // Class 2 SERIES_CONTINUITY (ticker renames): equities_data.ticker_aliases.
         // Class 3 TERMINATION (mergers, acquisitions, delistings): exit timing
         //   from ohlcv_1d.delisting_date; deal terms still only from the frozen
@@ -1381,34 +1363,31 @@ int main(int argc, char* argv[]) {
         // Class 4 INFORMATIONAL: no handler.
         //
         // Adjustments land BEFORE the strategy generates today's targets.
-        // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
+        // See docs/CORP_ACTIONS_DATA_BOUNDARY.md.
         // ========================================
         // Position inception is read in the class-1 block below and is CLASS 1's alone:
         // it is min(date) over all history and fails wide, which is right for a price
         // window and wrong for an era test. Class 2 reads its own dates -- the start of
-        // the CURRENT holding, up with the effective universe (BA-2).
+        // the CURRENT holding, up with the effective universe.
 
         if (!previous_positions.empty()) {
             // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
             // constant and never from last_update.
             //
-            // A fixed 14-day window silently dropped every event older than it:
-            // live last wrote 2026-05-03, and of the 9 dividends the configured
-            // universe has seen since, 8 fall outside 14 days. A dropped
+            // A fixed window would silently drop every event older than it, and
+            // after a gap in live runs most of the universe's dividends fall
+            // outside any short window. A dropped
             // dividend leaves cost basis in the pre-dividend frame against a
             // post-dividend mark, and because dividend income is deliberately
             // informational-only, that value is simply lost from P&L --
             // permanently, since no later event repairs a basis.
             //
-            // Widening to a bigger constant is not sufficient either: a book can
-            // outlive any constant (the live futures book already spans 459
-            // days). Neither is deriving from previous_positions.last_update --
-            // load_positions_by_date() selects WHERE DATE(last_update) =
-            // DATE($n), so every row it returns carries the requested date by
-            // construction (the table has zero rows where last_update differs
-            // from date). That derivation always collapsed to "yesterday",
-            // leaving the effective window at the 14-day floor it was meant to
-            // replace. The window is therefore derived from when positions were
+            // A bigger constant is not sufficient either: a book can
+            // outlive any constant. Neither is deriving from
+            // previous_positions.last_update -- load_positions_by_date() selects
+            // WHERE DATE(last_update) = DATE($n), so every row it returns carries
+            // the requested date by construction and the derivation collapses to
+            // "yesterday". The window is therefore derived from when positions were
             // actually ESTABLISHED, via position history.
             //
             // A holding older than the bulk price load does not truncate the
@@ -1417,10 +1396,9 @@ int main(int argc, char* argv[]) {
             // full-universe adjusted-series query). Only a symbol with no bars
             // at all is unrecoverable, and that errors loudly.
             //
-            // Safe only because dedup is now durable in trading.corp_action_applied
-            // (migration 002) rather than a JSON file under a container path with
-            // no volume, where state loss was the default: an over-wide window
-            // costs query time, never a double-applied event.
+            // Safe only because dedup is durable in trading.corp_action_applied
+            // (migration 002): an over-wide window costs query time, never a
+            // double-applied event.
             auto today_t = std::chrono::system_clock::to_time_t(now);
 
             constexpr long kSecondsPerDay = 24 * 60 * 60;
@@ -1876,18 +1854,18 @@ int main(int argc, char* argv[]) {
                 // value = child shares per parent share. Verified 5/5 against the real
                 // distributions (GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5,
                 // MMM/SOLV 0.25). NEVER inferred from the magnitude of the step: that is
-                // exactly the provenance rule E2-F9 exists to enforce, and a 1.327 split
+                // exactly what the provenance rule forbids, and a 1.327 split
                 // factor is perfectly plausible as a real split.
                 //
                 // This table is frozen after 2025-08-29, so a spinoff AFTER that date is not
                 // detectable at all and still takes the mangling path. That is data-blocked,
-                // not code-blocked, and the tripwire for it is E2-F41's class-1-row check.
+                // not code-blocked, and the tripwire for it is the class-1-row check below.
                 //
-                // E2-F49: a VECTOR per key, not a scalar. Fifteen (parent, ex-date) pairs in
+                // A VECTOR per key, not a scalar. Fifteen (parent, ex-date) pairs in
                 // this table carry more than one `spinoff` row -- RTX 2020-04-03 delivers
                 // OTIS 0.5 AND CARR 1.0, HLT 2017-01-04 delivers PK 0.6 AND HGV 0.33333 --
-                // and a map to one (child, ratio) let the last row read overwrite every
-                // earlier one, so one arbitrary child was delivered and the rest were never
+                // and a map to one (child, ratio) would let the last row read overwrite every
+                // earlier one, so one arbitrary child would be delivered and the rest never
                 // created at all.
                 std::map<std::pair<std::string, std::string>,
                          std::vector<std::pair<std::string, double>>>
@@ -1942,7 +1920,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // ---- E2-F41: a class-1 deal-terms row the per-bar feed does not carry ----
+                // ---- A class-1 deal-terms row the per-bar feed does not carry ----
                 //
                 // Class-1 effects are sourced PER BAR: everything in this block reads
                 // ohlcv_1d.split_factor and ohlcv_1d.div_cash, never corporate_action.value.
@@ -1955,8 +1933,8 @@ int main(int argc, char* argv[]) {
                 // says split_factor 1 and div_cash 0 and the close fell 127.25 -> 121.94.
                 // Universe-wide since 2020 the class is 99 rows -- 87 dividends, 5 spinoff +
                 // 5 spinoffdividend pairs, 1 adrratiosplit and 1 split -- and the ten-symbol
-                // book hides every one of them. Nothing here CHANGES: the applier still has no
-                // input to act on. What changes is that the run says so.
+                // book hides every one of them. The applier has no input to act on; this block
+                // makes the run say so.
                 //
                 // Scoped to symbols actually HELD, over the same window the per-bar fetch
                 // used, so it costs one indexed read and can only speak about positions this
@@ -2453,7 +2431,7 @@ int main(int argc, char* argv[]) {
                             const auto& bar_columns = bar_it->second;
                             const double F = bar_columns.spinoff_factor();
 
-                            // E2-F50: has the coincident reverse split ALREADY been applied?
+                            // Has the coincident reverse split ALREADY been applied?
                             //
                             // A refused distribution writes no dedup row, so it retries every
                             // run -- but the reverse split it was decomposed from is NOT
@@ -2543,14 +2521,14 @@ int main(int argc, char* argv[]) {
                     if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
                     if (!seen_in_batch.emplace(row.ticker, row.date_str, type).second) continue;
 
-                    // E2-F15 HORIZON GATE: only apply an event the PRICE SERIES already knows
+                    // HORIZON GATE: only apply an event the PRICE SERIES already knows
                     // about.
                     //
                     // The applier's real contract is "restate the basis into the frame the
                     // price series is already in". Two windows made that false: the event
                     // fetch reads split_factor / div_cash from the ex-date bar ROW and so
                     // spans day D, while the bar load ends at the last completed session on a
-                    // replay (`end_date = now - 24h`, :226). build_equity_adjusted_query
+                    // replay (`end_date = now - 24h`). build_equity_adjusted_query
                     // back-adjusts a bar by the steps of every LATER bar, so with the ex-date
                     // bar outside the window there is no step to apply and the closes stay
                     // raw -- correctly, given what it was given.
@@ -2577,7 +2555,7 @@ int main(int argc, char* argv[]) {
                     // DO NOT "fix" this by rescaling the price maps instead. previous_day_ and
                     // two_days_ago_close_prices are also the inputs to finalize_previous_day,
                     // which marks previous_positions_pre_action -- the deliberately
-                    // un-restated T-1 snapshot from 8a1a96ef. Rescaling them restates Day T-1
+                    // un-restated T-1 snapshot. Rescaling them restates Day T-1
                     // by the ratio and trades a $1M error for a $40k one.
                     {
                         auto lb = last_bar_date.find(row.ticker);
@@ -3287,11 +3265,11 @@ int main(int argc, char* argv[]) {
                              ") -- the ticker is trading, so the row belongs to a prior issuer");
                         continue;
                     }
-                    // E2-F15 (DEFERRED, logged): if this symbol also had a class-1 event applied
+                    // DEFERRED, logged: if this symbol also had a class-1 event applied
                     // on THIS run, its basis is post-event while final_closes is seeded from
                     // the pre-event price map, so realized_delta would be computed across two
                     // frames. Rare -- it needs a class-1 event and a termination on the same
-                    // run date -- and deferred by HD. See E2_FINDING_15 section 10.
+                    // run date -- so it is logged and not handled.
                     TerminationEvent ev;
                     ev.symbol = symbol;
                     ev.event_date = delist_date;
@@ -3373,12 +3351,11 @@ int main(int argc, char* argv[]) {
             if (!terminations.empty()) {
                 // A terminating symbol is, by definition, one that has STOPPED trading, so
                 // it cannot be in previous_day_close_prices -- that map is built from the
-                // run date's T-1 bar, and a delisted name has no bar there. Handing it in
-                // alone meant every termination took the SKIPPED_NO_PRICE branch and the
-                // position was left dangling with "operator review required", even though
+                // run date's T-1 bar, and a delisted name has no bar there. Handed that map
+                // alone, every termination would take the SKIPPED_NO_PRICE branch and the
+                // position would be left dangling with "operator review required", even though
                 // the final close sits in the database (DFS: 200.05 on its last bar,
-                // 2025-05-16). The data was never missing; the lookup was asking the wrong
-                // question (E2-F10).
+                // 2025-05-16).
                 //
                 // So: start from the T-1 map, then for any terminating symbol still absent,
                 // fall back to its LAST REAL CLOSE. Same principle as the execution price
@@ -3639,9 +3616,9 @@ int main(int argc, char* argv[]) {
             }
             INFO("Portfolio processing completed");
 
-            // E2-F43 (BA-17): prove the strategy ACTUALLY INGESTED today's bars.
+            // Prove the strategy ACTUALLY INGESTED today's bars.
             //
-            // PortfolioManager::process_market_data (portfolio_manager.cpp:217-222) calls
+            // PortfolioManager::process_market_data calls
             // strategy->on_data(data), and when that returns an error it LOGS the error and
             // carries straight on to get_target_positions() against un-updated instrument
             // data. For MeanReversion that yields the previous cycle's targets -- or, from a
@@ -3649,10 +3626,9 @@ int main(int argc, char* argv[]) {
             // for every symbol. Zero targets on a held book is not "no change": it is a
             // full-book SELL, generated from a strategy that never saw a price.
             //
-            // Until E2-F28 the first of the two feeds returned that error to the runner and
-            // the run exited 1. Collapsing to the single feed removed the last caller that
-            // checked, so the failure mode became silent. It is unreachable on valid bars
-            // today (start() precedes this, and MeanReversion::on_data has no failing branch
+            // Nothing else returns that error to the runner, so the failure would be silent.
+            // It is unreachable on valid bars
+            // (start() precedes this, and MeanReversion::on_data has no failing branch
             // once RUNNING), which is exactly why it needs an assertion rather than a hope:
             // one added throw, one strategy without on_data's early-return contract, and the
             // book is liquidated with an ERROR line in the log and exit code 0.
@@ -3783,36 +3759,35 @@ int main(int argc, char* argv[]) {
 
             // Convert map to vector for PnLManager.
             // Sourced from the PRE-corp-action snapshot: Day T-1 is finalized as the book
-            // actually stood on T-1. Using the mutated `previous_positions` here wrote the
+            // actually stood on T-1. Using the mutated `previous_positions` here would write the
             // post-action quantities and basis onto the T-1 row, restating a day before the
             // ex-date (see the snapshot's comment above).
             //
-            // E2-F15: that is right ONLY while the event's ex-date is AFTER T-1. When a
+            // That is right ONLY while the event's ex-date is AFTER T-1. When a
             // DEFERRED event is catching up -- ex_date <= T-1 -- the T-1 close is already
-            // post-event, so finalizing the pre-action book marks a pre-event basis against a
-            // post-event price. Measured: BKNG's 2026-04-06 row took
-            // `1.200601 * (176.19 - 4194.31) = -4824.16` of phantom unrealized, dropping the
-            // equity curve to 95,080.29 for that day. It does NOT self-correct -- running
-            // 04-08 and 04-09 left the 04-06 row unchanged.
+            // post-event, so finalizing the pre-action book would mark a pre-event basis
+            // against a post-event price (for BKNG's 25:1 split,
+            // `1.200601 * (176.19 - 4194.31) = -4824.16` of phantom unrealized on the ex-date
+            // row), and no later run corrects it.
             //
             // So pick per symbol: the RESTATED book where a deferred event has now been
             // applied for a date on or before T-1, the pre-action snapshot everywhere else.
             //
             // NOTE ON REACHABILITY, so nobody reads more discrimination into this than it has.
-            // The E2-F15 gate only admits an event when `ex_date <= last_bar_date`, and the
+            // The horizon gate only admits an event when `ex_date <= last_bar_date`, and the
             // loaded series never reaches past T-1 under the lag model, so every APPLIED
             // class-1 event necessarily satisfies `ex_date <= T-1`. The predicate below is
             // therefore true for every symbol carrying an applied event today, and the
             // pre-action snapshot survives only for symbols with NO event -- which is the
-            // overwhelming majority and the case 8a1a96ef was actually about.
+            // overwhelming majority and the case the snapshot exists for.
             //
-            // 8a1a96ef's protection is NOT weakened by that. Its regression was an event with
+            // The snapshot's protection is NOT weakened by that. It guards against an event with
             // `ex_date == today` applying and restating T-1, a day before its own ex-date.
-            // The gate now defers exactly that event, so the situation cannot arise upstream
+            // The gate defers exactly that event, so the situation cannot arise upstream
             // of here. The predicate is kept explicit rather than assumed: it states the rule
             // that makes this correct, and keeps it correct if the gate's horizon ever moves.
             //
-            // E2-F19 gap G4: the restated book is the POST-CLASS-1, PRE-LIFECYCLE
+            // The restated book is the POST-CLASS-1, PRE-LIFECYCLE
             // snapshot, not the fully mutated map -- a symbol that also terminated or
             // was renamed this run would otherwise be finalized onto T-1 as a qty-0 row
             // carrying a day-T cash flow. The rule lives in
@@ -4058,15 +4033,15 @@ int main(int argc, char* argv[]) {
         // Feed executions back to strategy for cost basis tracking.
         // BaseStrategy::on_execution() maintains weighted average_price and realized_pnl.
         //
-        // E2-F11: corporate-action exits are EXCLUDED. They are synthetic accounting entries,
+        // Corporate-action exits are EXCLUDED. They are synthetic accounting entries,
         // not fills the strategy should learn a basis from, and feeding them in corrupts its
         // book.
         //
         // The mechanism: apply_terminations sets pos.quantity = 0 BEFORE the strategy is
         // seeded from that same map, so by the time on_execution sees the exit the strategy
-        // holds ZERO of the symbol. Its realized branch (base_strategy.cpp:197-199) requires a
+        // holds ZERO of the symbol. Its realized branch (BaseStrategy::on_execution) requires a
         // position on the opposite side of the fill, so it books nothing -- and then the
-        // `else` at :237-251 treats the SELL as OPENING A SHORT, leaving the strategy holding
+        // `else` branch treats the SELL as OPENING A SHORT, leaving the strategy holding
         // a phantom -qty_before position in a delisted symbol at the exit price.
         //
         // It is invisible today: this runs after signal generation, and the zero-quantity
@@ -4076,7 +4051,7 @@ int main(int argc, char* argv[]) {
         // it. The realized P&L these exits lock in reaches the aggregate through
         // corp_action_realized_total instead, which is the correct route.
         for (const auto& exec : daily_executions) {
-            // T-ROLLX (section 6.5): a non-STRATEGY row (a ROLL leg; none on this book today) never
+            // A non-STRATEGY row (a ROLL leg; none on this book today) never
             // reaches on_execution, as the corp-action exit below does not.
             if (exec.execution_type != ExecutionType::STRATEGY) continue;
             if (exec.order_id.rfind("CORPACTION_", 0) == 0) {
@@ -4146,9 +4121,9 @@ int main(int argc, char* argv[]) {
                  std::to_string(positions.at(symbol).realized_pnl.as_double()));
         }
 
-        // E2-F19 (R4): a termination's realized P&L reaches the aggregate through
+        // A termination's realized P&L reaches the aggregate through
         // corp_action_realized_total; the synthetic exit is deliberately kept out of
-        // on_execution (E2-F11), so nothing put it on the symbol's row. Add it here,
+        // on_execution, so nothing put it on the symbol's row. Add it here,
         // once, after resolve_and_apply_basis has assigned the strategy's figure with
         // `=`. On a non-trading day the terminated entry arrives through the carried
         // book (qty 0); on a trading day through the target map. Either way the row
@@ -4338,20 +4313,16 @@ int main(int argc, char* argv[]) {
         positions_to_save.reserve(positions.size());
 
         for (const auto& [symbol, position] : positions) {
-            // E2-F19: a row is dropped only when it carries neither quantity nor
-            // realized P&L (LiveDailyCycle::is_dead_row). The previous rule dropped on
-            // quantity alone, copied from the futures runner on the premise that "the
-            // exit's realized lands in live_results exactly as it does for futures".
-            // The rule was identical; the consequence was not. A futures exit realizes
+            // A row is dropped only when it carries neither quantity nor
+            // realized P&L (LiveDailyCycle::is_dead_row), never on quantity alone as
+            // the futures runner drops. A futures exit realizes
             // exactly zero (average_price is reset to close(T-1) daily and the fill
             // strikes at close(T-1)), so its dropped row is genuinely empty. An equity
             // exit realizes the whole accumulated gain against a true cost basis, and
-            // dropping the row lost the largest figure of the position's life at row
-            // level: 11 close events in the 2026-04..08 series, e.g. TMUS 2026-04-15
-            // -402.65 in live_results with no row to carry it.
+            // dropping the row would lose the largest figure of the position's life at row
+            // level (e.g. TMUS 2026-04-15, -402.65 in live_results with no row to carry it).
             //
-            // A flat symbol with no trade still writes no row -- the 852-symbol
-            // accumulation the old comment feared cannot occur, because a symbol that
+            // A flat symbol with no trade still writes no row: a symbol that
             // closed on an earlier day carries realized 0 today (the seed is zeroed).
             // A closed row exists on the close date only.
             if (LiveDailyCycle::is_dead_row(position)) {
@@ -4477,25 +4448,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // E2-F19 (R-3): clear today's position rows for this book BEFORE queueing the
-        // day-T write, unconditionally.
-        //
-        // store_positions is DELETE-then-INSERT keyed on the date of the rows it is
-        // handed, and save_positions_snapshot returns early on an empty book -- so a day
-        // whose day-T write is EMPTY never deletes anything, and whatever rows already
-        // sit on today's date survive as today's book. Two writers put rows there
-        // before this point: the corp-action placeholder stores (dated today, written
-        // even when zero adjustments applied) and, through the loader's timestamp
-        // drift, a T-1 row that has been rewritten four times. Measured on the pre-fix
-        // chain: TMUS closed on 2026-07-07 with no realized row to keep, the
-        // placeholder row (qty 17.6) survived as the 07-07 book, and the runner sold
-        // the same 17.6 shares again every day through 07-27 while booking mark P&L on
-        // stock it no longer held. Scoped exactly like store_positions' own delete.
-        // E2-F44 (BA-18): the DELETE itself now runs immediately before the write it
-        // protects, NOT here. Both in-run L5 identities are fatal, and both used to fire
-        // AFTER this statement had already removed today's rows -- so a violated identity
-        // left the day EMPTY as well as unwritten. Moved down; see the comment at the
-        // clear-then-write site further below.
+        // Today's position rows for this book are cleared unconditionally, but NOT here:
+        // the DELETE runs immediately before the write it protects (see the comment at
+        // the clear-then-write site further below), so a fatal in-run L5 identity
+        // between here and there never leaves the day EMPTY as well as unwritten.
 
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
@@ -4538,7 +4494,7 @@ int main(int argc, char* argv[]) {
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
-        // T-7b-2 C9a (T-VOL C4), T-8D-2 R69: the delivered cut beside the request: the gross
+        // The delivered cut beside the request: the gross
         // notional of the book this runner stores (positions_to_save, one sleeve) over the
         // strategy's target book, the PortfolioManager's measurement of the same rebalance
         // (risk_scale_report.hpp defines each field). Log only.
@@ -4551,25 +4507,19 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating commissions and Day T PnL...");
 
-        // E2-C4: charge the FULL modelled transaction cost, not commission alone.
-        //
-        // This summed exec.commissions_fees while both futures runners sum
-        // exec.total_transaction_costs (live_portfolio_conservative.cpp:1445,
-        // live_portfolio.cpp:1431), so spread and market impact were computed, stored on
-        // the execution row, and then silently dropped from P&L and the equity curve.
-        // Measured 2026-07-24..08-03: executions totalled $16.0801, live_results recorded
-        // $15.00 -- $1.0801 of real slippage never charged. It is also why live disagreed
-        // with its own backtest, which does charge the full figure
-        // (backtest_coordinator.cpp:777).
+        // Charge the FULL modelled transaction cost, not commission alone, as both futures
+        // runners and the backtest do (exec.total_transaction_costs). Commission alone would
+        // compute spread and market impact, store them on the execution row, and then
+        // silently drop them from P&L and the equity curve.
         //
         // Slippage IS a true cost here and subtracting it is NOT a double-count: fill_price
         // is deliberately kept as the clean reference price with no embedded slippage
-        // (execution_manager.cpp:159, backtest_execution_manager.cpp:82), so the modelled
+        // (ExecutionManager and BacktestExecutionManager), so the modelled
         // figure is the ONLY representation of execution cost in the system. Note
         // total_transaction_costs = commissions_fees + slippage_market_impact;
         // implicit_price_impact is the per-share intermediate, already inside slippage, and
         // must not be added again.
-        // The cost after netting, as every total charges it (HD 2026-10-09). This book has one
+        // The cost after netting, as every total charges it. This book has one
         // strategy and nets nothing: every fill's adjustment is 0 and its net cost is its own.
         total_daily_commissions =
             transaction_cost::add_net_costs(total_daily_commissions, daily_executions);
@@ -4610,12 +4560,12 @@ int main(int argc, char* argv[]) {
             daily_realized_pnl = mr_strategy->get_metrics().realized_pnl + total_daily_commissions;
         }
 
-        // E2-F7: add the realized P&L locked in by corporate actions on this ex-date.
+        // Add the realized P&L locked in by corporate actions on this ex-date.
         //
         // A termination's gain or loss is genuine trade-realized P&L -- the position is gone
         // and the proceeds are final -- but it never passes through BaseStrategy::on_execution
         // in a way that books it. apply_terminations sets quantity = 0 BEFORE the strategy is
-        // seeded, so on_execution's realized branch (base_strategy.cpp:197-199, which requires
+        // seeded, so on_execution's realized branch (BaseStrategy::on_execution, which requires
         // a position on the opposite side of the fill) is false and computes nothing.
         // metrics_.realized_pnl above therefore misses it entirely.
         //
@@ -4629,19 +4579,18 @@ int main(int argc, char* argv[]) {
             daily_realized_pnl += corp_action_realized_total;
         }
 
-        // E2-F19 (R5): protocol L5's realized clause, asserted inside the run.
+        // Protocol L5's realized clause, asserted inside the run.
         //
         // The rows and the aggregate come from the SAME accumulator -- pos.realized_pnl
         // and metrics_.realized_pnl are incremented in the same branch of on_execution
         // from the same expression; the rows are the decomposition by symbol, the
         // aggregate the sum (plus the day's costs added back, plus corp-action realized,
-        // which R4 put on the rows too). So the residual is identically zero unless
-        // something broke the identity: a fill whose on_execution failed (now fatal
+        // which is on the rows too). So the residual is identically zero unless
+        // something broke the identity: a fill whose on_execution failed (fatal
         // above), a held symbol absent from the target map (add_rowless_exits above),
-        // or a future filter that drops a row carrying realized. Both previous attempts
-        // at this column shipped without this check and were reverted after a replay
-        // found 20 and 32 violating days. This is the difference between "L5 passed on
-        // the days we checked" and "L5 cannot fail without the run failing".
+        // or a future filter that drops a row carrying realized. This is the difference
+        // between "L5 passed on the days we checked" and "L5 cannot fail without the run
+        // failing".
         //
         // Tolerance 1e-4 absolute: Decimal is fixed-point at 1e-8 with per-fill
         // rounding on the row side while metrics_ is a double, so the sides differ by
@@ -4688,10 +4637,8 @@ int main(int argc, char* argv[]) {
                  " (residual " + std::to_string(residual) + ")");
         }
 
-        // daily_unrealized_pnl used to be declared and pinned to 0.0 here as a Day-T placeholder.
-        // Nothing ever repaired it -- the Day T-1 UPDATE below never mentions the column -- so
-        // every equity row carried 0 even though the book had open marks (E2-F12). It is now
-        // computed for real in STEP 5, once the previous day's mark is known.
+        // daily_unrealized_pnl is not set here: the Day T-1 UPDATE below never mentions the
+        // column, so it is computed in STEP 5, once the previous day's mark is known.
         //
         // The reported flow is `(realized - costs) + change in mark`, mirroring futures'
         // `gross - costs`. Costs are subtracted exactly once, here.
@@ -4724,12 +4671,10 @@ int main(int argc, char* argv[]) {
         double yesterday_realized_pnl_for_email = 0.0;
         double yesterday_unrealized_pnl_for_email = 0.0;
 
-        // E2-F1: the Day T-1 UPDATE's job is now to write the MARK, not to overwrite realized.
+        // The Day T-1 UPDATE's job is to write the MARK, not to overwrite realized.
         // It must therefore run whenever T-1 closes were resolved, even on a day whose mark
-        // move happened to be zero. The old `yesterday_total_pnl != 0.0` condition skipped the
-        // whole statement on such a day, leaving the row un-finalized -- and combined with the
-        // date mismatch (E2-F14) it fired on every weekend, which is how the Sunday/Monday
-        // reruns were able to leave live_results stale while still rewriting position rows.
+        // move happened to be zero; skipping it on such a day would leave the row
+        // un-finalized.
         // The Day T-1 calendar count of trading.get_trading_days, read whether or not STEP 4
         // finalizes the row: the statistics block after STEP 4 needs it on every day.
         const std::string t1_date_str = core::format_utc_date(previous_date);
@@ -5113,8 +5058,8 @@ int main(int argc, char* argv[]) {
                             // falls back to "BASE_PORTFOLIO", the futures book, so
                             // omitting it files this portfolio's equity curve under a
                             // portfolio it does not belong to while EQUITY_MR_PORTFOLIO
-                            // gets no row at all. live_portfolio_conservative.cpp:2217
-                            // passes it at the byte-identical call site.
+                            // gets no row at all. The futures runners pass it at the
+                            // byte-identical call site.
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
                                 db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName
                             );
@@ -5207,19 +5152,19 @@ int main(int argc, char* argv[]) {
         // ========================================
         // STEP 4b: THE STATISTICS THROUGH THE LAST SETTLED ROW (Day T-1)
         // ========================================
-        // T-8D R39: the row this run writes for its own date carries the statistics through the
+        // The row this run writes for its own date carries the statistics through the
         // last settled row, Day T-1 (on this book the previous NYSE session), so its sixteen
         // statistic columns are the figures computed here and never include a return the mark
-        // has not settled. T-8D-2 R42: the Day T-1 row's statistics are refreshed from the same
+        // has not settled. The Day T-1 row's statistics are refreshed from the same
         // figures whenever that row exists, whether or not STEP 4 finalized its levels (a flat
         // previous session keeps levels that were already settled). Statistic columns only: no
         // level column is written here.
         //
-        // The block is E2-F33's: the calculator, the four history loads and the column helper the
+        // The block uses the calculator, the four history loads and the column helper the
         // futures runners use. Failure here is a WARN, not a fatal: every trading decision for
         // Day T-1 is already made and persisted by this point, and these columns are reporting.
         //
-        // T-8D-2 R44 (b): total_dividend_income is dated by ex-date and counted on the shares of
+        // total_dividend_income is dated by ex-date and counted on the shares of
         // the position row dated the ex-date (the book after that day's fill at the cum-dividend
         // close, the row whose P&L carries the credit). The event of an ex-date is applied by the
         // next run, so the figure through Day T-1 goes into the same Day T-1 UPDATE and the row
@@ -5315,17 +5260,17 @@ int main(int argc, char* argv[]) {
                 // by the calendar this runner already holds (a weekday the HolidayChecker does not
                 // call a holiday, the test find_previous_trading_day applies), and the stored
                 // levels the returns are taken on. A book that also held futures would pass the
-                // futures grid, the union of the two, with the futures sessions a year (T-8D R4).
+                // futures grid, the union of the two, with the futures sessions a year.
                 auto book_start_res = data_loader->load_book_start(kEquityStrategyId, portfolio_id);
                 auto levels_res = data_loader->load_statistics_levels(
                     kEquityStrategyId, portfolio_id, previous_date);
                 if (book_start_res.is_error() || levels_res.is_error()) {
                     throw std::runtime_error("the statistics grid could not be loaded");
                 }
-                // What the statistics of migration 036 read beside the series (LOOP_SPEC sections
-                // 7.4 and 10): each symbol's stored P&L (the worst day's symbol) and the book's
-                // executions (the fill counts), from the book's start through Day T-1. An equity
-                // row stores no sizing capital: its three sizing-capital statistics stay NULL.
+                // What the statistics of migration 036 read beside the series: each symbol's
+                // stored P&L (the worst day's symbol) and the book's executions (the fill counts),
+                // from the book's start through Day T-1. An equity row stores no sizing capital:
+                // its three sizing-capital statistics stay NULL.
                 auto symbol_pnl_res = data_loader->load_symbol_pnl_history(
                     kEquityStrategyId, portfolio_id, previous_date);
                 auto book_executions_res = data_loader->load_book_executions(
@@ -5462,7 +5407,7 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
-        // STEP 4c: SETTLED_AT (migration 035; T-8D-2 R43, LOOP_SPEC sections 3.1 and 7.2)
+        // STEP 4c: SETTLED_AT (migration 035)
         // ========================================
         // STEP 4 and the statistics refresh finished without error: every earlier row of the book
         // that carries no stamp is settled, in one UPDATE (the previous session's row this run
@@ -5578,18 +5523,16 @@ int main(int argc, char* argv[]) {
             total_unrealized_pnl += pos.unrealized_pnl.as_double();
         }
 
-        // E2-F1: on a CLOSED day the mark is CARRIED, not recomputed to zero.
+        // On a CLOSED day the mark is CARRIED, not recomputed to zero.
         //
-        // A carry-forward day (weekend or holiday, per B1) generates no executions, so
+        // A carry-forward day (weekend or holiday) generates no executions, so
         // LiveDailyCycle has no execution_prices to mark against and every position's
         // unrealized_pnl comes back 0 -- making the sum above 0 even though the book is
         // unchanged and fully marked. The stored position rows are NOT zero: they carry the
-        // held mark. So the aggregate and the rows disagreed on exactly the closed days.
-        //
-        // The reported effect was a fabricated round trip. Measured on the 2026-07-24..08-04
-        // replay before this guard: Saturday 08-01 reported daily_pnl = -1052.6450 and
-        // Monday reversed it, on days the market never opened. That corrupts daily_return,
-        // and every volatility- and drawdown-derived metric with it.
+        // held mark. So the aggregate and the rows would disagree on exactly the closed days,
+        // as a fabricated round trip (a Saturday loss that Monday reverses, on days the market
+        // never opened), corrupting daily_return and every volatility- and drawdown-derived
+        // metric with it.
         //
         // No new close exists, so there is no new mark and no P&L: carry the previous value
         // and let daily_unrealized_pnl fall out as exactly 0. This also restores L5 on closed
@@ -5601,11 +5544,9 @@ int main(int argc, char* argv[]) {
             total_unrealized_pnl = previous_total_unrealized_pnl;
         }
 
-        // BA-4: protocol L5's UNREALIZED clause, asserted inside the run.
-        //
-        // The realized clause above has been checked since E2-F19 (R5); unrealized had
-        // nothing, which is how E2-F35 survived -- a widened symbol's row was 0 while the
-        // aggregate was not, and no assertion in the run could see it. Both sides are now
+        // Protocol L5's UNREALIZED clause, asserted inside the run, beside the realized
+        // clause above: a row of 0 beside a non-zero aggregate would otherwise go unseen.
+        // Both sides are
         // computed from one basis and one mark map (`day_t_marks`), so on a trading day
         // this is an identity and a violation means a row was dropped, double-counted or
         // marked from somewhere else.
@@ -5613,8 +5554,8 @@ int main(int argc, char* argv[]) {
         // A non-trading day is NOT an identity and is not treated as one. The aggregate
         // there is the PREVIOUS row's stored figure, read back from a numeric column that
         // rounds to 4 decimals, while the rows are recomputed against the T-1 close. The
-        // two agree because nothing moved (measured over the whole book on 2026-09-03:
-        // 74 days, 0 residuals above 1e-4, max 4.9e-5), but they agree by circumstance
+        // two agree because nothing moved (residuals stay well under 1e-4), but they agree
+        // by circumstance
         // rather than by construction, so the closed-day check WARNs at a tolerance that
         // covers the stored rounding instead of killing a run over it.
         {
@@ -5748,7 +5689,7 @@ int main(int argc, char* argv[]) {
         double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
         // The annualised return of today's row is a statistic of the grid through the last
-        // settled row (T-8D R39, T-8D-2 R74), computed in STEP 4b.
+        // settled row, computed in STEP 4b.
         double total_return_annualized = settled_statistics.total_annualized_return;
 
         INFO("Portfolio value calculation:");
@@ -5774,7 +5715,7 @@ int main(int argc, char* argv[]) {
                          gross_notional, current_portfolio_value)
                   << std::flush;
         // Equity-to-Margin Ratio = current_portfolio_value / total_posted_margin, at the level
-        // of the book (T-8D R21; HD 2026-09-10): the definition the futures runners write.
+        // of the book: the definition the futures runners write.
         // Higher = more of the account's value for each dollar of margin posted. No value on a
         // day with no posted margin: the cell is stored NULL (live/margin_columns.hpp).
         const std::optional<double> equity_to_margin_ratio =
@@ -5935,16 +5876,16 @@ int main(int argc, char* argv[]) {
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
-            // Phase 4.5 / T-8D-2 R44 (b): cumulative dividend income through this row's date, on
+            // Cumulative dividend income through this row's date, on
             // the shares that carried each ex-date (computed once in STEP 4b). Informational
             // ONLY -- NOT added to total_pnl: bars carry total-return adjusted prices
-            // (Phase 4.2 computes that in-engine from per-bar div_cash), so
+            // (computed in-engine from per-bar div_cash), so
             // dividend value is already inside mark-to-market P&L.
             // A run that could not recount carries the Day T-1 row's figure, or names no figure.
 
-            // T-8D R39: the statistic columns of today's row are the statistics through the last
+            // The statistic columns of today's row are the statistics through the last
             // settled row, computed once after STEP 4 and written to the Day T-1 row too. The
-            // `volatility` local is what the email and the console report read (D3).
+            // `volatility` local is what the email and the console report read.
             const HistoricalMetrics& historical_metrics = settled_statistics;
             volatility = historical_metrics.volatility;
 
@@ -6049,7 +5990,7 @@ int main(int argc, char* argv[]) {
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
 
-        // E2-F19 (R-3): clear today's position rows for this book, unconditionally, in the
+        // Clear today's position rows for this book, unconditionally, in the
         // same breath as the write.
         //
         // store_positions is DELETE-then-INSERT keyed on the date of the rows it is handed,
@@ -6057,19 +5998,17 @@ int main(int argc, char* argv[]) {
         // write is EMPTY never deletes anything, and whatever rows already sit on today's
         // date survive as today's book. Two writers put rows there before this point: the
         // corp-action placeholder stores (dated today, written even when zero adjustments
-        // applied) and, through the loader's timestamp drift, a T-1 row that has been
-        // rewritten four times. Measured on the pre-fix chain: TMUS closed on 2026-07-07
-        // with no realized row to keep, the placeholder row (qty 17.6) survived as the
-        // 07-07 book, and the runner sold the same 17.6 shares again every day through
-        // 07-27 while booking mark P&L on stock it no longer held. Scoped exactly like
-        // store_positions' own delete.
+        // applied) and, through the loader's timestamp drift, a T-1 row rewritten by
+        // later runs. A closed symbol's placeholder row would then survive as today's
+        // book and be sold again every day while booking mark P&L on stock no longer
+        // held. Scoped exactly like store_positions' own delete.
         //
-        // E2-F44 (BA-18): it sits HERE, not up with the day-T row build where it used to,
-        // because the only thing that must precede the INSERT is this DELETE -- while three
-        // fatal checks and the whole Day T-1 finalization sat between the two. Deleting
-        // today's rows and then exiting 1 on an identity violation left the day both empty
-        // and unwritten, which is strictly worse than leaving the previous run's rows in
-        // place for the re-run to overwrite. Nothing between the old site and this one reads
+        // It sits HERE, right before the INSERT, not up with the day-T row build: three
+        // fatal checks and the whole Day T-1 finalization sit between the two, and
+        // deleting today's rows and then exiting 1 on an identity violation would leave
+        // the day both empty and unwritten, which is strictly worse than leaving the
+        // previous run's rows in place for the re-run to overwrite. Nothing between the
+        // day-T row build and here reads
         // or writes trading.positions for today: delete_stale_data() inside
         // save_all_results covers live_results, equity_curve and executions but explicitly
         // NOT positions, which is why this statement exists at all.
@@ -6126,7 +6065,7 @@ int main(int argc, char* argv[]) {
         INFO("Daily mean reversion position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
-        // The report plan the futures runners use (live/email_body_file.hpp; T-DATED R5): a run
+        // The report plan the futures runners use (live/email_body_file.hpp): a run
         // that sends builds and mails the report and ignores TRADE_NGIN_EMAIL_BODY_DIR with one
         // WARN; a run that does not send builds the same body into that directory when it is set
         // and mails nothing; otherwise nothing is built.
@@ -6173,7 +6112,7 @@ int main(int argc, char* argv[]) {
                 // Load yesterday's finalized positions for email display
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
                 std::map<std::string, double> yesterday_daily_metrics_final;
-                // The settled table's two prices (HD 2026-10-12, one source): the pair STEP 1's
+                // The settled table's two prices, from one source: the pair STEP 1's
                 // finalize was handed for each row (two_days_ago_close_prices and
                 // previous_day_close_prices, the maps of its call), by the report's own rule.
                 std::unordered_map<std::string, double> yesterday_entry_prices;  // settled from
@@ -6213,7 +6152,7 @@ int main(int argc, char* argv[]) {
 
                             // A position closed on the settled day is stored at quantity 0 with
                             // its realized figure: it keeps a row, at the quantity it had when it
-                            // closed (HD ruling Q11); a zero row with no figure is no position.
+                            // closed; a zero row with no figure is no position.
                             if (std::abs(quantity) < 0.0001) {
                                 if (std::abs(realized_pnl) >= 1e-9) {
                                     closed_on_settled_day.push_back({symbol, realized_pnl});
@@ -6487,7 +6426,7 @@ int main(int argc, char* argv[]) {
                     std::string(kEquityStrategyId), portfolio_id, report_context);
 
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
-                // The same files the futures report attaches (HD 10-13): today's positions, the
+                // The same files the futures report attaches: today's positions, the
                 // previous trading day's positions with their two prices, the executions, and the
                 // account detail.
                 std::vector<std::string> attachments;

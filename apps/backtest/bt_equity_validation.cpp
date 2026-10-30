@@ -264,7 +264,7 @@ int main() {
         std::cout << std::endl;
 
         // Register equity instruments. Pass the exchange JSON path so per-symbol
-        // exchanges populate correctly instead of defaulting to NYSE. Audit §1.2.
+        // exchanges populate correctly instead of defaulting to NYSE.
         auto equity_reg_result = registry.load_equity_instruments(
             symbols, "data/equity_exchanges.json");
         if (equity_reg_result.is_error()) {
@@ -539,11 +539,9 @@ int main() {
         std::cout << "  SECTION B: Strategy Calculation Validation" << std::endl;
         std::cout << "------------------------------------------------------\n" << std::endl;
 
-        // Run the actual backtest. mr_config was built from the config above (T2.6) --
-        // this block used to rebuild it from the same literals a second time, which is how a
-        // config-vs-literal divergence could have appeared in one half of the app and not
-        // the other. `use_stop_loss` and `allow_fractional_shares` were pinned true here
-        // regardless of what the config said; they now follow it.
+        // Run the actual backtest. mr_config was built from the config above and is not
+        // rebuilt here, so both halves of the app read the same values, `use_stop_loss`
+        // and `allow_fractional_shares` included.
 
         StrategyConfig strategy_config;
         strategy_config.asset_classes = {AssetClass::EQUITIES};
@@ -695,16 +693,11 @@ int main() {
             //    bar as "previous bars". close[N-1] does reach the strategy.
             //
             // The net effect is a pure one-day lag, so the SET of closes the strategy sees
-            // is every close in order. Verified against a live run (E2-F4): for AMZN --
+            // is every close in order. Verified against a live run: for AMZN --
             // chosen because it has no corporate action in the window, so raw == adjusted --
             // the strategy's final state matches the 20 bars ending on the LAST bar
             // (SMA 266.739500, StdDev 7.346419, vol 0.321135, z -0.042129) on all four
             // metrics to six decimals.
-            //
-            // The previous model here duplicated close[0] and stopped at close[N-2]. Its
-            // window therefore ended one bar early, and it compared its 2026-08-27 state
-            // against the strategy's 2026-08-28 state -- 12 false failures, 3 symbols x
-            // 4 metrics, while both sides' arithmetic was individually correct.
             std::vector<double> bod_closes = closes;
             std::vector<Timestamp> bod_timestamps = timestamps;
 
@@ -760,8 +753,8 @@ int main() {
                     }
                 }
                 // Sample std dev (n-1) to match MeanReversionStrategy::calculate_volatility.
-                // Previously used population (n) -- ~2.5% drift on 20-day windows caused
-                // spurious validation failures. Audit §1.19.
+                // Population (n) drifts ~2.5% on 20-day windows and would cause spurious
+                // validation failures.
                 if (log_returns.size() >= 2) {
                     double ret_mean = std::accumulate(log_returns.begin(), log_returns.end(), 0.0) / log_returns.size();
                     double ret_sq = 0;
@@ -1029,7 +1022,7 @@ int main() {
                 ? std::sqrt(downside_sum / static_cast<double>(returns.size())) *
                       std::sqrt(sessions_per_year)
                 : 0.0;
-            // no downside: no value, as the calculator returns (T-8D R12)
+            // no downside: no value, as the calculator returns
             double manual_sortino = (downside_vol > 0.0) ? ann_return / downside_vol : kNoRatio;
 
             // Max drawdown (matching calculate_drawdowns)
@@ -1048,7 +1041,7 @@ int main() {
                 growth > 0.0
                     ? std::pow(growth, sessions_per_year / static_cast<double>(returns.size())) - 1.0
                     : -1.0;
-            // no drawdown: no value, as the calculator returns (T-8D R12)
+            // no drawdown: no value, as the calculator returns
             double manual_calmar = (manual_max_dd > 0) ? manual_cagr / manual_max_dd : kNoRatio;
 
             // Print comparison
