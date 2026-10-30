@@ -101,18 +101,18 @@ TEST(PerContractRollsSwitch, TheSwitchBarSettingIsHeldInBothTemplatesAndParsedSt
     }
 }
 
-TEST(PerContractRollsSwitch, OffInBothTemplatesAndNotInTheStoredConfig) {
+TEST(PerContractRollsSwitch, OnInEveryFuturesTemplateAndNotInTheStoredConfig) {
     const auto dir = template_dir();
     ASSERT_FALSE(dir.empty()) << "config_template/ not found; this test must not skip";
-    for (const char* book : {"base", "conservative"}) {
+    for (const char* book : {"base", "conservative", "qt_conservative", "qt_conservative_model", "qt_e2e"}) {
         std::ifstream in(dir / "portfolios" / book / "portfolio.json");
         const nlohmann::json j = nlohmann::json::parse(in);
         ASSERT_TRUE(j.contains("per_contract_rolls")) << book;
-        EXPECT_EQ(j.at("per_contract_rolls"), false) << book;
+        EXPECT_EQ(j.at("per_contract_rolls"), true) << book;
     }
     auto loaded = ConfigLoader::load(dir, "conservative");
     ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
-    EXPECT_FALSE(loaded.value().per_contract_rolls);
+    EXPECT_TRUE(loaded.value().per_contract_rolls);
     EXPECT_FALSE(loaded.value().to_json().contains("per_contract_rolls"));
 }
 

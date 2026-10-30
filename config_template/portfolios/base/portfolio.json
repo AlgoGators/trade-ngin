@@ -35,13 +35,20 @@
   "starting_capital": 500000,
   "_sizing_note": "required; half_compounding: the book is sized on starting_capital less the drawdown of its cumulative settled net P&L from its running peak, never above starting_capital; starting_capital must equal initial_capital",
   "_equity_slow_rule_note": "required; on the book's first sleeve a negative combined forecast of these symbols stands only when the scaled forecast of every pair named is negative, and is 0 otherwise",
+  "listing_dates": {
+    "switch_rule": "open_at_target",
+    "contracts": [
+      {"symbol": "MGC", "listed": "2010-10-04", "before": "GC", "ratio": 10},
+      {"symbol": "SIL", "listed": "2013-06-17", "before": "SI", "ratio": 5}
+    ]
+  },  "_listing_dates_note": "optional; a contract trades only from its listing date and the book trades the contract named in before until then, on the price history stored under the listed contract's symbol, with the pair counted as one instrument. A backtest whose window starts trading before a listing date switches on that date by switch_rule (open_at_target when the key is absent: a held predecessor is exited and the listed contract entered at that day's capped target rounded to whole contracts, with fill ids LC- and LO-; close_reenter, convert and carry_to_target are kept for comparison). A live run trades no predecessor and refuses one in its universe or its stored book on or after the listing date",
   "use_optimization": true,
   "covariance_history_prices": 756,
   "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2. The cap counts each symbol's own dates before the dates are aligned, so the covariance window is the dates every symbol shares inside the span of the densest symbol (the one with the most dates a week): a symbol that prints on fewer days contributes fewer than this many dates to it",
   "covariance_stale_dates": 5,
   "_covariance_stale_dates_note": "how many dates of the union of the covariance symbols' dates a symbol's last close may trail the newest before the optimiser leaves it out of the date intersection (its column becomes the guarded 0.01 variance, WARN COVARIANCE_STALE_PARTICIPANT); at exactly this many it stays; absent means 5; a whole number of at least 0, e.g. 3 to leave out a symbol more than three dates stale",
-  "per_contract_rolls": false,
-  "_per_contract_rolls_note": "optional, off when absent; true makes the futures bars come from the per-contract roll rule (include/trade_ngin/data/contract_rolls.hpp: the held contract's own bar on the vendor's grid, rolls by HD's 2026-10-23 rule) instead of the vendor's .v.0 series. Read by the four futures runners (data/per_contract_source.hpp); needs futures_data.contract_ohlcv_1d with expiration filled, and the desk's morning run then also waits for the per-contract pull's ops.data_ready row",
+  "per_contract_rolls": true,
+  "_per_contract_rolls_note": "optional, off when absent; true makes the futures bars come from the per-contract roll rule (include/trade_ngin/data/contract_rolls.hpp: the held contract's own bar on the vendor's grid, rolls by the roll rule) instead of the vendor's .v.0 series. Read by the four futures runners (data/per_contract_source.hpp); needs futures_data.contract_ohlcv_1d with expiration filled, and the desk's morning run then also waits for the per-contract pull's ops.data_ready row",
   "per_contract_switch_bar": "held",
-  "_per_contract_switch_bar_note": "read only with per_contract_rolls true (HD 2026-10-23 ruling 19): the bar handed out on a vendor switch bar the next bar has not confirmed yet. \"held\" (absent means held): the held contract's own bar. \"vendor\": the bar of the contract the vendor switched to, its one-bar strays included. Booked P&L and the roll legs are the same either way; the price levels read on that bar (sizing, marks, notional, the overlay) and the session classifier's reading of it, so the consumed history, can differ"
+  "_per_contract_switch_bar_note": "read only with per_contract_rolls true: the bar handed out on a vendor switch bar the next bar has not confirmed yet. \"held\" (absent means held): the held contract's own bar. \"vendor\": the bar of the contract the vendor switched to, its one-bar strays included. Booked P&L and the roll legs are the same either way; the price levels read on that bar (sizing, marks, notional, the overlay) and the session classifier's reading of it, so the consumed history, can differ"
 }

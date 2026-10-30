@@ -29,12 +29,19 @@ std::string read_all(const std::filesystem::path& path) {
 
 }  // namespace
 
-// Both futures templates carry section 12's limits: the three risk limits as ratios to tau on the
-// carver module, and L_max 8.0 and L_net_max 6.0 as its (and the reporting block's) leverage limits.
+// Both futures templates carry their limits: the three risk limits as ratios to tau on the carver
+// module, and the gross and net leverage limits on it and on the reporting block. CONSERVATIVE
+// carries the chosen setup's; BASE the earlier ones.
 TEST(OverlayWiring, TheFuturesTemplatesCarrySection12sLimits) {
     const auto root = repo_root();
     ASSERT_FALSE(root.empty());
-    for (const char* book : {"conservative", "base"}) {
+    struct Limits {
+        const char* book;
+        double r_max, r_jump_max, r_shock_max, gross, net;
+    };
+    for (const Limits& e : {Limits{"conservative", 1.75, 4.75, 3.0, 7.25, 5.5},
+                            Limits{"base", 2.25, 4.5, 4.0, 8.0, 6.0}}) {
+        const char* book = e.book;
         std::ifstream in(root / "config_template" / "portfolios" / book / "risk.json");
         ASSERT_TRUE(in.good()) << book;
         const nlohmann::json risk = nlohmann::json::parse(in);
@@ -44,13 +51,13 @@ TEST(OverlayWiring, TheFuturesTemplatesCarrySection12sLimits) {
         }
         ASSERT_NE(carver, nullptr) << book;
         ASSERT_TRUE(carver->contains("R_max")) << book;
-        EXPECT_DOUBLE_EQ(carver->at("R_max").get<double>(), 2.25) << book;
-        EXPECT_DOUBLE_EQ(carver->value("R_jump_max", 0.0), 4.5) << book;
-        EXPECT_DOUBLE_EQ(carver->value("R_shock_max", 0.0), 4.0) << book;
-        EXPECT_DOUBLE_EQ(carver->at("max_gross_leverage").get<double>(), 8.0) << book;
-        EXPECT_DOUBLE_EQ(carver->at("max_net_leverage").get<double>(), 6.0) << book;
-        EXPECT_DOUBLE_EQ(risk.at("risk_reporting").at("max_gross_leverage").get<double>(), 8.0) << book;
-        EXPECT_DOUBLE_EQ(risk.at("risk_reporting").at("max_net_leverage").get<double>(), 6.0) << book;
+        EXPECT_DOUBLE_EQ(carver->at("R_max").get<double>(), e.r_max) << book;
+        EXPECT_DOUBLE_EQ(carver->value("R_jump_max", 0.0), e.r_jump_max) << book;
+        EXPECT_DOUBLE_EQ(carver->value("R_shock_max", 0.0), e.r_shock_max) << book;
+        EXPECT_DOUBLE_EQ(carver->at("max_gross_leverage").get<double>(), e.gross) << book;
+        EXPECT_DOUBLE_EQ(carver->at("max_net_leverage").get<double>(), e.net) << book;
+        EXPECT_DOUBLE_EQ(risk.at("risk_reporting").at("max_gross_leverage").get<double>(), e.gross) << book;
+        EXPECT_DOUBLE_EQ(risk.at("risk_reporting").at("max_net_leverage").get<double>(), e.net) << book;
     }
 }
 
