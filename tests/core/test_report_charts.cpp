@@ -1,6 +1,6 @@
 // tests/core/test_report_charts.cpp
 //
-// T-EMAIL P2-2 (HD ruling Q2): a chart that is not in the report is named in its place with the
+// A chart that is not in the report is named in its place with the
 // reason, and the log gets one line with the counts.
 
 #include <gtest/gtest.h>

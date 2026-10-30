@@ -11,7 +11,7 @@ namespace trade_ngin {
 namespace carry_estimator {
 
 /**
- * The carry rules (trade-ngin #185; Carver, Advanced Futures Trading Strategies, strategy ten) at one
+ * The carry rules (Carver, Advanced Futures Trading Strategies, strategy ten) at one
  * signal bar, as a function of the same fixed trailing window of consumed bars the trend estimators
  * read (trend_estimator.hpp, kWindowBars) and of nothing else.
  *
@@ -28,12 +28,12 @@ namespace carry_estimator {
  * same bar (trend_estimator::estimate's forecast_sigma_bars). The two prices are the quote's: real
  * contract closes of the same date (CarryQuote), never the adjusted series.
  *
- * The missing-price rule (HD 2026-10-26, Q4): a bar with no quote keeps the last known annualised
+ * The missing-price rule: a bar with no quote keeps the last known annualised
  * raw carry of the window (its own pair and expiry difference) and divides it by its own bar's
  * divisor. Before the window's first quote there is no carry forecast, and every EWMA starts at the
  * first forecast (seeded there, as the trend EMAs are seeded at the window's first level). An
  * instrument with no quote anywhere in its window up to the signal bar has no carry: `active` is
- * false and the strategy trades its trend forecast alone (Q3, applied per bar). Bar 0 of the window
+ * false and the strategy trades its trend forecast alone (applied per bar). Bar 0 of the window
  * has no volatility and gives no forecast, but its quote is known. Nothing is carried from one call
  * to the next.
  */
@@ -47,7 +47,7 @@ inline const std::vector<int>& default_spans() {
 }
 
 /**
- * The speed limit for the carry spans (#185; AFTS strategy ten, table 40; fix round 1, audit A S5).
+ * The speed limit for the carry spans (AFTS strategy ten, table 40).
  * A rule's yearly cost on a contract is (its turnover + 2 x rolls a year) x the contract's cost per
  * trade, so it rises with the turnover: a carry span that turns over no faster than a trend speed the
  * contract keeps (that speed passed the 0.15 limit, trading_rule_removals' recipe) passes it too. The
@@ -97,7 +97,7 @@ Estimate estimate(const Window& window, const std::vector<int>& spans,
                   double scalar = kCarryScalar);
 
 /**
- * The blend (trade-ngin #185; Carver, strategy eleven, tables 51 and 52): one forecast from the two
+ * The blend (Carver, strategy eleven, tables 51 and 52): one forecast from the two
  * families of trading rules an instrument keeps.
  *
  *   F = cap at +/-20 of  FDM x ( w_trend x sum of the trend forecasts + w_carry x sum of the carry

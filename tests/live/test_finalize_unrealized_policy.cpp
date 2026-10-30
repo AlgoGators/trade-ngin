@@ -1,27 +1,28 @@
-// E2-F3 regression pins.
+// What the Day T-1 finalization writes into unrealized_pnl, per settlement model.
 //
-// LivePnLManager::finalize_previous_day writes the Day T-1 row. Commit 4d5ea48f replaced
-// futures' unconditional `unrealized_pnl = 0` with a mark-to-market expression, justified
-// by the comment "average_price resets to close after daily settlement, so this is ~0".
+// LivePnLManager::finalize_previous_day writes the Day T-1 row. On futures it writes
+// `unrealized_pnl = 0`. A mark-to-market expression there, on the premise that
+// "average_price resets to close after daily settlement, so this is ~0", is off by
+// exactly one day.
 //
-// That premise is false, and off by exactly one day. Under the futures T-1 lag model the
-// runner enters a position at close(T-1) (live_portfolio_conservative.cpp STEP 2 sets
+// Under the futures T-1 lag model the
+// runner enters a position at close(T-1) (the futures runners' STEP 2 sets
 // average_price = yesterday_close) and the NEXT day's run settles it at close(T). So on a
 // futures row average_price IS the prior settlement close -- precisely the day_t2_close the
-// finalizer already uses to compute realized. The injected expression therefore reduces to
+// finalizer already uses to compute realized. A mark-to-market expression therefore reduces to
 //
 //     qty * (t1_close - average_price) * pt  ==  qty * (t1_close - t2_close) * pt  ==  realized
 //
 // i.e. it records the same settlement move in a second column.
 //
-// Measured on the first ever 10-day futures replay (2025-10-06..15): 65 of 77 rows non-zero
-// where main writes 0, on 2025-10-10 six of nine rows had daily_unrealized_pnl EXACTLY equal
+// On a 10-day futures replay (2025-10-06..15) that expression left 65 of 77 rows non-zero;
+// on 2025-10-10 six of nine rows had daily_unrealized_pnl EXACTLY equal
 // to daily_realized_pnl (-315.00, -2295.00, -3558.75, -6882.00, -590.00, +718.75), and the
 // per-row sum reached -12,586.69 while live_results correctly reported 0.00 -- a violation
-// of the row-sums-to-aggregate invariant (protocol section 12, L5).
+// of the row-sums-to-aggregate invariant.
 //
 // Both directions are pinned. The SETTLED case is the futures invariant that must not move;
-// the MARK_TO_MARKET case is the equity behaviour 4d5ea48f actually wanted and must keep.
+// the MARK_TO_MARKET case is the equity behaviour and must keep.
 
 #include <gtest/gtest.h>
 #include <chrono>
@@ -90,7 +91,7 @@ protected:
     void SetUp() override {
         InstrumentRegistry::instance().instruments_["MNQ.v.0"] = make_mnq_futures();
         // The P&L manager looks the contract up by its metadata key, the symbol without the
-        // ".v.0" suffix; with no fallback table any more (CM1) the row must be there.
+        // ".v.0" suffix; with no fallback table the row must be there.
         InstrumentRegistry::instance().instruments_["MNQ"] = make_mnq_futures();
     }
     void TearDown() override {
@@ -127,7 +128,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, SettledPolicyWritesZeroEvenWhenPriceMoved) 
     EXPECT_DOUBLE_EQ(u, 0.0)
         << "Futures finalization wrote a non-zero unrealized P&L. average_price is the "
            "prior settlement close, so this value is the settlement move already recorded "
-           "in realized_pnl -- the same day counted twice (E2-F3).";
+           "in realized_pnl -- the same day counted twice.";
 }
 
 // The default must BE the futures behaviour, so a caller that says nothing is safe.
@@ -140,7 +141,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, DefaultPolicyIsSettledSoFuturesCallersNeedN
            "futures runners pass no policy, so the default must be SETTLED.";
 }
 
-// The equity behaviour 4d5ea48f wanted, and which the fix must preserve.
+// The equity behaviour, which the futures guard must preserve.
 TEST_F(FinalizeUnrealizedPolicyTest, MarkToMarketPolicyMeasuresAgainstTheCostBasis) {
     const double u =
         finalized_unrealized(LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET, true);
@@ -158,7 +159,7 @@ TEST_F(FinalizeUnrealizedPolicyTest, SettledUnrealizedDoesNotDuplicateTheRealize
 
     EXPECT_NE(settled, kOneDayMove)
         << "Futures unrealized equals the one-day settlement move (" << kOneDayMove
-        << "), which is what realized_pnl already holds. This is the exact E2-F3 signature: "
+        << "), which is what realized_pnl already holds. This is the exact double-count signature: "
            "on 2025-10-10 six of nine rows had unrealized == realized to the cent.";
 }
 
@@ -171,23 +172,20 @@ TEST_F(FinalizeUnrealizedPolicyTest, ThePolicyIsWhatDecidesTheOutcome) {
 
     EXPECT_NE(settled, marked)
         << "UnrealizedPolicy changed nothing. If both paths agree the parameter is not "
-           "wired into the finalizer, and this suite would not catch a regression of E2-F3.";
+           "wired into the finalizer, and this suite would not catch a regression.";
 }
 
 // ===========================================================================
-// E2-F1: FinalizationResult::finalized_unrealized_pnl -- the aggregate counterpart of the
+// FinalizationResult::finalized_unrealized_pnl -- the aggregate counterpart of the
 // per-row unrealized written above.
 //
-// live_results.total_unrealized_pnl used to be a DAY-T snapshot: the book priced at
-// close(T-2), computed at insert and never revisited by the T-1 finalization. The finalized
-// position rows were priced at close(T-1). So the aggregate and the rows it is supposed to
-// summarise differed by exactly that day's P&L -- E2-F13, residual 0.0000 against
-// `tu + daily_realized` on every finalized row, which is far too tight to be coincidence.
-//
-// The aggregate is now summed from the same finalized rows that get persisted, so the
-// row-sums-to-aggregate invariant (protocol L5) holds by construction rather than by two
-// code paths happening to agree. Verified on the 2026-07-24..08-04 replay: L5 residual
-// 0.0000 on all 12 days, weekends included.
+// live_results.total_unrealized_pnl is summed from the same finalized rows that get
+// persisted, priced at close(T-1). A DAY-T snapshot instead (the book priced at close(T-2),
+// computed at insert and never revisited by the T-1 finalization) would differ from the
+// rows it summarises by exactly that day's P&L. Summed from the rows, the
+// row-sums-to-aggregate invariant holds by construction rather than by two code paths
+// happening to agree (on a 12-day replay, 2026-07-24..08-04, its residual is 0.0000 every
+// day, weekends included).
 //
 // Futures safety is structural: the accumulation lives INSIDE the MARK_TO_MARKET branch, so
 // SETTLED cannot reach it. Both futures runners pass no policy argument and therefore get
@@ -250,8 +248,8 @@ TEST_F(FinalizeUnrealizedPolicyTest, FinalizedUnrealizedAggregateEqualsSumOfFina
     EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, row_sum)
         << "The aggregate diverged from the rows. live_results.total_unrealized_pnl is "
            "written from this figure and trading.positions.daily_unrealized_pnl from those "
-           "rows, so any gap here reappears as an L5 violation in the database -- which is "
-           "exactly what E2-F13 was.";
+           "rows, so any gap here reappears as an L5 violation in the database"
+           ".";
     EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, kOneDayMove)
         << "The mark-to-market aggregate should equal the one-day move for this fixture, "
            "whose average_price is the T-2 close.";

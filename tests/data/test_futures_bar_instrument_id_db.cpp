@@ -1,5 +1,5 @@
-// The futures loader joins each kept bar's vendor instrument id (LOOP_SPEC v6.1 section 2.1; T-ROLLX
-// commit 1): futures_data.ohlcv_1d_raw.instrument_id LEFT JOINed on the exact print, carried through
+// The futures loader joins each kept bar's vendor instrument id:
+// futures_data.ohlcv_1d_raw.instrument_id LEFT JOINed on the exact print, carried through
 // the Arrow table into Bar::instrument_id. Read-only on the clone, through TRADE_NGIN_TEST_DSN only.
 //
 //   * NG.v.0 rolls on 2025-10-27 (id 864 -> 863 at the vendor's switch): the loaded bars carry the
@@ -8,9 +8,9 @@
 //   * 6A.v.0 2025-11-05: the kept 76,895-lot print has no raw match (the raw table holds the 196-lot
 //     copy the loader drops): its id is empty, and the series is not a change there (not judged).
 //   * an equity load carries no instrument_id column: every equity bar's id is empty.
-// The oracle's series comparison reads the backtest's OWN record of the bars it consumed
+// A reference checker's series comparison reads the backtest's OWN record of the bars it consumed
 // (include/trade_ngin/backtest/consumed_series_record.hpp), not a series built here on every loaded
-// bar: a JUNK bar or a thin first print the engine withholds (K-01) is in no consumed sequence.
+// bar: a JUNK bar or a thin first print the engine withholds is in no consumed sequence.
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 
@@ -131,10 +131,9 @@ TEST_F(FuturesBarInstrumentIdTest, TheLoaderCarriesTheKeptPrintsInstrumentIdOnEv
     }
 }
 
-// A kept print the raw table does not hold has no id and is not judged. R6: the reference clone's case
-// (6A 2025-11-05: the raw table's 196-lot copy against the kept 76,895-lot one) is gone from the tuning
-// copy (the 213-row fix of algogators #36 made them one print), and no bar of that copy has a raw row of
-// another print. So the rule is shown twice: on the loader's own SQL (build_futures_bar_query, its raw
+// A kept print the raw table does not hold has no id and is not judged. A copy of the database may hold
+// no such bar (6A 2025-11-05, the raw table's 196-lot copy against the kept 76,895-lot one, can be one
+// print there). So the rule is shown twice: on the loader's own SQL (build_futures_bar_query, its raw
 // table read from a TEMP copy in an aborted transaction: nothing is written) over a series whose middle
 // kept print differs from its raw row; and on the real table, where every 6A bar of the week has its id
 // exactly when its raw row is the kept print (derived from the tables, so it holds on any copy).

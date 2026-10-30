@@ -10,13 +10,13 @@
 using namespace trade_ngin;
 
 // The corp-action lookback must reach back to when a position was ESTABLISHED.
-// It used to be derived from Position::last_update, which cannot work:
-// load_positions_by_date() selects WHERE DATE(last_update) = DATE($n), so every
-// row it returns carries the requested date by construction, and the live table
-// has zero rows where last_update differs from date. That derivation always
-// collapsed to "yesterday", silently leaving the effective window at its 14-day
-// floor -- the very window that dropped 8 of the 9 dividends the configured
-// universe saw after live last wrote on 2026-05-03.
+// It cannot be derived from Position::last_update: load_positions_by_date()
+// selects WHERE DATE(last_update) = DATE($n), so every row it returns carries the
+// requested date by construction, and the live table has zero rows where
+// last_update differs from date. That derivation always collapses to "yesterday",
+// silently leaving the effective window at its 14-day floor -- a window that
+// dropped 8 of the 9 dividends the configured universe saw over a live gap that
+// began 2026-05-03.
 namespace {
 
 constexpr long kDay = 24 * 60 * 60;
@@ -117,7 +117,7 @@ TEST(CorpActionWindowDerivation, MalformedInceptionDoesNotNarrowTheWindow) {
 
 // Dates are parsed and formatted as UTC. On the deployed image
 // (TZ=America/New_York) a localtime round-trip pushes every key a day early,
-// which is what put the dividend denominator on the wrong close (F-2/F-3).
+// which puts the dividend denominator on the wrong close.
 TEST(CorpActionWindowDerivation, DateRoundTripIsUtcNotLocaltime) {
     const std::string ymd = "2026-08-10";
     EXPECT_EQ(format_ymd_utc(parse_ymd_utc(ymd)), ymd);
@@ -218,12 +218,12 @@ TEST(CorpActionWindowDerivation, DeepHoldingIsReportedAsTheSource) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-9 / C-1 D13 -- an inception read that SUCCEEDS but does not answer for a
+// An inception read that SUCCEEDS but does not answer for a
 // held symbol.
 //
-// Only is_error() used to widen the window. A successful read that returned no
-// row for a held symbol (or for none of them) fell straight through, contributed
-// nothing to the derivation, and left the window at its 14-day floor -- the same
+// A successful read that returns no row for a held symbol (or for none of them)
+// widens the window like an error does. Falling through, it would contribute
+// nothing to the derivation and leave the window at its 14-day floor -- the same
 // silent narrowing this whole derivation exists to prevent, reached by a
 // different route. Class 1 fails WIDE by design: an unknown inception must reach
 // the bulk edge, because under-applying a price rescale is the permanent error.

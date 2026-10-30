@@ -1,21 +1,21 @@
 // Atomicity of composed writes.
 //
 // The live equity path writes corp-action-adjusted positions and then the dedup
-// rows that stop those events being applied again. Before DbTransaction these
-// were two independent transactions, so a failure between them left positions
-// adjusted with no dedup record -- and the next run re-applied every event,
-// re-multiplying quantities and re-rescaling cost basis. These tests pin the
-// unit-of-work contract that removes that window.
+// rows that stop those events being applied again. As two independent
+// transactions, a failure between them would leave positions adjusted with no
+// dedup record -- and the next run would re-apply every event, re-multiplying
+// quantities and re-rescaling cost basis. These tests pin the unit-of-work
+// contract that closes that window.
 //
 // Transaction semantics cannot be faked: pqxx rollback is only observable
-// against a real server. These cases write only to a scratch table plus scratch
+// against a real server. These cases write only to a test table plus test
 // identifiers, never to production rows.
 //
 // Reachability gate. A silent skip means a regression here passes unnoticed, so
 // the behaviour is explicit:
 //   * TRADE_NGIN_REQUIRE_DB=1 -- a missing or unreachable database FAILS the
 //     test rather than skipping it. Set this anywhere a database is expected.
-//   * unset (local dev without a server) -- skip, as before.
+//   * unset (local dev without a server) -- skip.
 //
 // UNVERIFIED IN CI TODAY. No workflow in .github/workflows declares a database
 // service, so CI runs these as skips and the atomicity guarantee is proven only
@@ -184,9 +184,9 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// The regression this whole change exists for: the dedup write fails after the
-// position write has already run. Before the unit of work the positions were
-// committed and the dedup row was not, so the next run re-applied the events.
+// The case the unit of work exists for: the dedup write fails after the
+// position write has already run. Without the unit of work the positions would
+// be committed and the dedup row not, so the next run would re-apply the events.
 TEST_F(DbTransactionAtomicityTest, DedupFailureRollsBackTheAdjustedPositions) {
     auto unit = db_->begin_unit_of_work();
     ASSERT_TRUE(unit.is_ok()) << unit.error()->what();
@@ -283,7 +283,7 @@ TEST_F(DbTransactionAtomicityTest, CommitTwiceIsRejectedRatherThanRepeated) {
 }
 
 // ---------------------------------------------------------------------------
-// E2-F23 / migration 005 -- run_date must survive the round trip.
+// Migration 005 -- run_date must survive the round trip.
 //
 // The column is what lets a run tell an EARLIER pass's dedup rows from a LATER
 // pass's. The pure tests in tests/live/corp_actions/test_audit_log.cpp pin the
@@ -344,8 +344,7 @@ TEST_F(DbTransactionAtomicityTest, AnUnstampedWriteStillDedupsOnTheNaturalKey) {
                     .is_ok());
     // Same natural key, different run_date: ON CONFLICT DO NOTHING, so the first
     // write stays authoritative and no second row appears. run_date is NOT part
-    // of the key -- keying on it would let the same event re-apply every day
-    // (audit option D1).
+    // of the key -- keying on it would let the same event re-apply every day.
     auto restamped = row;
     restamped.run_date = "2026-04-09";
     ASSERT_TRUE(db_->store_applied_corp_actions(kScratchPortfolio, kScratchStrategyId,
@@ -362,20 +361,19 @@ TEST_F(DbTransactionAtomicityTest, AnUnstampedWriteStillDedupsOnTheNaturalKey) {
 
 }  // namespace
 
-// ===== C4-DbTransaction / futures-atomicity: the in-unit guard =====
+// ===== The in-unit guard =====
 //
 // pqxx permits ONE transaction per connection. Every self-opening method on
 // PostgresDatabase begins with `pqxx::work txn(*connection_)`, so calling any of
 // them while a DbTransaction scope is alive constructs a SECOND transaction on
 // the same connection, and pqxx throws.
 //
-// Measured pre-guard behaviour, rather than assumed: the throw is caught by the
-// calling method's own catch-all and returned as "Failed to store positions:
-// Started new transaction while transaction was still active." That is an
-// error, not an unhandled exception -- the ledger row's "unguarded" overstates
-// it for the call sites that exist today. What remains wrong is that the message
-// describes pqxx's internal state rather than the caller's mistake, and that the
-// refusal lands after the method has begun work instead of at the door.
+// Without the guard the throw is caught by the calling method's own catch-all
+// and returned as "Failed to store positions: Started new transaction while
+// transaction was still active." That is an error, not an unhandled exception,
+// but the message describes pqxx's internal state rather than the caller's
+// mistake, and the refusal lands after the method has begun work instead of at
+// the door.
 //
 // The guard lives in validate_connection(), which is the preamble every
 // self-opening method already runs and which the DbTransaction-taking overloads
@@ -383,8 +381,8 @@ TEST_F(DbTransactionAtomicityTest, AnUnstampedWriteStillDedupsOnTheNaturalKey) {
 // the caller's transaction. So the check covers exactly the calls that would
 // open a second transaction and none of the ones meant to join the first.
 //
-// No futures caller opens a unit of work today, which is why this is
-// byte-identical on any run that exists now.
+// No futures caller opens a unit of work, so the guard does not change a
+// futures run.
 
 TEST_F(DbTransactionAtomicityTest, ASelfOpeningCallInsideAUnitIsRefusedNotThrown) {
     auto unit = db_->begin_unit_of_work();
@@ -397,7 +395,7 @@ TEST_F(DbTransactionAtomicityTest, ASelfOpeningCallInsideAUnitIsRefusedNotThrown
                     .is_ok());
 
     // The same write through the SELF-OPENING overload, while the unit is still
-    // open. Before the guard this threw pqxx::usage_error; it must now come back
+    // open. Without the guard this throws pqxx::usage_error; it must come back
     // as an ordinary error.
     Result<void> second = make_error<void>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
     ASSERT_NO_THROW({
@@ -428,22 +426,19 @@ TEST_F(DbTransactionAtomicityTest, ASelfOpeningReadInsideAUnitIsAlsoRefused) {
     ASSERT_NO_THROW({ read = db_->execute_query("SELECT 1"); });
     ASSERT_TRUE(read.is_error()) << "a read opened a second transaction on a busy connection";
     // The message is the discriminator, not is_error(): execute_query wraps
-    // everything in a catch-all, so pre-guard pqxx's usage_error already came
-    // back as a DATABASE_ERROR and is_error() alone was green either way.
+    // everything in a catch-all, so without the guard pqxx's usage_error also
+    // comes back as a DATABASE_ERROR and is_error() alone is green either way.
     EXPECT_NE(std::string(read.error()->what()).find("unit of work is open"), std::string::npos)
         << "refused, but by pqxx rather than by the guard: " << read.error()->what();
 }
 
 // A COMMITTED unit frees the connection immediately, not at scope exit.
 //
-// The first version of the guard cleared in_unit_of_work_ only in the
-// destructor and on move-assign, so the flag stayed set between a successful
-// commit() and the closing brace. pqxx is perfectly happy to start a new
-// transaction there -- the previous one is finished -- so the guard would have
-// refused a legal call, and the refusal would have told the caller to pass a
-// DbTransaction that no longer exists. Both equity call sites happen to close
-// their scope one line after committing, which is the only reason it was not
-// already reachable.
+// The guard clears in_unit_of_work_ on commit(), not only in the destructor
+// and on move-assign. pqxx is perfectly happy to start a new transaction
+// between a successful commit() and the closing brace -- the previous one is
+// finished -- so a flag still set there would refuse a legal call and tell the
+// caller to pass a DbTransaction that no longer exists.
 TEST_F(DbTransactionAtomicityTest, ACommittedUnitFreesTheConnectionBeforeScopeExit) {
     auto unit = db_->begin_unit_of_work();
     ASSERT_TRUE(unit.is_ok()) << unit.error()->what();
@@ -502,7 +497,7 @@ TEST_F(DbTransactionAtomicityTest, ASecondUnitOfWorkIsRefusedWhileTheFirstIsOpen
     ASSERT_NO_THROW({ second = db_->begin_unit_of_work(); });
     ASSERT_TRUE(second.is_error()) << "two concurrent units of work on one connection";
     // Same reasoning: begin_unit_of_work catches the usage_error from the
-    // DbTransaction constructor, so is_error() was true before the guard too.
+    // DbTransaction constructor, so is_error() is true without the guard too.
     EXPECT_NE(std::string(second.error()->what()).find("unit of work is open"), std::string::npos)
         << "refused, but by pqxx rather than by the guard: " << second.error()->what();
 }

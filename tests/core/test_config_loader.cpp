@@ -182,8 +182,8 @@ TEST_F(ConfigLoaderTest, LoadValidConfigPopulatesAllFields) {
     EXPECT_EQ(c.email.smtp_host, "smtp.test.com");
 }
 
-// T-8D-2 R76: the sessions a year the live statistics annualise with, frozen per series. A
-// config without the block runs on the two ruled values.
+// The sessions a year the live statistics annualise with, frozen per series. A config without
+// the block runs on the two default values.
 TEST_F(ConfigLoaderTest, StatisticsSessionsPerYearDefaultToTheRuledValues) {
     write_full_set("base");
     auto r = ConfigLoader::load(base_, "base");
@@ -349,7 +349,7 @@ TEST_F(ConfigLoaderTest, StrategyDefaultsConfigJsonRoundTrip) {
     EXPECT_DOUBLE_EQ(r.fdm[2].second, 2.0);
     EXPECT_DOUBLE_EQ(r.max_strategy_allocation, 0.5);
     // Schema 2 deleted both: a block that still serialised them would put a key back into
-    // the merged config that the loader now refuses (S7), and an override round trip
+    // the merged config that the loader refuses (S7), and an override round trip
     // would fail on a key nobody wrote.
     EXPECT_FALSE(j.contains("use_optimization"))
         << "use_optimization moved to portfolio.json in schema 2";
@@ -495,14 +495,13 @@ TEST_F(ConfigLoaderTest, DeepMergeReplacesNonObjectsWithoutRecursion) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// BA-11 / C-1 C5 (T2.9) -- the staleness bounds must be CONFIGURABLE, not
+// The staleness bounds must be CONFIGURABLE, not
 // hardcoded defaults that only look configurable.
 //
-// LiveSpecificConfig has read both keys from JSON all along, but
-// config_template/defaults.json declared only data_staleness_tolerance_days and
-// the config the runners actually load declared NEITHER, so the value in force
-// was always the struct default. The template is the tracked artefact a fresh
-// checkout copies, so a key missing there is a key nobody can set.
+// LiveSpecificConfig reads both keys from JSON, and config_template/defaults.json
+// declares both. The template is the tracked artefact a fresh checkout copies, so a
+// key missing there is a key nobody can set, and the value in force would always be
+// the struct default.
 // ──────────────────────────────────────────────────────────────────────────
 
 TEST(LiveStalenessConfig, BothBoundsRoundTripThroughJson) {
@@ -525,12 +524,12 @@ TEST(LiveStalenessConfig, BothBoundsRoundTripThroughJson) {
 TEST(LiveStalenessConfig, OmittedKeysKeepTheDocumentedDefaults) {
     LiveSpecificConfig c;
     c.from_json(nlohmann::json{{"historical_days", 730}});
-    EXPECT_EQ(c.data_staleness_tolerance_days, 4) << "default unchanged (BA-11)";
-    EXPECT_EQ(c.execution_price_max_staleness_days, 5) << "default unchanged (BA-11)";
+    EXPECT_EQ(c.data_staleness_tolerance_days, 4) << "default unchanged";
+    EXPECT_EQ(c.execution_price_max_staleness_days, 5) << "default unchanged";
 }
 
-// The drift pin. This is what C-1 C5 actually found: the struct grew a field and
-// the tracked template did not, so the knob existed in code and nowhere an
+// The drift pin. A field the struct grows and the tracked template does not is a
+// knob that exists in code and nowhere an
 // operator could reach it. Asserting the template declares every key the struct
 // serialises catches the next one automatically.
 TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises) {
@@ -565,8 +564,8 @@ TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises
 // ──────────────────────────────────────────────────────────────────────────
 // The resolved risk configuration per book, loaded from the TRACKED template.
 //
-// These are the regression net for the risk-config schema change (T-6 commit 7,
-// schema 2). They assert what ConfigLoader::load resolves TODAY for each of the
+// These are the regression net for the risk-config schema (schema 2). They assert what
+// ConfigLoader::load resolves TODAY for each of the
 // three books, field by field, so a re-nesting that silently falls back to a
 // struct default fails here instead of moving positions:
 //
@@ -575,14 +574,13 @@ TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises
 //     moving the reader falls back to AppConfig's 0.4 / 4.0; max_leverage sizes
 //     the trend-following book (capital * max_leverage), so CONSERVATIVE 2.0 and
 //     EQUITY_MR 1 going to 4.0 moves every position. BASE already equals the
-//     fallback, so only the other two books catch it (T-RISK-ARCH §9 defect 5).
+//     fallback, so only the other two books catch it.
 //   * AppConfig::risk_config's seven gating fields feed the reporter
 //     (snapshot_rm) on every runner; emptying the object moves the stored
-//     risk_scale on every row (T-RISK-ARCH_ADVERSARIAL §D1).
+//     risk_scale on every row.
 //   * max_correlation is ABSENT from base/risk.json and equity_mr/risk.json;
-//     their 0.7 comes from defaults.json risk_defaults, not from the book
-//     (T-RISK-ARCH §4, "the max_correlation trap"). The provenance test below
-//     pins that path explicitly.
+//     their 0.7 comes from defaults.json risk_defaults, not from the book. The
+//     provenance test below pins that path explicitly.
 //
 // The template mirrors the values the runners load (verified for all three
 // books); it is used rather than config/ so the test is hermetic.
@@ -620,8 +618,8 @@ struct ResolvedRiskExpectation {
     int lookback_period;
     double capital;            // risk_config.capital = initial_capital
     bool use_optimization;     // portfolio.json's top level, as resolved
-    const char* none_ruled_on = nullptr;  // set when the book is assigned `none` (commit 8)
-    // The book's carver module carries the overlay's limits (LOOP_SPEC section 7.7): var_limit,
+    const char* none_ruled_on = nullptr;  // set when the book is assigned `none`
+    // The book's carver module carries the overlay's limits: var_limit,
     // jump_risk_limit, max_correlation and the top-level max_leverage are RETIRED in its files,
     // so the values above are the structs' own unread defaults, and the module carries
     // per_name_cap 2 and trim_max 5.
@@ -668,9 +666,9 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     const RiskModuleConfig& m = c.risk_schema.portfolio.front();
     EXPECT_TRUE(c.risk_schema.sleeves.empty()) << b << ": no shipped book assigns a sleeve module";
     if (e.none_ruled_on != nullptr) {
-        // T-6b commit 8 (HD 2026-09-18): this book runs NO risk module. The seven values above
-        // are the reporter's (risk_reporting still measures the book); the module is `none`
-        // with the ruling on it, and there is no carver whose values could be compared.
+        // This book runs NO risk module. The seven values above are the reporter's
+        // (risk_reporting still measures the book); the module is `none`, carrying its reason
+        // and who assigned it, and there is no carver whose values could be compared.
         EXPECT_EQ(m.type, "none") << b << ": module type";
         const auto* none = std::get_if<NoneModuleConfig>(&m.params);
         ASSERT_NE(none, nullptr) << b << ": module params";
@@ -725,7 +723,7 @@ TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
                                  /*max_drawdown*/ 0.3, /*max_leverage*/ 4.0,  // retired: the unread default
                                  /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,  // retired: the unread defaults
                                  /*max_correlation*/ 0.7,  // retired: the unread default
-                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
+                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
                                  /*use_optimization*/ true,
@@ -738,7 +736,7 @@ TEST(TrackedTemplateResolvedRiskConfig, Base) {
                                  /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,  // retired: the unread default
                                  /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,  // retired: the unread defaults
                                  /*max_correlation*/ 0.7,  // retired: the unread default
-                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max (LOOP_SPEC section 12)
+                                 /*max_gross*/ 8.0, /*max_net*/ 6.0,  // L_max and L_net_max
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
                                  /*use_optimization*/ true,
@@ -749,7 +747,7 @@ TEST(TrackedTemplateResolvedRiskConfig, Base) {
 // use_optimization resolves FALSE here: schema 2 moved the key into portfolio.json and
 // EQUITY_MR writes false, which is what both equity runners have always done in code
 // (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp). Moving the key must not
-// turn the equity optimizer on (T-RISK-ARCH_ADVERSARIAL §C3); the runners additionally
+// turn the equity optimizer on; the runners additionally
 // refuse to start on a `true` (refuse_if_optimizer_requested, tested below).
 TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
     expect_resolved_risk_config({"equity_mr", "EQUITY_MR_PORTFOLIO",
@@ -763,12 +761,12 @@ TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
                                  /*none_ruled_on*/ "2026-09-18"});
 }
 
-// The max_correlation trap, closed. Under schema 1 base/risk.json and equity_mr/risk.json
-// carried NO max_correlation and resolved 0.7 from defaults.json risk_defaults -- a value
-// no book had written, indistinguishable from RiskConfig's struct default (also 0.7), so
-// changing the global silently moved two books' gate. Schema 2 deletes risk_defaults and
-// writes every gating value per book. This is that test, inverted: the value must now come
-// from the book's OWN file, and there must be no global left to move it with.
+// The max_correlation trap. A book's risk.json that carries NO max_correlation and resolves
+// 0.7 from a defaults.json risk_defaults block takes a value no book has written,
+// indistinguishable from RiskConfig's struct default (also 0.7), so changing the global
+// silently moves that book's gate. Schema 2 has no risk_defaults and writes every gating
+// value per book: the value must come from the book's OWN file, and there must be no global
+// left to move it with.
 TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRiskJson) {
     const auto tmpl = tracked_config_template();
     ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
@@ -784,7 +782,7 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
     EXPECT_FALSE(defaults.at("strategy_defaults").contains("use_risk_management"))
         << "use_risk_management was deleted in schema 2";
 
-    // A futures book's gate is the overlay (LOOP_SPEC section 7.7): its literal values are the
+    // A futures book's gate is the overlay: its literal values are the
     // overlay's, and the old gate's three limits are in neither its module nor its reporter.
     struct Book { const char* dir; double max_correlation; bool use_optimization; bool overlay; };
     for (const Book& b : {Book{"conservative", 0.0, true, true}, Book{"base", 0.0, true, true},
@@ -793,8 +791,8 @@ TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRi
         const auto risk = nlohmann::json::parse(in);
         ASSERT_TRUE(risk.contains("modules")) << b.dir << ": risk.json must be schema 2";
         ASSERT_EQ(risk.at("modules").size(), 1u) << b.dir;
-        // A `none` book (EQUITY_MR since T-6b commit 8) has no gating module; its values are
-        // written literally in its reporter block, which is what still measures it.
+        // A `none` book (EQUITY_MR) has no gating module; its values are written literally in
+        // its reporter block, which is what measures it.
         const bool none_book = risk.at("modules").at(0).at("type") == "none";
         const auto& module = none_book ? risk.at("risk_reporting") : risk.at("modules").at(0);
         if (b.overlay) {
@@ -857,8 +855,8 @@ TEST_F(ConfigLoaderTest, RemovedKeyUseRiskManagementIsALoadErrorWhereverItHides)
     EXPECT_EQ(load_error(minimal_risk(), portfolio_override),
               "config for TEST_PORTFOLIO: strategies.TREND_FOLLOWING.config.use_risk_management "
               "(use_risk_management) was removed in schema 2; risk is assigned by risk.json "
-              "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
-              "T-RISK-ARCH_ADVERSARIAL E2)");
+              "\"modules\". Delete the key (a leftover false would silently turn risk back on"
+              ")");
 }
 
 TEST_F(ConfigLoaderTest, RemovedKeyRiskDefaultsIsALoadError) {
@@ -904,7 +902,7 @@ TEST_F(ConfigLoaderTest, UseOptimizationIsRequiredAndBoolean) {
               "config for TEST_PORTFOLIO: portfolio.json must set \"use_optimization\" (true or "
               "false) at its top level; schema 2 has no default");
 
-    // A quoted "true" is the typo that used to read as absent and take the default.
+    // A quoted "true" is a typo; it is refused, not read as absent and given the default.
     EXPECT_EQ(load_error(minimal_risk(), {{"use_optimization", "true"}}),
               "config for TEST_PORTFOLIO: portfolio.json must set \"use_optimization\" (true or "
               "false) at its top level; schema 2 has no default");
@@ -917,9 +915,8 @@ TEST_F(ConfigLoaderTest, UseOptimizationResolvesFromPortfolioJson) {
     EXPECT_FALSE(r.value().use_optimization);
 }
 
-// T-6c commit B: portfolio.json "covariance_history_prices", the PortfolioManager's covariance
-// history length in prices per symbol. Read through to_json() so this test compiles against the
-// parent source, where the key has no reader.
+// portfolio.json "covariance_history_prices", the PortfolioManager's covariance history length
+// in prices per symbol, read through to_json().
 TEST_F(ConfigLoaderTest, CovarianceHistoryPricesAbsentMeans756) {
     write_full_set("base");  // minimal_portfolio() does not write the key
     auto r = ConfigLoader::load(base_, "base");
@@ -962,9 +959,9 @@ TEST(TrackedTemplateCovarianceHistory, EveryBookDeclares756) {
     }
 }
 
-// T-7b-1 7d: portfolio.json "covariance_stale_dates", how many union dates a covariance
-// participant's last date may trail the newest before the optimizer leaves it out of the date
-// intersection. Read through to_json() so this test compiles against the parent source.
+// portfolio.json "covariance_stale_dates", how many union dates a covariance participant's last
+// date may trail the newest before the optimizer leaves it out of the date intersection, read
+// through to_json().
 TEST_F(ConfigLoaderTest, CovarianceStaleDatesAbsentMeans5) {
     write_full_set("base");
     auto r = ConfigLoader::load(base_, "base");
@@ -1007,9 +1004,9 @@ TEST(TrackedTemplateCovarianceStaleDates, EveryBookDeclares5) {
     }
 }
 
-// T-7b-2 9h (HD 2026-09-25): CONSERVATIVE's trend sleeve runs IDM 2.5, Carver's table row for
+// CONSERVATIVE's trend sleeve runs IDM 2.5, Carver's table row for
 // 30 or more instruments (the universe is 36 names); the subsystem-return formula, correlations
-// floored at 0, reaches the 2.5 cap on the same 36. BASE already shipped 2.5 on both sleeves.
+// floored at 0, reaches the 2.5 cap on the same 36. BASE runs 2.5 on both sleeves.
 // Read through the loader's strategies block, which is what the futures runners size with.
 TEST(TrackedTemplateTrendIdm, ConservativeResolvesCarversThirtyPlusRowAndBaseStays25) {
     const auto tmpl = tracked_config_template();
@@ -1045,7 +1042,7 @@ TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
     risk2.erase("max_leverage");
     EXPECT_EQ(load_error(risk2),
               "risk config for TEST_PORTFOLIO: risk.max_leverage is required and must be > 0 (it "
-              "sizes the book: trend_following.cpp:1216)");
+              "sizes the book)");
     auto risk3 = minimal_risk();
     risk3["max_drawdown"] = 1.2;
     EXPECT_EQ(load_error(risk3),
@@ -1077,7 +1074,7 @@ TEST_F(ConfigLoaderTest, RiskConfigIsBackFilledFromTheReporterNotTheModule) {
     EXPECT_EQ(r.value().risk_schema.portfolio.front().type, "none");
 }
 
-// PR #60's path: a DB override is merged back through to_json -> merge_json ->
+// A DB override is merged back through to_json -> merge_json ->
 // extract_config. Under schema 2 that only survives if to_json emits the schema-2 risk
 // object and no removed key; otherwise extract_config fails, the loader WARNs and every
 // DB override is silently discarded.
@@ -1138,7 +1135,7 @@ TEST(TrackedTemplateRoundTrip, EveryBookSurvivesToJsonThenExtractWithItsOwnLimit
         << "CONSERVATIVE's risk.json retires max_leverage (overlay book); none may be invented";
 }
 
-// Ruling 7: the equity runners keep the hard-coded false AND refuse to start on a config
+// The equity runners keep the hard-coded false AND refuse to start on a config
 // true. The guard is shared by both runners so they cannot drift; this is it.
 TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
     EXPECT_TRUE(apps::refuse_if_optimizer_requested(false).is_ok())
@@ -1147,14 +1144,14 @@ TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
     ASSERT_TRUE(refused.is_error());
     EXPECT_EQ(std::string(refused.error()->what()),
               "Refusing to start: portfolio.json sets use_optimization=true, but the equity "
-              "runners do not run the optimizer (HD 2026-09-01; see the comment at the "
+              "runners do not run the optimizer (see the comment at the "
               "hard-code).");
 }
 
-// LOOP_SPEC sections 2.5 and 7.7 (D40): portfolio.json "equity_slow_rule". Parsed strictly when
+// portfolio.json "equity_slow_rule". Parsed strictly when
 // present; a futures book requires it (the four futures runners call require_loop_keys).
 // A risk.json whose carver module carries the overlay's three risk limits (ratios to tau).
-// With them the module is the overlay (LOOP_SPEC section 7.7): it carries the per-name cap and
+// With them the module is the overlay: it carries the per-name cap and
 // the trim cap, and the old gate's three limits and the top-level max_leverage are not in the file.
 nlohmann::json overlay_risk() {
     nlohmann::json risk = minimal_risk();
@@ -1238,7 +1235,7 @@ TEST_F(ConfigLoaderTest, AMalformedEquitySlowRuleIsALoadError) {
     }
 }
 
-// LOOP_SPEC sections 3.1 and 7.7 (D19): portfolio.json "sizing_mode" and "starting_capital", both
+// portfolio.json "sizing_mode" and "starting_capital", both
 // required on a futures book; the one mode is "half_compounding" and the starting capital is the
 // book's initial_capital.
 TEST_F(ConfigLoaderTest, TheSizingModeAndStartingCapitalAreRequiredOnAFuturesBook) {
@@ -1289,8 +1286,8 @@ TEST_F(ConfigLoaderTest, ABadSizingModeOrStartingCapitalIsALoadError) {
 }
 
 
-// LOOP_SPEC sections 4, 7.7 and 12: the overlay's three risk limits on the carver module, ratios to
-// tau. All three or none; a futures book requires them.
+// The overlay's three risk limits on the carver module, ratios to tau. All three or none; a
+// futures book requires them.
 TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
     const nlohmann::json keys = {
         {"equity_slow_rule", {{"symbols", {"MES"}}, {"pairs", nlohmann::json::array({{32, 128}})}}},
@@ -1325,7 +1322,7 @@ TEST_F(ConfigLoaderTest, TheOverlayLimitsAreParsedAndRequiredOnAFuturesBook) {
     }
 }
 
-// LOOP_SPEC section 7.7: the one pass's keys are required on a futures book, each named when it
+// The one pass's keys are required on a futures book, each named when it
 // is missing: cost_penalty_scalar, sign_close_band and b_sigma_floor in defaults.json's
 // optimization block; per_name_cap and trim_max on the module that carries the overlay's limits.
 TEST_F(ConfigLoaderTest, TheOnePassKeysAreRequiredOnAFuturesBook) {
@@ -1399,7 +1396,7 @@ TEST_F(ConfigLoaderTest, TheOnePassKeysAreRequiredOnAFuturesBook) {
     }
 }
 
-// LOOP_SPEC section 7.7: every retired key is REFUSED on a futures book, never ignored, and the
+// Every retired key is REFUSED on a futures book, never ignored, and the
 // refusal names the key. The same keys stay legal on a book that runs no overlay.
 TEST_F(ConfigLoaderTest, EveryRetiredKeyIsRefusedOnAFuturesBook) {
     // risk.json: the old gate's limits on the overlay's module and in its reporter, and the
@@ -1763,7 +1760,7 @@ TEST_F(ConfigLoaderTest, TheTemplatesMultiplierRowsAreTableThirtySix) {
               nlohmann::json::array({{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}}));
 }
 
-// The shipped CONSERVATIVE template carries the owner's list (HD 2026-10-09): eighteen rules on
+// The shipped CONSERVATIVE template carries the owner's list: eighteen rules on
 // twelve contracts, each entry the contract's fastest pairs, none on an equity index contract.
 // BASE carries no list.
 TEST_F(ConfigLoaderTest, TheConservativeTemplateCarriesTheTradingRuleRemovals) {
@@ -1795,7 +1792,7 @@ TEST_F(ConfigLoaderTest, TheConservativeTemplateCarriesTheTradingRuleRemovals) {
     EXPECT_TRUE(base.value().trading_rule_removals.empty());
 }
 
-// portfolio.json's optional "carry" block (trade-ngin #185): absent or weight 0 is carry off;
+// portfolio.json's optional "carry" block: absent or weight 0 is carry off;
 // present it is parsed strictly, and with weight above 0 only a book of one trend sleeve may carry it.
 TEST_F(ConfigLoaderTest, CarryAbsentIsOffAndTheBlockIsReadAsWritten) {
     write_full_set("base");

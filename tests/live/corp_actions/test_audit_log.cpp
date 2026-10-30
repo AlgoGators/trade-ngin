@@ -1,9 +1,6 @@
 // CorporateActionsAuditLog -- the dedup record that makes corp-action
 // application idempotent, plus the DB/file backing behind it.
 //
-// Consolidated from test_corp_actions_audit_log.cpp, test_corp_actions_dedup_durability.cpp
-// and the audit-log half of test_corp_actions_ultrareview_fixes.cpp.
-//
 // Contracts worth keeping in view: a read FAILURE must stay distinguishable
 // from an empty record (conflating them yields an empty applied-set, which
 // re-applies every event in the window); the record is keyed on strategy_name
@@ -28,7 +25,6 @@
 // ---------------------------------------------------------------------------
 // SUBJECT: the record's basic contract -- first run is empty, a recorded
 // event survives save/reload, and a second run does not re-apply it.
-// from test_corp_actions_audit_log.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -36,7 +32,7 @@ namespace audit_core {
 
 using namespace trade_ngin;
 
-// Phase 4 audit test T4.4 — idempotency via the on-disk dedup state file.
+// Idempotency via the on-disk dedup state file.
 
 namespace {
 
@@ -161,7 +157,6 @@ TEST_F(CorpActionsAuditLogTest, IdempotencyAcrossTwoRuns) {
 // file import, two strategies sharing one strategy_id, and a read failure
 // that must NOT read as 'nothing applied yet'. Re-application is permanent
 // corruption, so these are the highest-stakes cases in the component.
-// from test_corp_actions_dedup_durability.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -169,13 +164,12 @@ namespace audit_dedup {
 
 using namespace trade_ngin;
 
-// Dedup used to live in <state_dir>/applied_corp_actions.json, under a path that
-// resolves to /app/state in the container with no volume declared -- so losing it
-// on redeploy was the DEFAULT. A dedup record that evaporates makes a lookback
-// window wide enough to cover a real outage unsafe, because every event in it
-// would be re-applied to positions. Migration 002 moved the record into
-// trading.corp_action_applied; these tests pin the behaviour that makes the wide
-// window safe.
+// A dedup record that evaporates makes a lookback window wide enough to cover a
+// real outage unsafe, because every event in it would be re-applied to positions.
+// A record kept in <state_dir>/applied_corp_actions.json resolves to /app/state in
+// the container with no volume declared, so it would be lost on every redeploy;
+// the record lives in trading.corp_action_applied (migration 002), and these tests
+// pin the behaviour that makes the wide window safe.
 namespace {
 
 // Stands in for the DB so the durability contract is testable without one:
@@ -399,14 +393,13 @@ TEST(CorpActionDedupDurability, DedupIsScopedPerStrategy) {
 // ---------------------------------------------------------------------------
 // Fail-closed contract.
 //
-// load() used to return a bare bool for three different situations: DB read
-// error, read-OK-but-empty, and no-state-file. The caller could not tell them
-// apart, so a transient read failure produced an EMPTY applied-set and the
-// runner carried on -- making every is_applied() false and re-applying every
-// event in the window. record()'s ON CONFLICT protects the table, not the
-// positions already double-adjusted in memory and written to
-// trading.positions. E1 widened that window from 14 days to position
-// inception, so the blast radius can span years.
+// load() tells three situations apart: DB read error, read-OK-but-empty, and
+// no-state-file. Conflated, a transient read failure would produce an EMPTY
+// applied-set and the runner would carry on -- making every is_applied() false
+// and re-applying every event in the window. record()'s ON CONFLICT protects the
+// table, not the positions already double-adjusted in memory and written to
+// trading.positions. The window reaches back to position inception, so the blast
+// radius can span years.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -660,7 +653,6 @@ TEST(CorpActionRenameBridge, OnlyTheDatabaseBackingBridgesRenames) {
 
 // ---------------------------------------------------------------------------
 // SUBJECT: the cash figure recorded per event, measured at the ex-date.
-// from ur_audit.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
 // ---------------------------------------------------------------------------
@@ -668,14 +660,11 @@ namespace audit_ex_date_cash {
 
 using namespace trade_ngin;
 
-// Ultrareview PR #38 fix verification.
-// Pins the three behaviors that ultrareview flagged as real correctness or
-// durability gaps and we resolved in this PR:
-//   - bug_021 (cash-basis qty): the audit log records ex_date qty, not today's.
-//   - bug_003 (atomic save):    the on-disk state file is written via tmp+rename.
-// bug_007, merged_bug_001, bug_013, bug_037, bug_002 are wire-up concerns in
-// the live equity app's main() and are exercised via integration / manual
-// verification (the unit-test surface here is just the pure-logic layer).
+// Pins the quantity a dividend is recorded on and the save's atomicity:
+//   - the audit log records ex_date qty, not today's;
+//   - the on-disk state file is written via tmp+rename.
+// The wire-up in the live equity app's main() is exercised via integration /
+// manual verification (the unit-test surface here is just the pure-logic layer).
 
 namespace {
 
@@ -704,7 +693,7 @@ CorpActionEvent dividend_event(const std::string& symbol,
 
 }  // namespace
 
-// bug_021: cash-flow figure uses ex_date qty (not today's), so a catch-up
+// The cash-flow figure uses ex_date qty (not today's), so a catch-up
 // run days after the ex_date still records the correct dividend cash.
 //
 // Setup: position is 100 today, but on ex_date the operator was holding 200.
@@ -731,7 +720,7 @@ TEST(CorpActionsUltrareviewFixes, AuditLogTotalCashHonorsExDateQty) {
     std::filesystem::remove_all(state_dir, ec);
 }
 
-// bug_003: save() must be atomic -- write to a sibling .tmp and rename
+// save() must be atomic -- write to a sibling .tmp and rename
 // into place. After a successful save, the .tmp must not linger.
 
 TEST(CorpActionsUltrareviewFixes, AtomicSaveLeavesNoTempFile) {
@@ -772,7 +761,7 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveLeavesNoTempFile) {
     std::filesystem::remove_all(state_dir, ec);
 }
 
-// bug_003 regression: a stale .tmp from an earlier crash is harmless --
+// A stale .tmp from an earlier crash is harmless --
 // the next save() overwrites it via the rename, leaving the final file
 // valid and the .tmp gone.
 
@@ -821,16 +810,16 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveOverwritesStaleTempFile) {
 }  // namespace audit_ex_date_cash
 
 // ──────────────────────────────────────────────────────────────────────────
-// E2-F39 / BA-15 -- the legacy state-file import must key dividend detail on
+// The legacy state-file import must key dividend detail on
 // the ACTION TYPE too, not just (symbol, ex_date).
 //
 // The file records applied events as (symbol, ex_date, action_type) but carries
 // dividend detail as (symbol, ex_date) only -- DividendEvent has no type field,
-// because everything in that list IS a dividend. The import matched on the pair
-// alone, so a SPLIT sharing an ex-date with a DIVIDEND inherited the dividend's
-// qty_held / dividend_per_share / total_cash. The same cash then shows up twice
-// in cumulative dividend income: on the dividend row that paid it and on the
-// split row that paid nothing.
+// because everything in that list IS a dividend. Matching on the pair alone would
+// hand a SPLIT sharing an ex-date with a DIVIDEND the dividend's qty_held /
+// dividend_per_share / total_cash, and the same cash would show up twice in
+// cumulative dividend income: on the dividend row that paid it and on the split
+// row that paid nothing.
 //
 // Same-day split-and-dividend is not exotic: a company declaring a split
 // commonly sets its ex-date to a dividend ex-date so the two settle together.
@@ -908,7 +897,7 @@ TEST(LegacyImportDividendDetail, AnEmptyDetailListYieldsNothingForAnyType) {
 }
 
 // ---------------------------------------------------------------------------
-// E2-F23 (audit option C-prime) -- dedup rows from a LATER pass must stop the run.
+// Dedup rows from a LATER pass must stop the run.
 //
 // A live run is correct exactly when the dedup rows and the T-1 position row come
 // from the SAME pass. Reset the book but not trading.corp_action_applied and it is
@@ -917,7 +906,7 @@ TEST(LegacyImportDividendDetail, AnEmptyDetailListYieldsNothingForAnyType) {
 // basis that never moved. Measured: BKNG 25:1, ex-date 2026-04-06, re-run of
 // 2026-04-07 over an un-reset dedup table, -4,824 of phantom unrealized P&L.
 //
-// Nothing downstream can catch it. The G3 basis/mark bound only inspects events
+// Nothing downstream can catch it. The basis/mark bound only inspects events
 // that were APPLIED, and a deduped event never enters that list. The existing
 // ex_date >= today detector cannot see it either: 2026-04-06 is safely in the
 // past. `applied_at` cannot, because an earlier chain always carries an earlier
@@ -960,7 +949,7 @@ TEST(CorpActionRunDateGuard, ARowFromALaterPassRefusesTheRun) {
     }
 
     // The book is re-seeded and 2026-04-07 is replayed, but the dedup table was
-    // not reset. This is the measured F23 case, and it must not start.
+    // not reset. This is the case above, and it must not start.
     CorporateActionsAuditLog rerun(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
                                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
     rerun.set_run_date("2026-04-07");

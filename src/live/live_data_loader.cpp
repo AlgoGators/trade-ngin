@@ -114,7 +114,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "gross_profit, gross_loss, "
         "active_positions, winning_days, "
         "losing_days, total_days, "
-        "COALESCE(daily_roll_costs, 0), COALESCE(total_roll_costs, 0) "  // T-ROLLX (017), appended
+        "COALESCE(daily_roll_costs, 0), COALESCE(total_roll_costs, 0) "  // migration 017, appended
         "FROM " +
         schema_ +
         ".live_results "
@@ -150,14 +150,14 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
 
     // Extract all fields from the result.
     //
-    // Phase 5 §1.17a + §5d: numeric columns are decoded via
+    // Numeric columns are decoded via
     // DataConversionUtils::safe_get_* which dispatches on the actual Arrow
     // type (DOUBLE / INT64 / STRING fallback) and logs WARN on parse
     // failures instead of returning a silent 0.0. The sequential `col++`
     // pattern below is preserved so the column ordering of the SELECT keeps
     // driving the row fields directly.
     int col = 0;
-    // T-ROLLX-FIX (017): the two roll cost columns are appended to the SELECT; a result narrower
+    // Migration 017: the two roll cost columns are appended to the SELECT; a result narrower
     // than the SELECT (a double serving the older 31-column shape) reads them as 0 instead of
     // reading a column past the table's end (undefined behaviour), and says so once per run: a
     // missing migration is never silent.
@@ -222,7 +222,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.winning_days = get_int();
     row.losing_days = get_int();
     row.total_days = get_int();
-    row.daily_roll_costs = get_double();  // T-ROLLX (017), appended to the SELECT
+    row.daily_roll_costs = get_double();  // migration 017, appended to the SELECT
     row.total_roll_costs = get_double();
 
     INFO("Loaded live results for " + date_str + ": PnL=$" + std::to_string(row.daily_pnl) +
@@ -715,7 +715,7 @@ Result<std::vector<std::string>> LiveDataLoader::load_futures_statistics_grid(
         }
         universe += (universe.empty() ? "'" : ", '") + quoted + "'";
     }
-    // T-8D R3 / T-8D-2 R81: the statistics grid, from the bars alone -- a Sunday-to-Friday date
+    // The statistics grid, from the bars alone -- a Sunday-to-Friday date
     // (EXTRACT(DOW) 6 is Saturday) on which enough distinct symbols of the universe printed.
     // Statistics only: no session classifier verdict and no closed-market guard is read.
     const std::string query =
@@ -835,7 +835,7 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         actual_portfolio_id +
         "' "
         "AND DATE(execution_time) <= '" +
-        date_str + "' AND execution_type = 'STRATEGY'";  // T-ROLLX: ROLL legs are not trades
+        date_str + "' AND execution_type = 'STRATEGY'";  // ROLL legs are not trades
 
     DEBUG("Loading total trades count: " + query);
 

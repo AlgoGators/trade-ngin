@@ -12,12 +12,12 @@
 namespace trade_ngin {
 
 /**
- * @brief The replace of a day's executions, sleeve by sleeve, on ONE open transaction (T-ROLLX-FIX
- *        commits 5 and 6; T-DATED R3, HD 2026-10-10). Per sleeve, in this order:
+ * @brief The replace of a day's executions, sleeve by sleeve, on ONE open transaction. Per sleeve,
+ *        in this order:
  *
  *          1. the sweep: every row of the sleeve and portfolio dated `day`, of every type, so an
  *             order an earlier run of the date made and this run no longer makes does not stay;
- *          2. the delete of the rows carrying this run's order ids (no calendar date: E2-F4, F-C);
+ *          2. the delete of the rows carrying this run's order ids (no calendar date);
  *          3. the insert of this run's rows.
  *
  *        The transaction is committed once, after every sleeve, and only when every step

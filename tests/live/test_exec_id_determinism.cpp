@@ -1,14 +1,13 @@
-// T-7a C2b: the live execution id is EXEC_<symbol>_<YYYYMMDD>.
+// The live execution id is EXEC_<symbol>_<YYYYMMDD>.
 //
-// Before this commit ExecutionManager built EXEC_<symbol>_<run instant in ms>_<n>, n being
-// the fill's index in that call's output, i.e. the iteration order of an unordered_map.
-// The same fills could be numbered differently, and one fill appearing or disappearing
-// renumbered unrelated fills of the same day (T-4c F13: six fills re-keyed when one MYM
-// execution moved from 04-24 to 05-02).
+// An id built from the run instant and the fill's index in the call's output
+// (EXEC_<symbol>_<run instant in ms>_<n>) follows the iteration order of an unordered_map:
+// the same fills could be numbered differently, and one fill appearing or disappearing
+// would renumber unrelated fills of the same day (one MYM execution moving from 04-24 to
+// 05-02 re-keys six fills).
 //
 // These tests go through the public generate_daily_executions (and, for the equity
-// runner, LiveDailyCycle::execute_day_t) only, so they compile unchanged on the parent
-// source and fail there on the id's value.
+// runner, LiveDailyCycle::execute_day_t) only, and assert the id's value.
 //
 // Timestamps are fixed instants so the expected date does not depend on the host's zone:
 //   2026-04-24 05:00:00Z  the futures runners' `now` (local midnight on a US-Central host)
@@ -78,7 +77,7 @@ std::unordered_map<std::string, std::string> ids_by_symbol(const std::vector<Exe
 
 }  // namespace
 
-// RED on the parent: EXEC_6A.v.0_1777006800000_<n>.
+// Index numbering would give EXEC_6A.v.0_1777006800000_<n>.
 TEST(ExecIdDeterminism, FuturesIdIsExecSymbolRunDate) {
     ExecutionManager em;
     Day d = six_fill_day();
@@ -103,8 +102,8 @@ TEST(ExecIdDeterminism, ExecIdSharesTheOrderIdDate) {
     }
 }
 
-// T-4c F13's case. RED on the parent: the removed fill is the one numbered _0, so the five
-// that remain held suffixes {1..5} and now hold {0..4}; at least one must be renumbered.
+// The removed fill is the one an index would number _0, so under index numbering the five
+// that remain would move from suffixes {1..5} to {0..4}; none may be renumbered.
 TEST(ExecIdDeterminism, RemovingOneExecutionDoesNotRenumberAnother) {
     ExecutionManager em;
     Day d = six_fill_day();
@@ -112,7 +111,7 @@ TEST(ExecIdDeterminism, RemovingOneExecutionDoesNotRenumberAnother) {
     ASSERT_TRUE(full.is_ok());
     ASSERT_EQ(full.value().size(), 6u);
 
-    const std::string removed = full.value().front().symbol;  // the fill the parent numbered _0
+    const std::string removed = full.value().front().symbol;  // the fill index numbering calls _0
     d.current.erase(removed);
     d.previous.erase(removed);
     auto less = em.generate_daily_executions(d.current, d.previous, d.prices, kFuturesNow);
@@ -127,7 +126,7 @@ TEST(ExecIdDeterminism, RemovingOneExecutionDoesNotRenumberAnother) {
 }
 
 // A fill's id does not depend on what else traded that day or in which order the maps
-// were built. RED on the parent: alone it is always _0.
+// were built. Under index numbering, alone it is always _0.
 TEST(ExecIdDeterminism, IdIndependentOfOtherExecutionsThatDay) {
     ExecutionManager em;
     Day d = six_fill_day();
@@ -159,7 +158,7 @@ TEST(ExecIdDeterminism, IdIndependentOfOtherExecutionsThatDay) {
 }
 
 // The id names the run DATE, not the instant: the futures `now` (05:00Z) and a 00:00Z
-// `now` of the same UTC day give the same id. RED on the parent (the ms differ).
+// `now` of the same UTC day give the same id (an instant in ms would differ).
 TEST(ExecIdDeterminism, IdCarriesTheDateNotTheInstant) {
     ExecutionManager em;
     Book cur{{"MES.v.0", pos("MES.v.0", 1.0, 0.0)}};
@@ -175,7 +174,7 @@ TEST(ExecIdDeterminism, IdCarriesTheDateNotTheInstant) {
 }
 
 // The equity runner reaches the same generator through LiveDailyCycle::execute_day_t.
-// RED on the parent: EXEC_AAPL_1781049600000_<n>.
+// Index numbering would give EXEC_AAPL_1781049600000_<n>.
 TEST(ExecIdDeterminism, EquityDayTIdIsExecSymbolRunDate) {
     ExecutionManager em;
     Book positions{{"AAPL", pos("AAPL", 21.5, 0.0)}, {"MSFT", pos("MSFT", 3.0, 0.0)}};

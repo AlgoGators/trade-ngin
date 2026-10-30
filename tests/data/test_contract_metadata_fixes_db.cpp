@@ -1,4 +1,4 @@
-// The contract metadata the runners load, after migration 019 (LOOP_SPEC v6.2 section 7.6):
+// The contract metadata the runners load, after migration 019:
 //   6A and 6L carry the exchange tick, 0.00005 in price and 5 dollars a contract, and the two
 //     columns agree with the contract size (the registry's own consistency rule);
 //   6B, 6E, 6S, ZS and ZW carry the broker symbol of the full-size contract;

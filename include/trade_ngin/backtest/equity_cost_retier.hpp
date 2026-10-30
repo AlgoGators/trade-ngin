@@ -1,15 +1,12 @@
 // include/trade_ngin/backtest/equity_cost_retier.hpp
 //
-// K1 (T-4b BT-cost-tier-warmup; STAGE3_PLAN §25a item 3, T-7b-2 8c): the equity backtest re-tiers
+// The equity backtest re-tiers
 // every symbol's liquidity-tiered cost config on every bar, from the 20 bars ending at the bar the
 // fill is priced at, in split-consistent share units, on BOTH cost managers that price a backtest
-// fill (the coordinator's execution manager's and the PortfolioManager's own, E2-C9).
-//
-// Before this, bt_equity_mr registered each symbol's tier ONCE, before the run, from the 20 bars
-// before start_date (equity_cost_warmup.hpp), and that tier priced every fill of a two-year window
-// while live re-tiers on every run from the 20 bars ending at T-1
-// (register_equity_costs_from_bars). A symbol whose liquidity moved kept its start-of-window tier
-// (ABT: LARGE in the warm-up, MEGA later).
+// fill (the coordinator's execution manager's and the PortfolioManager's own), as live re-tiers on
+// every run from the 20 bars ending at T-1 (register_equity_costs_from_bars). The tier registered
+// before the run (equity_cost_warmup.hpp) would otherwise price every fill of the window, and a
+// symbol whose liquidity moved would keep its start-of-window tier.
 //
 // The unit. The backtest's prices and quantities are back-adjusted to the window's end
 // (market_data_utils.cpp build_equity_adjusted_query: a bar's price is divided by the split factor
@@ -19,14 +16,14 @@
 // split factors of every ex-date STRICTLY AFTER the bar's own date, up to the run's end date (a
 // bar ON its ex-date already trades in the new shares). That is the unit of the adjusted price and
 // of the traded quantity. The same split-consistent volume feeds the impact model's ADV in the
-// equity path (T-4b ADVERSARIAL A-3: the ADV that picks the tier and the ADV that scales
+// equity path (the ADV that picks the tier and the ADV that scales
 // participation are then one unit, as live's are the same twenty observations).
 //
-// Frames, stated (T-4b ADVERSARIAL A-2): the backtest tiers in the END-DATE frame, live in the
+// Frames, stated: the backtest tiers in the END-DATE frame, live in the
 // T-1 frame; they coincide on every bar with no later split inside the window. Live's own
 // 20-session mixed-unit window after a split is not changed here.
 //
-// No hysteresis band (T-4b: it bought $0.0012 and would put the backtest out of step with live's
+// No hysteresis band (it would put the backtest out of step with live's
 // stateless re-tier). The tier's registration price is the window's last close (it only decides
 // the sub-$1 tick rule).
 

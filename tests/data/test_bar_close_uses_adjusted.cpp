@@ -6,16 +6,13 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
 
-// Regression test for audit finding §1.11: equity Bars must carry a continuous
-// split/dividend-adjusted series, because strategy signals break across
-// corporate actions otherwise.
+// Equity Bars must carry a continuous split/dividend-adjusted series, because
+// strategy signals break across corporate actions otherwise.
 //
-// This used to be a source-text guard asserting the SQL contained
-// `(closeadj / close)`. That contract is gone: the loader is now per-bar-native
-// (Phase 4.2) — it reads RAW prices plus div_cash/split_factor and computes the
-// backward cumulative adjustment itself, rather than trusting the vendor's
-// derived adj_*/closeadj columns (whose refresh job stalled on 2026-08-06 and
-// left them stale). The guard is now behavioural: exercise the real adjustment
+// The loader is per-bar-native: it reads RAW prices plus div_cash/split_factor
+// and computes the backward cumulative adjustment itself, rather than trusting
+// the vendor's derived adj_*/closeadj columns (whose refresh job stalled on
+// 2026-08-06 and left them stale). The test exercises the real adjustment
 // function against fixtures taken from production data.
 //
 // Fixtures below are real rows from equities_data.ohlcv_1d (raw close,

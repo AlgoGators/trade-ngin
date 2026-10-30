@@ -21,8 +21,8 @@ namespace trade_ngin {
  *
  * The run dated D+1 settles the row dated D on the D bar. When that bar is missing at that run, the
  * row books 0. When it arrives afterwards, the next run settles its own Day T-1 against the D close
- * (the previous CONSUMED bar), so the move from the bar before D to D is on no stored row. The
- * ruling (HD 2026-10-07): no catch-up and no refusal; the run that first consumes the late bar
+ * (the previous CONSUMED bar), so the move from the bar before D to D is on no stored row. There
+ * is no catch-up and no refusal; the run that first consumes the late bar
  * prints ONE line at WARNING naming the symbol, the bar's date, the unbooked amount (the quantity
  * of the stored row of that date x (the bar's close - the close of the consumed bar before it) x
  * the point value) and the remedy: re-run the date that settles the bar and every later date in
@@ -32,13 +32,13 @@ namespace trade_ngin {
  * T-1 bar (so each late bar is named once, by the first run whose settlement steps over it):
  *   - the symbol is held in the stored T-1 book and has a consumed T-1 bar on this run;
  *   - the bar's close differs from the close of the consumed bar before it;
- *   - the two bars are of one contract (a change bar and a flip pair book 0 by design, section 6.6);
+ *   - the two bars are of one contract (a change bar and a flip pair book 0 by design);
  *   - the stored rows of the bar's date hold the symbol at a non-zero quantity and every one of
  *     them books a realized P&L of exactly 0.
  * The walk stops at the first bar that fails one of them. A symbol whose roll this run settles
  * late (LiveRollState::late) is left out: that settlement books its unbooked bars itself.
  *
- * The walk is BOUNDED (HD 2026-10-08): at most kLateBarMaxBarsBack consumed bars back per symbol
+ * The walk is BOUNDED: at most kLateBarMaxBarsBack consumed bars back per symbol
  * are listed. When the next bar back would also have been listed, the symbol gets ONE further
  * entry (`earlier_rows_not_listed`) whose line says that earlier stored rows of the symbol also
  * book 0 and are not listed, and the date the listing stops at. It names no amount and no remedy,

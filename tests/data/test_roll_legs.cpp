@@ -1,8 +1,8 @@
-// The two ROLL fills of a held position on the confirming bar (LOOP_SPEC v6.1 section 6.5; T-ROLLX
-// commit 3), built by roll_series::make_roll_legs: closing leg at the last pre-change close on the
-// side opposite to the position, opening leg at the change bar's close with the position, both
-// |q| contracts, each costed by the model, type ROLL, netting 0, the contract ids, the ids given;
-// nothing for a flat position; a leg without a usable close is refused (STRICT).
+// The two ROLL fills of a held position on the confirming bar, built by
+// roll_series::make_roll_legs: closing leg at the last pre-change close on the side opposite to the
+// position, opening leg at the change bar's close with the position, both |q| contracts, each
+// costed by the model, type ROLL, netting 0, the contract ids, the ids given; nothing for a flat
+// position; a leg without a usable close is refused (STRICT).
 #include <gtest/gtest.h>
 #include <chrono>
 #include <stdexcept>

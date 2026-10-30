@@ -260,8 +260,8 @@ enum class Side {
 };
 
 /**
- * @brief The class of an execution row (executions.execution_type, migration 015; LOOP_SPEC
- *        v6.1 sections 6.5 and 7, T-ROLLX): STRATEGY = the day's fill against the target; ROLL =
+ * @brief The class of an execution row (executions.execution_type, migration 015):
+ *        STRATEGY = the day's fill against the target; ROLL =
  *        one leg of a contract roll (mechanical, outside every strategy trade measure, inside the
  *        costs and the equity curve); BORROW = the backtest's synthetic overnight borrow-fee row
  *        on a short equity position (quantity 0).
@@ -316,9 +316,9 @@ enum class RollFromKind {
     /// NOT a roll bar: a bar after one (up to the next), carrying the old contract's close on THIS
     /// date. Read only by a consumer that withheld the roll bar and every bar since (the
     /// consumed-bar rule): it books the roll on this bar, the old contract's move up to it and both
-    /// legs at this bar's closes (HD 2026-10-23).
+    /// legs at this bar's closes.
     AFTER_ROLL,
-    /// Rolls step 4, ruling 19 (portfolio.json per_contract_switch_bar "vendor"): AWAITS_NEXT with
+    /// portfolio.json per_contract_switch_bar "vendor": AWAITS_NEXT with
     /// the bar the other way round. The bar is the TARGET's own bar (the contract the vendor
     /// switched to, a one-bar stray included: no run can tell them apart on the bar) and this field
     /// names the HELD contract, its close and id on this date. The bar's move is the held
@@ -328,31 +328,30 @@ enum class RollFromKind {
     /// close. So the booked moves and the legs are AWAITS_NEXT's; only the levels read on the bar
     /// (sizing, marks, notional, the overlay) and the session classifier's reading of it differ.
     AWAITS_NEXT_VENDOR,
-    /// R6 (HD 2026-10-26): KNOWN, but the change of a micro's price source (the vendor's 2026-02-22
+    /// KNOWN, but the change of a micro's price source (the vendor's 2026-02-22
     /// change: before it the micro's series is the full-size contract of the same expiry, from it
     /// the micro's own; contract_roll_rule.hpp MicroAlias). Read by the series exactly as KNOWN (the
     /// old contract's move booked to its close, the gap excluded, the held contract the new one),
     /// but no trade: the account holds the micro contract throughout, so no legs, no cost.
     SOURCE_CHANGE,
-    /// R6: AFTER_ROLL following a SOURCE_CHANGE: a consumer that withheld the change bar reads the
+    /// AFTER_ROLL following a SOURCE_CHANGE: a consumer that withheld the change bar reads the
     /// change on its first consumed bar, as SOURCE_CHANGE, at that bar's two closes.
     AFTER_SOURCE_CHANGE,
 };
 
-/// R6: the kind as the series reads it (SOURCE_CHANGE as KNOWN, AFTER_SOURCE_CHANGE as AFTER_ROLL).
+/// The kind as the series reads it (SOURCE_CHANGE as KNOWN, AFTER_SOURCE_CHANGE as AFTER_ROLL).
 inline RollFromKind series_kind(RollFromKind kind) {
     if (kind == RollFromKind::SOURCE_CHANGE) return RollFromKind::KNOWN;
     if (kind == RollFromKind::AFTER_SOURCE_CHANGE) return RollFromKind::AFTER_ROLL;
     return kind;
 }
-/// R6: the field marks a change of price source, not a roll the account trades.
+/// The field marks a change of price source, not a roll the account trades.
 inline bool is_price_source_change(RollFromKind kind) {
     return kind == RollFromKind::SOURCE_CHANGE || kind == RollFromKind::AFTER_SOURCE_CHANGE;
 }
 
 /**
- * @brief The contract a per-contract roll bar left (rolls step 3, portfolio.json per_contract_rolls;
- *        ROLLS_STEP1_PLAN section 2).
+ * @brief The contract a per-contract roll bar left (portfolio.json per_contract_rolls).
  *
  * With the switch on, the futures bar source hands out the held contract's own bar on each date of
  * the vendor's grid (data/per_contract_source.hpp). On a roll bar that is the NEW contract's bar,
@@ -367,13 +366,13 @@ struct RollFrom {
     double close{0.0};          ///< the old contract's close on this bar (AWAITS_NEXT: the target's)
     std::string instrument_id;  ///< the old contract's id string (AWAITS_NEXT: the target's)
     RollFromKind kind{RollFromKind::KNOWN};
-    /// Rolls step 4 (R3 audit A, the 6L 2013-09-11 case): the roll's date, YYYY-MM-DD. KNOWN: this
+    /// The roll's date, YYYY-MM-DD. KNOWN: this
     /// bar's; AFTER_ROLL: the roll bar this bar follows; AWAITS_NEXT and AWAITS_NEXT_VENDOR: the
     /// switch bar's (this bar's). A bar after a withheld roll then tells the vendor switch a
     /// consumer awaits (its own date) from a later roll into the same target (another date). Empty
     /// when unknown.
     std::string date;
-    /// MM fix round 1: on a change of price source (SOURCE_CHANGE, AFTER_SOURCE_CHANGE) the old
+    /// On a change of price source (SOURCE_CHANGE, AFTER_SOURCE_CHANGE) the old
     /// contract's own volume on this date, for the cost of a listing predecessor's legs (a
     /// predecessor still holds the full-size contract; ListingDates::add_predecessor_bars). Empty
     /// on every other kind.
@@ -431,22 +430,22 @@ struct Bar {
     double volume;  // Keep as double for now since volume is typically not a financial calculation
     std::string symbol;
     /// The vendor's contract id behind a futures bar (futures_data.ohlcv_1d_raw.instrument_id,
-    /// joined to the kept bar by the loader, T-ROLLX); empty when unknown and on every equity bar.
+    /// joined to the kept bar by the loader); empty when unknown and on every equity bar.
     /// A bar whose id differs from the previous consumed bar's is a change bar (roll_series.hpp).
     std::string instrument_id;
-    /// Rolls step 3: on a roll bar of the per-contract series, the contract left (RollFrom).
+    /// On a roll bar of the per-contract series, the contract left (RollFrom).
     std::optional<RollFrom> roll_from;
     /// Carry (trade-ngin #185): the held contract's and its neighbour's closes on this date
     /// (CarryQuote); set only by the per-contract source with carry on.
     std::optional<CarryQuote> carry;
-    /// MM fix round 1: the volume the futures cost feed prices this bar's fills on, in place of
+    /// The volume the futures cost feed prices this bar's fills on, in place of
     /// `volume` (futures_cost_feed.hpp). Set only by ListingDates::add_predecessor_bars: on a
     /// listing predecessor's copied bar from the micro's change of price source on (the full-size
     /// contract's own volume), and on an equity micro's own bars of its listing date's session (its
     /// own_contract_volume); empty on every other bar. Every other reader (the session classifier, the strategies, the stored and
     /// exported bars) reads `volume`.
     std::optional<double> cost_volume;
-    /// MM fix round 1: on an equity micro's bar before its change of price source (R6's alias, the
+    /// On an equity micro's bar before its change of price source (the MicroAlias, the
     /// series carries the full-size contract: MES, MNQ, MYM, M2K before 2026-02-22), the micro's own
     /// contract of the same expiry, its volume on this date where it prints; empty on every other
     /// bar. Read only by ListingDates::add_predecessor_bars, which prices the listed contract's own
@@ -525,7 +524,7 @@ struct Position {
     Decimal realized_pnl;
     Timestamp last_update;
     /// The vendor's contract id the futures position is held in (positions.instrument_id,
-    /// final_positions.instrument_id, migration 016; T-ROLLX): the confirmed id of the symbol's
+    /// final_positions.instrument_id, migration 016): the confirmed id of the symbol's
     /// consumed sequence (roll_series.hpp), still the old contract on a pending change bar.
     /// Empty (stored NULL) when unknown and on every equity row.
     std::string instrument_id;
@@ -591,20 +590,20 @@ struct ExecutionReport {
     Decimal implicit_price_impact;    // Spread + impact in price units
     Decimal slippage_market_impact;   // Implicit costs in dollars
     Decimal total_transaction_costs;  // commissions_fees + slippage_market_impact
-    // K3 (migration 013): the part of total_transaction_costs the ACCOUNT did not pay (negative:
+    // Migration 013: the part of total_transaction_costs the ACCOUNT did not pay (negative:
     // paid on top) because two or more sleeves traded this symbol on the same day; 0 on a
     // symbol-day with one sleeve row. net cost = total_transaction_costs - netting_adjustment:
     // the cost every total, P&L and statistic charges (transaction_cost::net_cost, netting.hpp).
     Decimal netting_adjustment;
 
     bool is_partial{false};
-    /// T-ROLLX (migration 015): STRATEGY, ROLL or BORROW (see ExecutionType); and the vendor
+    /// Migration 015: STRATEGY, ROLL or BORROW (see ExecutionType); and the vendor
     /// contract id a ROLL leg traded (the outgoing contract on the closing leg, the incoming on
     /// the opening leg), empty (stored NULL) on every other row. Last, so every positional
     /// initialiser of the older fields stays as it is.
     ExecutionType execution_type{ExecutionType::STRATEGY};
     std::string instrument_id;
-    /// Rolls step 4 (ruling 18, migration 040): the roll's split, on a per-contract roll's CLOSING
+    /// Migration 040: the roll's split, on a per-contract roll's CLOSING
     /// leg only (roll_series::attach_roll_split): the held contract's move booked on the roll bar
     /// (dollars, P&L already in the day's P&L), the new close minus the old close on that bar
     /// (points), and that gap x quantity x multiplier (dollars, never P&L). nullopt (stored NULL,
@@ -615,7 +614,7 @@ struct ExecutionReport {
 };
 
 /// One stored positions row's realised P&L, as PostgresDatabase::get_stored_realised_rows reads it
-/// (T-ROLLX-FIX commit 6: what earlier runs booked of a late roll's moves, live_roll_legs.hpp).
+/// (what earlier runs booked of a late roll's moves, live_roll_legs.hpp).
 struct StoredRealisedRow {
     std::string symbol;
     std::string sleeve;

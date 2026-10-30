@@ -23,9 +23,8 @@ namespace trade_ngin {
 /**
  * @brief What one symbol's bar (or its absence) on one date is, for trading.
  *
- * HD's per-symbol session rule (2026-09-17, final; STAGE3_PLAN §27) and the classifier shipped
- * by T-CLASSIFIER_ADVERSARIAL's verdict block, with HD's 2026-09-19 rulings (the 1,000-lot
- * ceiling; the D+1 limb for a FIXED-date holiday only):
+ * The per-symbol session rule, with the 1,000-lot ceiling and the D+1 limb for a FIXED-date
+ * holiday only:
  *
  *   SESSION           a usable bar: marked at it, the signal updates, the position may change
  *                     and trade at that bar's close.
@@ -43,24 +42,22 @@ enum class SessionVerdict { SESSION, JUNK, NO_BAR_CLOSURE, NO_BAR_FEED_HOLE };
 const char* to_string(SessionVerdict verdict);
 
 /**
- * @brief HD's ruling (2026-09-25, T-7b-2 C10a): on its own day an UNCONFIRMED instrument id change
- *        is held only when its volume is below 0.10 of the symbol's norm. On the day a roll cannot
- *        be told from a one-day flip; a thin print on a new id is held (6E 2025-11-05 at 0.025 of
- *        its norm; ZN, ZF, ZT, UB 2025-09-03 below 0.01), a full-volume one trades (a real roll's
- *        first day, as the volume leader, is at or near the norm). Measured on the clone
- *        (T-7b-2_evidence/analysis/c10): btfut 2y 13 of 45 flips and 35 of 279 rolls held, 0 of
- *        the OLD book's fills delayed; holding every change held all 279 rolls and delayed 3.
- *        A ruled value like the rest of SessionClassifierConfig: nothing reads it from config.
+ * @brief On its own day an UNCONFIRMED instrument id change is held only when its volume is below
+ *        0.10 of the symbol's norm. On the day a roll cannot be told from a one-day flip; a thin
+ *        print on a new id is held (6E 2025-11-05 at 0.025 of its norm; ZN, ZF, ZT, UB 2025-09-03
+ *        below 0.01), a full-volume one trades (a real roll's first day, as the volume leader, is
+ *        at or near the norm). A fixed value like the rest of SessionClassifierConfig: nothing
+ *        reads it from config.
  */
 inline constexpr double kIdChangeHoldFraction = 0.10;
 
 /**
- * @brief The rule's numbers. The defaults are the ruled values; nothing reads them from config.
+ * @brief The rule's numbers. The defaults are the rule's values; nothing reads them from config.
  */
 struct SessionClassifierConfig {
     /// JUNK when volume < junk_fraction x norm AND volume < junk_ceiling_lots (a corrupt print).
     double junk_fraction{0.01};
-    /// HD 2026-09-19: the fraction limb only fires below this many lots, so an ordinary thin
+    /// The fraction limb only fires below this many lots, so an ordinary thin
     /// Sunday session of a contract with a million-lot norm is a session, not junk.
     double junk_ceiling_lots{1000.0};
     /// The absolute floor: JUNK when volume < floor_lots AND volume < floor_fraction x norm;
@@ -69,16 +66,16 @@ struct SessionClassifierConfig {
     double floor_fraction{0.25};
     /// norm = median volume of this many trailing WEEKDAY bars of the symbol whose own verdict
     /// was SESSION, strictly before the date (weekday-only so the symbol's own weekend prints
-    /// cannot drag its norm down; SESSION-only so a run of junk or stub bars cannot teach it,
-    /// T-7b-1 C7b R7). Until the symbol has a SESSION weekday bar, all its weekday bars count.
+    /// cannot drag its norm down; SESSION-only so a run of junk or stub bars cannot teach it).
+    /// Until the symbol has a SESSION weekday bar, all its weekday bars count.
     /// A median of 0 is no norm: the floor alone decides.
     int norm_window_bars{20};
     /// A missing bar is a feed hole when the symbol printed on at least one of this many
     /// preceding same-weekday dates (MAX-of-8; immune to an outage teaching the window).
     int expected_lookback_weeks{8};
-    /// T-7b-2 C10a, the instrument-id continuity limb on the day (see classify_symbol_day): an
-    /// UNCONFIRMED id change is held when its volume is below this fraction of the norm (or the
-    /// symbol has no norm). Ruled 0.10 (kIdChangeHoldFraction). Infinity holds every unconfirmed
+    /// The instrument-id continuity limb on the day (see classify_symbol_day): an UNCONFIRMED id
+    /// change is held when its volume is below this fraction of the norm (or the symbol has no
+    /// norm). 0.10 by default (kIdChangeHoldFraction). Infinity holds every unconfirmed
     /// change (a one-day flip can only be told from a roll by the next session's bar, which no
     /// engine has on the day); 0 holds none on the day (the limb then only confirms).
     double id_change_hold_fraction{kIdChangeHoldFraction};
@@ -106,20 +103,20 @@ struct SymbolDayVerdict {
     std::optional<double> ratio; ///< volume / norm
     std::string last_bar_date;   ///< no bar: the symbol's latest bar strictly before `date`
     int hole_age_days{-1};       ///< no bar: calendar days from last_bar_date to `date`
-    /// T-7b-2 C10a: the bar's vendor instrument id (empty: none known) and the previous bar's.
+    /// The bar's vendor instrument id (empty: none known) and the previous bar's.
     std::string instrument_id;
     std::string previous_instrument_id;
-    /// T-7b-2 C10a: set when the PREVIOUS bar was an unconfirmed id change; this bar confirms it
+    /// Set when the PREVIOUS bar was an unconfirmed id change; this bar confirms it
     /// a roll (the id stayed) or a one-day flip (the id reverted), in words.
     std::string id_note;
-    /// T-ROLLX-FIX: set when the JUNK verdict was decided by the instrument-id continuity limb (an
-    /// unconfirmed thin id change). That bar is the change bar of LOOP_SPEC v6.1 section 2.2, held
-    /// under D37 like any non-SESSION verdict but CONSUMED, never withheld (section 2.1, K-01).
+    /// Set when the JUNK verdict was decided by the instrument-id continuity limb (an unconfirmed
+    /// thin id change). That bar is a change bar (roll_series.hpp), held like any non-SESSION
+    /// verdict but CONSUMED, never withheld (k01_withheld).
     bool id_change_hold{false};
 
     bool is_session() const { return verdict == SessionVerdict::SESSION; }
     /**
-     * @brief LOOP_SPEC v6.1 section 2.1 (K-01): a JUNK bar (a corrupt or locked print, the absolute
+     * @brief A JUNK bar (a corrupt or locked print, the absolute
      *        floor) and a thin first print (the floor with no norm yet) are WITHHELD: never consumed
      *        by any consumer (the roll status, the series, the strategy feed, the PortfolioManager's
      *        history, the cost model, the risk readings) and never fed later. Every other verdict
@@ -134,20 +131,19 @@ struct SymbolDayVerdict {
 /**
  * @brief classify_symbol_day over bars already in memory.
  *
- * The bars are the de-duplicated feed: one bar per (symbol, date). The B0 loader already returns
+ * The bars are the de-duplicated feed: one bar per (symbol, date). The loader already returns
  * that; a second bar for the same (symbol, date) given here keeps the copy the loader keeps
  * (highest volume, then the lowest close, open, high, low), so the answer never depends on order.
  *
  * The rule, in order:
  *
  *   norm(s, D) = median volume of s's trailing 20 weekday bars strictly before D whose own
- *                verdict was SESSION (T-7b-1 C7b R7), counting only bars dated on or after the
- *                latest change of price source of s strictly before D (MM, HD 2026-10-28: a micro
- *                is judged on its own bars from the change, as a new symbol is; the change bar
- *                itself against the norm before it); while s has no SESSION weekday bar yet,
- *                the median of its trailing 20 weekday bars (T-7a's norm, so a thin contract can
- *                start); none when s has no weekday bar before D, and none when the median is 0
- *                (a norm of 0 would disable both volume limbs).
+ *                verdict was SESSION, counting only bars dated on or after the latest change of
+ *                price source of s strictly before D (a micro is judged on its own bars from the
+ *                change, as a new symbol is; the change bar itself against the norm before it);
+ *                while s has no SESSION weekday bar yet, the median of its trailing 20 weekday
+ *                bars (so a thin contract can start); none when s has no weekday bar before D,
+ *                and none when the median is 0 (a norm of 0 would disable both volume limbs).
  *
  *   bar exists for (s, D):
  *     high == low                                       -> JUNK (locked / stub; a volume test can
@@ -156,19 +152,19 @@ struct SymbolDayVerdict {
  *       their median is 0) and volume < floor_lots     -> JUNK (absolute floor, first bars)
  *     volume < 0.01 x norm AND volume < 1,000 lots      -> JUNK (corrupt print)
  *     volume < 50 AND volume < 0.25 x norm              -> JUNK (absolute floor)
- *     an unconfirmed instrument id change (below)       -> JUNK (T-7b-2 C10a, HD 2026-09-24)
+ *     an unconfirmed instrument id change (below)       -> JUNK (the instrument-id limb)
  *     otherwise                                         -> SESSION (thin or not: traded)
  *   no bar for (s, D):
  *     the calendar names D                              -> NO_BAR_CLOSURE
  *     D is a Saturday or Sunday, and the calendar names
  *       D+1 as a FIXED-date holiday (Christmas and New
- *       Year's Sundays; C7b R8: never a weekday D)      -> NO_BAR_CLOSURE
+ *       Year's Sundays; never a weekday D)              -> NO_BAR_CLOSURE
  *     s printed on >= 1 of the 8 preceding same-weekday
  *       dates                                           -> NO_BAR_FEED_HOLE
  *     otherwise                                         -> NO_BAR_CLOSURE (not expected)
  *
- * THE INSTRUMENT-ID CONTINUITY LIMB (T-7b-2 C10a; HD 2026-09-24 ruling 16: "a bar whose instrument
- * id differs from the previous and the next session's is JUNK"). Each bar may carry the vendor's
+ * THE INSTRUMENT-ID CONTINUITY LIMB (a bar whose instrument id differs from the previous and the
+ * next session's is JUNK). Each bar may carry the vendor's
  * instrument_id (add_instrument_id; futures_data.ohlcv_1d_raw, the same print only). A bar b with a
  * known id whose previous bar p has a known id:
  *
@@ -182,7 +178,7 @@ struct SymbolDayVerdict {
  * classifies T-1 before T's bar exists, and the backtest (which already holds the next group when
  * it classifies the signal group) must see what live sees. So on its own day an id change cannot
  * be told from a roll, and an unconfirmed change is JUNK (held for one cycle, withheld from the
- * signal as any JUNK bar) when its volume is below id_change_hold_fraction x norm (ruled 0.10,
+ * signal as any JUNK bar) when its volume is below id_change_hold_fraction x norm (0.10,
  * kIdChangeHoldFraction; a full-volume change, a roll's usual first day, trades). The next
  * session's bar confirms it: back on the established id, it was a one-day flip; on the new id, a
  * roll (id_note on that next bar's verdict says which). The norm's SESSION flags
@@ -190,14 +186,14 @@ struct SymbolDayVerdict {
  * roll bar counts on its volume). A bar without an id, or whose previous bar has none, is not
  * judged by the limb.
  *
- * NOTED, NOT ACTED ON (T-CLASSIFIER_ADVERSARIAL A2, the partial-volume day): on a handful of days a
+ * NOTED, NOT ACTED ON (the partial-volume day): on a handful of days a
  * year the vendor delivers a real session with a truncated VOLUME field for 8-16 symbols at once
  * (2025-07-07/08: the grain complex, five currencies and three metals; 2025-11-05; 2025-09-03). The
  * closes are real prices on the path between the neighbouring closes, but the volume sits under
  * the fraction limb, so those symbols are JUNK and held for the day while the rest of the
- * universe is normal. Whether to trade at such a close is HD's ruling; this classifier holds.
+ * universe is normal. This classifier holds at such a close.
  * The locked-limit limb likewise refuses both sides of a limit lock, although the side the lock
- * favours is fillable (A3); it is kept as ruled.
+ * favours is fillable.
  */
 class SessionClassifier {
 public:
@@ -209,7 +205,7 @@ public:
     void add_bar(const Bar& bar);
     void add_bars(const std::vector<Bar>& bars);
 
-    /// T-7b-2 C10a: the vendor instrument id of the symbol's bar on `day` (a later call for the
+    /// The vendor instrument id of the symbol's bar on `day` (a later call for the
     /// same day replaces it). An id for a day without a bar is kept and used once the bar arrives.
     void add_instrument_id(const std::string& symbol, Day day, const std::string& instrument_id);
     /// The rows PostgresDatabase::get_futures_instrument_ids returns. Returns how many were taken
@@ -241,7 +237,7 @@ private:
     struct DayBar {
         double volume{0.0}, open{0.0}, high{0.0}, low{0.0}, close{0.0};
     };
-    /// True when `candidate` is the copy the B0 loader keeps over `held`.
+    /// True when `candidate` is the copy the loader keeps over `held`.
     static bool keeps_over(const DayBar& candidate, const DayBar& held);
     /// The verdict of a bar against a norm (no norm: the floor alone), with the limb in words.
     SessionVerdict judge_bar(const DayBar& bar, const std::optional<double>& norm,
@@ -252,7 +248,7 @@ private:
                                        const std::map<Day, bool>& flags, Day date,
                                        int* bars_used,
                                        std::optional<Day> since = std::nullopt) const;
-    /// The symbol's latest change of price source strictly before `date` (MM), if any.
+    /// The symbol's latest change of price source strictly before `date`, if any.
     std::optional<Day> source_change_before(const std::string& symbol, Day date) const;
     /// The symbol's per-bar SESSION flags, filled forward in date order up to (not including)
     /// `date`.
@@ -282,12 +278,12 @@ private:
 
     SessionClassifierConfig config_;
     std::unordered_map<std::string, std::map<Day, DayBar>> bars_;
-    /// T-7b-2 C10a: symbol -> day -> vendor instrument id.
+    /// symbol -> day -> vendor instrument id.
     std::unordered_map<std::string, std::map<Day, std::string>> ids_;
-    /// MM: per symbol, the dates of its changes of price source (a bar handed out as SOURCE_CHANGE,
+    /// Per symbol, the dates of its changes of price source (a bar handed out as SOURCE_CHANGE,
     /// or the change an AFTER_SOURCE_CHANGE bar names).
     std::unordered_map<std::string, std::set<Day>> source_changes_;
-    /// MM fix round 1: the AFTER_SOURCE_CHANGE dates that did not parse, warned once each
+    /// The AFTER_SOURCE_CHANGE dates that did not parse, warned once each
     std::set<std::string> malformed_source_change_dates_;
     mutable std::unordered_map<std::string, std::map<Day, bool>> session_flags_;
 };
@@ -334,7 +330,7 @@ std::vector<SymbolDayVerdict> classify_bar_group(const SessionClassifier& classi
                                                  const HolidayLookup& holidays = {});
 
 /**
- * @brief LOOP_SPEC v6.1 section 2.1 (K-01): the bars of `bars` a consumer may read, in their order:
+ * @brief The bars of `bars` a consumer may read, in their order:
  *        every bar whose own verdict (classify_symbol_day at its own date, which reads no later bar)
  *        is not k01_withheld(). The verdicts of the withheld bars are appended to `withheld`, in the
  *        bars' order. The live runners apply it to their whole window on every run, so a withheld
@@ -345,7 +341,7 @@ std::vector<Bar> k01_consumed_bars(const SessionClassifier& classifier, const st
                                    std::vector<SymbolDayVerdict>* withheld = nullptr);
 
 /**
- * @brief T-7b-2 C10a: the instrument ids the live runners and the backtest feed the classifier,
+ * @brief The instrument ids the live runners and the backtest feed the classifier,
  *        and the one log line both engines write about it.
  */
 struct InstrumentIdFeed {

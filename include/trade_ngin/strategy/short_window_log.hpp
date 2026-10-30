@@ -1,8 +1,7 @@
 #pragma once
 
-// LOOP_SPEC section 1 ("History and seeds"): a symbol with fewer than W = 3,200 consumed bars
-// starts at its first bar, and its rows are flagged and counted. The count used to exist only in
-// the acceptance record a gate asks for; this is the one INFO line every futures run prints.
+// A symbol with fewer than W = 3,200 consumed bars starts at its first bar, and its rows are
+// flagged and counted. This is the one INFO line every futures run prints for them.
 
 #include <map>
 #include <memory>

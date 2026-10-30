@@ -116,7 +116,7 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 // ChartQueries: the text of each chart's query
 // ============================================================================
 //
-// Every query reads one book: its strategy_id, its portfolio_id (T-8D-2 R55) and the book the
+// Every query reads one book: its strategy_id, its portfolio_id and the book the
 // chart was set to (ChartGenerator::set_book, "system" by default; migration 021 put a
 // portfolio_type on trading.live_results and trading.executions beside trading.positions and
 // trading.equity_curve). trading.live_run_metadata carries no book.
@@ -124,7 +124,7 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 std::string ChartQueries::equity_curve(const std::string& strategy_id,
                                        const std::string& portfolio_id, const std::string& date,
                                        int lookback_days) {
-    // T-8D-2 R63: the rows BEFORE the run date. The run date's own row is not settled (its P&L
+    // The rows BEFORE the run date. The run date's own row is not settled (its P&L
     // settles tomorrow), and a re-run of a past date must not chart the days after it.
     return "SELECT timestamp, equity "
            "FROM trading.equity_curve "
@@ -163,7 +163,7 @@ std::string ChartQueries::book_capital(const std::string& strategy_id,
 
 std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
                                         const std::string& portfolio_id, const std::string& date) {
-    // T-8D-2 R64: one row per symbol. A book of several sleeves stores a row per sleeve for a
+    // One row per symbol. A book of several sleeves stores a row per sleeve for a
     // symbol more than one of them holds; the chart shows the book's figure for the symbol.
     return "SELECT symbol, SUM(daily_realized_pnl) AS daily_realized_pnl "
            "FROM trading.positions "
@@ -174,8 +174,8 @@ std::string ChartQueries::pnl_by_symbol(const std::string& strategy_id,
            portfolio_id +
            "' "
            "AND portfolio_type = '" + chart_book() + "' "
-           // E2-F19 R-6: the previous SESSION, not the previous calendar day -- a Monday
-           // report used to read Sunday's carried rows.
+           // The previous SESSION, not the previous calendar day -- a Monday
+           // report must not read Sunday's carried rows.
            "AND DATE(last_update) = (SELECT MAX(DATE(last_update)) FROM trading.positions "
            "                         WHERE strategy_id = '" +
            strategy_id +
@@ -213,7 +213,7 @@ std::string ChartQueries::daily_pnl(const std::string& strategy_id, const std::s
 std::string ChartQueries::cost_per_million(const std::string& strategy_id,
                                            const std::string& portfolio_id,
                                            const std::string& date) {
-    // T-8D-2 R64: each stored day of the book with the fills the BOOK made that day (its own
+    // Each stored day of the book with the fills the BOOK made that day (its own
     // trading.executions rows, by strategy_id and portfolio_id); a day without a fill is one row
     // whose fill columns are NULL. The day's cost is the stored day total, which the runner
     // charged after netting.
@@ -260,7 +260,7 @@ std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_i
                                                    const std::string& date, bool equities) {
     if (equities) {
         // An equity book: realized to the settled day plus what the shares still held have gained, the
-        // stored unrealized P&L of each symbol's newest row through the settled day (HD 2026-10-14).
+        // stored unrealized P&L of each symbol's newest row through the settled day.
         const std::string rows = "FROM trading.positions WHERE strategy_id = '" + strategy_id +
                                  "' AND portfolio_id = '" + portfolio_id +
                                  "' AND portfolio_type = '" + chart_book() + "' AND DATE(last_update) < DATE('" +
@@ -274,8 +274,7 @@ std::string ChartQueries::cumulative_pnl_by_symbol(const std::string& strategy_i
                "ORDER BY cumulative_pnl DESC";
     }
     // The sum of the stored daily realized P&L of each symbol, gross of costs. On BASE it is not
-    // the book's stored total_realized_pnl: BASE's early history rows do not reconcile (T-8D-2
-    // D2-OUT-25: left as it is, documented).
+    // the book's stored total_realized_pnl: BASE's early history rows do not reconcile.
     return "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
            "FROM trading.positions "
            "WHERE strategy_id = '" +
@@ -383,7 +382,7 @@ ChartData ChartSeries::equity_curve(std::vector<ChartPoint> rows,
         return chart_data;
     }
 
-    // T-8D-2 R63: the points are the stored rows and nothing else. The query stops before the run
+    // The points are the stored rows and nothing else. The query stops before the run
     // date, so the last point is the last settled day; no starting point is made up in front of
     // the first.
     // Populate ChartData
@@ -468,7 +467,7 @@ ChartData ChartSeries::pnl_by_symbol(std::vector<ChartPoint> rows, const std::st
                                      bool equities) {
     ChartData chart_data;
 
-    // One bar per symbol (T-8D-2 R64): rows of the same symbol (one per sleeve that holds it) are
+    // One bar per symbol: rows of the same symbol (one per sleeve that holds it) are
     // summed, in the order the symbols first appear.
     std::vector<ChartPoint> symbol_pnl_data;
     std::unordered_map<std::string, size_t> bar_of;
@@ -559,7 +558,7 @@ ChartData ChartSeries::cost_per_million(const std::vector<CostFillRow>& rows,
                                         const MultiplierLookup& multiplier_of) {
     ChartData chart_data;
 
-    // Rows come grouped by day. T-8D-2 R64: a day's value is its cost over the notional the book
+    // Rows come grouped by day. A day's value is its cost over the notional the book
     // TRADED that day (each fill's quantity x price x contract multiplier), not over the notional
     // it held.
     size_t at = 0;
@@ -812,8 +811,8 @@ std::optional<double> registry_multiplier(const std::string& symbol) {
     }
 }
 
-// The book's starting capital from its run metadata (T-8D-2 R63: the equity curve's reference
-// line). No row, no key or a failed read: no value, and the chart is drawn without the line.
+// The book's starting capital from its run metadata (the equity curve's reference line). No
+// row, no key or a failed read: no value, and the chart is drawn without the line.
 std::optional<double> read_book_capital(const std::shared_ptr<DatabaseInterface>& db,
                                         const std::string& strategy_id,
                                         const std::string& portfolio_id, const std::string& date) {
@@ -1681,14 +1680,14 @@ namespace {
         return result;
     }
 
-    // The time one chart process is given (T-DATED R4). A chart is drawn in well under a second.
+    // The time one chart process is given. A chart is drawn in well under a second.
     constexpr std::chrono::seconds kChartProcessTimeout{30};
 
     // Helper: Execute gnuplot script and return base64-encoded PNG. The files are private to the
     // call, a hang is started once more, and the end is recorded for the report (core/gnuplot_run.hpp).
     std::string execute_gnuplot(const std::string& script_content, const std::string& data_content) {
         INFO("Executing gnuplot");
-        // One light style for every chart (HD 10-13): a quiet border, ticks on the outside, a light
+        // One light style for every chart: a quiet border, ticks on the outside, a light
         // grid, readable titles. The scripts' own lines that follow still decide their colours.
         std::string styled = script_content;
         const std::string output_line = "set output 'temp_chart_output.png'\n";
@@ -1794,9 +1793,9 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         script << "set format x '%m/%d'\n";
         script << "set xrange ['" << x_range.first << "':'" << x_range.second << "']\n";
 
-        // X-axis ticks (HD 10-14): the axis picks its own dates, horizontal and spaced, in a short
-        // format; a long history is shown by month. (Five hand-placed, rotated labels ran into each
-        // other and into the axes.)
+        // X-axis ticks: the axis picks its own dates, horizontal and spaced, in a short
+        // format; a long history is shown by month, so labels never run into each other or
+        // into the axes.
         script << "set format x '" << (data.labels.size() > 90 ? "%b %Y" : "%b %d") << "'\n";
         script << "set xtics nomirror\n";
         script << "set lmargin 11\nset rmargin 4\nset bmargin 3.5\n\n";

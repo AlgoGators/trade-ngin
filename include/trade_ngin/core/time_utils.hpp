@@ -58,7 +58,7 @@ inline std::tm* safe_gmtime(const std::time_t* time, std::tm* result) {
 /**
  * @brief Format a system_clock time_point as a UTC `YYYY-MM-DD` calendar date.
  *
- * Phase 5 §5c -- the data layer's timezone contract is UTC end-to-end. This
+ * The data layer's timezone contract is UTC end-to-end. This
  * helper is the one true way to produce a date-string key from a Timestamp
  * for use in date-keyed lookups against provider tables. Callers MUST NOT
  * call `std::gmtime` or `std::put_time` directly -- both are non-thread-safe
@@ -83,16 +83,16 @@ inline std::string format_utc_date(std::chrono::system_clock::time_point tp) {
 /**
  * @brief Format a time_point as a UTC `YYYY-MM-DD HH:MM:SS` timestamp string.
  *
- * Phase 6 §6c -- companion to format_utc_date for sites that need a full
+ * Companion to format_utc_date for sites that need a full
  * timestamp (e.g. SQL INSERT values with second resolution). Same
  * thread-safety guarantees: routes through safe_gmtime.
  */
 /**
- * E2-F22 -- parse a "YYYY-MM-DD HH:MM:SS[.frac][+00]" string that is KNOWN to be UTC
+ * Parse a "YYYY-MM-DD HH:MM:SS[.frac][+00]" string that is KNOWN to be UTC
  * (a timestamptz read back from a UTC session) into a time_point, without letting
  * the host timezone in. std::mktime interprets the broken-down time as LOCAL, which on
- * a New York host shifted every loaded position timestamp +5 h and made each T-1
- * rewrite migrate the row across midnight after four rewrites. Returns false on a
+ * a New York host shifts every loaded position timestamp +5 h, so repeated T-1
+ * rewrites would move the row across midnight. Returns false on a
  * malformed string.
  */
 inline bool parse_utc_datetime(const std::string& text,
@@ -125,8 +125,8 @@ inline bool parse_utc_datetime(const std::string& text,
  * back through gmtime (format_utc_date), so on a host at a positive UTC offset
  * the value lands on the PREVIOUS day and the whole run shifts with it -- the
  * date key written to trading.positions, the T-1 lookup, the dedup comparison.
- * A New York host hides this (local midnight is 05:00 UTC, same calendar day),
- * which is why it survived: the defect only shows east of Greenwich.
+ * A New York host hides this (local midnight is 05:00 UTC, same calendar day):
+ * the shift only shows east of Greenwich.
  *
  * Leading/trailing text is rejected rather than ignored, so a timestamp string
  * cannot be silently truncated to its date here -- use parse_utc_datetime for

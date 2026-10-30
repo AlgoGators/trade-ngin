@@ -1,8 +1,8 @@
-// B-iii regression pins -- a spinoff off a parent with NO KNOWN COST BASIS must be refused,
+// A spinoff off a parent with NO KNOWN COST BASIS must be refused,
 // not allocated from zero.
 //
-// THE DEFECT: apply_spinoffs guards the basis arithmetic with `basis > 0.0 ? ... : 0.0`
-// (corporate_actions_lifecycle.cpp:150,154), so a parent whose average_price is 0 yields
+// THE HAZARD: apply_spinoffs guards the basis arithmetic with `basis > 0.0 ? ... : 0.0`
+// (corporate_actions_lifecycle.cpp), so a parent whose average_price is 0 yields
 // parent_basis_after = 0 and pool_per_share = 0, hence a child basis of 0 for every child.
 // `allocation_sane` only rejects NEGATIVE or non-finite values, and zero is neither, so the
 // event proceeds.
@@ -14,7 +14,7 @@
 //
 // booked onto the parent's day-T row, into live_results and into the equity curve in one
 // step. Worse, the runner's receipt BUY is gated on `child_avg_price > 0.0`
-// (live_equity_mean_reversion.cpp:2594), so the acquisition is suppressed while the
+// (live_equity_mean_reversion.cpp), so the acquisition is suppressed while the
 // disposal is emitted -- leaving a SELL in trading.executions for a security that was never
 // bought.
 //
@@ -23,7 +23,7 @@
 // carries no basis") writes 0, and the rule-5 residual path writes basis 0 with a loud
 // ERROR when `resolve_day_t_cost_basis` finds nothing ("BASIS TRACE | UNRESOLVED"). A book
 // carrying such a row is exactly the book that must not have a corporate action applied to
-// it -- the same reasoning as the E2-F17 basis-provenance skip, which refuses to restate a
+// it -- the same reasoning as the basis-provenance skip, which refuses to restate a
 // basis the run cannot vouch for.
 //
 // The refusal writes no dedup row, so the event is retried next run once the basis is
@@ -49,7 +49,7 @@ Position held(const std::string& symbol, double qty, double avg, double realized
     return p;
 }
 
-// MMM -> SOLV, the real 2024-04-01 event B-4 replayed.
+// MMM -> SOLV, the real 2024-04-01 event.
 SpinoffEvent mmm_solv(double first_close = 66.0) {
     SpinoffEvent ev;
     ev.parent = "MMM";
@@ -104,7 +104,7 @@ TEST(SpinoffZeroBasisParent, ANegativeBasisIsRefusedToo) {
 }
 
 TEST(SpinoffZeroBasisParent, AKnownBasisStillDeliversTheChild) {
-    // The B-4 §6 replay numbers, so the refusal cannot have been bought by breaking the
+    // The hand-checked MMM numbers, so the refusal cannot have been bought by breaking the
     // path that works: MMM 100 sh at 106.07, SOLV 0.25 at first close 66.217880.
     std::unordered_map<std::string, Position> positions;
     positions["MMM"] = held("MMM", 100.0, 106.07);

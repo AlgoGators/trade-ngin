@@ -1,7 +1,5 @@
-// LOOP_SPEC v6.2 section 3.1 (D19): Carver's half compounding is the sizing capital of the futures
-// book in both engines. This file uses only what existed before the commit that brings it
-// (backtest_sizing_equity, the runners' and templates' text), so it compiles on the commit before
-// and fails there: that run is its proof that it tests the change.
+// Carver's half compounding is the sizing capital of the futures book in both engines, read through
+// backtest_half_compounding and the runners' and templates' text.
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -54,16 +52,19 @@ TEST(HalfCompoundingBacktest, AProfitThenALossFollowsTheRecursionRowByRow) {
     for (size_t k = 0; k < rows.size(); ++k) {
         if (k > 0) capital = std::min(s0, capital + (rows[k] - rows[k - 1]));
         curve.emplace_back(day(static_cast<int>(k)), rows[k]);
-        EXPECT_NEAR(backtest_sizing_equity(curve, s0), capital, 1e-6) << "row " << k;
+        EXPECT_NEAR(backtest_half_compounding(curve, s0).capital, capital, 1e-6) << "row " << k;
     }
 }
 
 // A profit above the starting capital is set aside and never sized on.
 TEST(HalfCompoundingBacktest, AProfitIsNotSizedOn) {
     const double s0 = 500'000.0;
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({{day(0), s0}, {day(1), 503'125.5}}, s0), s0);
-    EXPECT_NEAR(backtest_sizing_equity({{day(0), s0}, {day(1), 507'900.0}, {day(2), 504'000.0}}, s0),
-                s0 - 3'900.0, 1e-6)
+    EXPECT_DOUBLE_EQ(
+        backtest_half_compounding({{day(0), s0}, {day(1), 503'125.5}}, s0).capital, s0);
+    EXPECT_NEAR(
+        backtest_half_compounding({{day(0), s0}, {day(1), 507'900.0}, {day(2), 504'000.0}}, s0)
+            .capital,
+        s0 - 3'900.0, 1e-6)
         << "a loss from a high comes off the starting capital, not off the high";
 }
 

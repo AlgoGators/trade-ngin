@@ -1,17 +1,16 @@
 // tests/backtest/test_backtest_netting_one_model.cpp
 //
-// T-7b-3 (b), code review R-2: one cost model per backtest fill.
+// One cost model per backtest fill.
 //
 // A portfolio backtest stores, in backtest.executions, the PortfolioManager's own per-sleeve
 // reports (save_portfolio_results_to_db hands get_strategy_executions() to the writer). The
 // PortfolioManager prices them with its cost manager and nets each bar's sleeve rows of one symbol
-// with the same manager (K3), so the stored net costs of a symbol-day sum to C(Q) under the model
-// whose costs are stored. The parent also re-priced a COPY of every fill with the execution
-// manager's cost model and put the copies in BacktestResults::executions (the rows the trade
-// statistics of backtest.results and the strategies' on_execution read), keeping the PM's
-// netting_adjustment beside the other model's cost: with the two models configured apart the
-// reported rows' net no longer summed to C(Q) and no longer matched the stored rows. The
-// coordinator now reports the stored rows as they are.
+// with the same manager, so the stored net costs of a symbol-day sum to C(Q) under the model
+// whose costs are stored. The coordinator reports the stored rows as they are in
+// BacktestResults::executions (the rows the trade statistics of backtest.results and the
+// strategies' on_execution read). Re-pricing a copy of every fill with the execution manager's
+// cost model while keeping the PM's netting_adjustment would, with the two models configured
+// apart, make the reported rows' net miss C(Q) and the stored rows.
 //
 // The fixture runs a whole futures backtest (run_portfolio) with two sleeves trading one symbol on
 // the same cycles, the PortfolioManager's cost model charging a 1.50 fee per contract and the
@@ -143,7 +142,7 @@ public:
 
 using SymbolDay = std::tuple<std::string, Timestamp>;
 
-// T-NETTING fix round 2: a sleeve that, when it is told of its first fill of `inject_day`, appends
+// A sleeve that, when it is told of its first fill of `inject_day`, appends
 // to its own stored executions a row no code of the engine can make: a ROLL leg (or a BORROW row)
 // CARRYING a netting adjustment. The coordinator feeds a cycle's fills to the strategies before it
 // adds up the cycle's cost, so the row is in that cycle's sum.
@@ -175,7 +174,7 @@ public:
     }
 };
 
-// T-8a (7), the netting audits' follow-up: a sleeve whose bad row is met by the END-OF-RUN totals
+// A sleeve whose bad row is met by the END-OF-RUN totals
 // only. On the last cycle the row (a ROLL leg or a BORROW row CARRYING a netting adjustment) is
 // put into the sleeve's stored executions while the PortfolioManager processes the cycle (on_data
 // runs inside the manager's cycle, on its thread, under its lock: the row is written to the
@@ -391,8 +390,7 @@ protected:
 
 // The stored rows are the PortfolioManager's, priced and netted with its own model: the stored net
 // of a netted symbol-day sums to C(Q) under that model (the full cross to 0), whatever the
-// execution manager's fee, and the NETTING line prints the stored costs. Holds on the parent too:
-// the parent's re-pricing never touched a stored row.
+// execution manager's fee, and the NETTING line prints the stored costs.
 TEST_F(BacktestNettingOneModelTest, TheStoredNetOfASymbolDaySumsToCOfQUnderTheStoredModel) {
     run();
     const auto stored = stored_by_symbol_day();
@@ -439,8 +437,8 @@ TEST_F(BacktestNettingOneModelTest, TheStoredNetOfASymbolDaySumsToCOfQUnderTheSt
 // The rows the backtest reports (BacktestResults::executions: the trade statistics stored in
 // backtest.results and the strategies' on_execution read them) are the stored rows, costs and
 // netting adjustment alike, so their net of a symbol-day sums to C(Q) under the model whose costs
-// are stored. RED on f2932054: the coordinator re-priced its copies with the execution manager's
-// 3.00 fee and kept the PM's 1.50-model adjustment, so the full cross reported a non-zero net.
+// are stored. Copies re-priced with the execution manager's 3.00 fee beside the PM's 1.50-model
+// adjustment would report a non-zero net for the full cross.
 TEST_F(BacktestNettingOneModelTest, TheReportedRowsAreTheStoredRowsAndTheirNetSumsToCOfQ) {
     run();
     std::map<std::string, ExecutionReport> stored_by_id;
@@ -496,7 +494,7 @@ TEST_F(BacktestNettingOneModelTest, TheReportedRowsAreTheStoredRowsAndTheirNetSu
     }
 }
 
-// The cost after netting (HD 2026-10-09): the equity curve charges each cycle the NET cost of its
+// The cost after netting: the equity curve charges each cycle the NET cost of its
 // fills (own cost minus the signed adjustment), and the run's transaction_costs is their sum. The
 // fixture's sleeves book no position P&L (the equity curve moves on cycles with fills only), so a
 // cycle's equity change is exactly minus what it was charged:
@@ -506,7 +504,7 @@ TEST_F(BacktestNettingOneModelTest, TheReportedRowsAreTheStoredRowsAndTheirNetSu
 //   | 31    | SELL 2 | BUY 2  | none    | 0                                          |
 //   | 40    | BUY 3  | SELL 1 | BUY 2   | C(2): less than C(3) + C(1)                |
 //
-// RED when calculate_period_transaction_costs or the results' total goes back to the rows' own
+// RED when calculate_period_transaction_costs or the results' total reads the rows' own
 // costs, and (cycle 21) when a negative adjustment is dropped, clamped or made positive.
 TEST_F(BacktestNettingOneModelTest, TheEquityCurveAndTheResultsChargeTheCostAfterNetting) {
     run();
@@ -557,17 +555,17 @@ TEST_F(BacktestNettingOneModelTest, TheEquityCurveAndTheResultsChargeTheCostAfte
     EXPECT_DOUBLE_EQ(results_.roll_costs, 0.0);
 }
 
-// T-NETTING fix round 2 (audit A of the fix round, S2): the refusal of a ROLL or BORROW row that
+// The refusal of a ROLL or BORROW row that
 // carries a netting adjustment STOPS THE RUN ON THE DAY IT FIRES. The row is put into the first
 // trading cycle (21) through the real bar loop; the run must come back as an error naming the row
 // and the day, and must not have gone on: the fixture's later cycles (31 and 40) trade nothing.
 //
-//   | cycle | before this round                              | now                         |
-//   | 21    | WARN, equity carried flat                      | NETTING STOP, the run fails |
-//   | 31    | traded (the run went on)                       | never reached               |
-//   | 40    | traded; the run failed only in the end totals  | never reached               |
+//   | cycle | the run                     |
+//   | 21    | NETTING STOP, the run fails |
+//   | 31    | never reached               |
+//   | 40    | never reached               |
 //
-// RED on 4398b2c6: the run went on to the last day (fills on cycles 31 and 40) before it failed.
+// RED when the run goes on to the last day (fills on cycles 31 and 40) before it fails.
 TEST_F(BacktestNettingOneModelTest, ARollRowWithAnAdjustmentStopsTheRunOnTheDayItFires) {
     for (const ExecutionType type : {ExecutionType::ROLL, ExecutionType::BORROW}) {
         TearDown();
@@ -603,7 +601,7 @@ TEST_F(BacktestNettingOneModelTest, ARollRowWithAnAdjustmentStopsTheRunOnTheDayI
     }
 }
 
-// T-8a (7), ledger G3 (the netting audits' follow-up): the END-OF-RUN refusal, driven through
+// The END-OF-RUN refusal, driven through
 // run_portfolio. A ROLL or BORROW row carrying a netting adjustment that no day's sum met (in a
 // real run a BORROW row is appended after its cycle's sum) is met where the run's totals are
 // taken, before the metrics: the run comes back as an error result naming the row, not as an
@@ -640,7 +638,7 @@ TEST_F(BacktestNettingOneModelTest, ARollOrBorrowRowWithAnAdjustmentMetAtTheEndF
     }
 }
 
-// T-8a (7), LEAD_RULINGS_IN_SESSION R-G: the trade statistics of a run are the BOOK's. Two sleeves
+// The trade statistics of a run are the BOOK's. Two sleeves
 // OPEN against each other on one cycle (A buys 2, B sells 2: a full cross, net cost 0) and hold to
 // the end: the account sent no order, so the run has no trade.
 //
@@ -648,7 +646,7 @@ TEST_F(BacktestNettingOneModelTest, ARollOrBorrowRowWithAnAdjustmentMetAtTheEndF
 //   | every sleeve row is a fill    | the second row "closes" the first: a trade of 0  | 1            |
 //   | the account's fills           | a full cross: no fill                            | 0            |
 //
-// RED on the parent: total_trades 1.
+// RED when total_trades is 1.
 TEST_F(BacktestNettingOneModelTest, AFullCrossIsNoTradeInTheRunsTradeStatistics) {
     opposite_opens_ = true;
     run();
@@ -666,17 +664,17 @@ TEST_F(BacktestNettingOneModelTest, AFullCrossIsNoTradeInTheRunsTradeStatistics)
     EXPECT_TRUE(results_.actual_trades.empty());
 }
 
-// OPT-N5/N6: backtest.results.end_date and backtest.run_metadata.end_date are the run's DATA
+// backtest.results.end_date and backtest.run_metadata.end_date are the run's DATA
 // BOUNDARY, the timestamp of the last bar it consumed, which is the last point of the equity curve
 // it stores. The run is asked for an end three days and four hours after its last bar (a frozen
 // end on a date with no bar, or the wall clock):
 //
-//   | cell                             | parent: the requested end | now: the last bar   |
+//   | cell                             | the requested end (wrong) | the last bar        |
 //   | backtest.results.end_date        | 2025-03-06 04:00:00Z      | 2025-03-03 00:00:00Z |
 //   | backtest.run_metadata.end_date   | 2025-03-06 04:00:00Z      | 2025-03-03 00:00:00Z |
 //   | start_date (both)                | 2025-01-06 00:00:00Z      | unchanged            |
 //
-// RED on the parent: both end dates are the requested end.
+// RED when both end dates are the requested end.
 TEST_F(BacktestNettingOneModelTest, TheStoredEndDateIsTheLastBarTheRunConsumedNotTheRequestedEnd) {
     const Timestamp last_bar = trading_day(kLastDay);
     requested_end_ = last_bar + std::chrono::hours(3 * 24 + 4);
@@ -702,7 +700,7 @@ TEST_F(BacktestNettingOneModelTest, TheStoredEndDateIsTheLastBarTheRunConsumedNo
     }
 }
 
-// OPT-N5/N6, the choice itself, called with no run and no database.
+// The choice itself, called with no run and no database.
 //
 //   | the equity curve                                   | data_boundary          |
 //   | seed 01-06, bars 01-07 and 01-08                   | 2025-01-08 (last bar)  |

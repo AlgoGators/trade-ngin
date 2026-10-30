@@ -21,13 +21,12 @@ public:
     static Result<std::vector<Bar>> arrow_table_to_bars(const std::shared_ptr<arrow::Table>& table);
 
     // ------------------------------------------------------------
-    // Type-safe accessors (Phase 5 §1.17a + §5d)
+    // Type-safe accessors
     //
-    // The codebase has a long-standing footgun: LiveDataLoader builds Arrow
-    // columns as utf8 (string-of-numbers) via convert_generic_to_arrow, but
-    // many call sites do a blind static_pointer_cast<DoubleArray> on
-    // chunk(0). On type mismatch this silently returns 0.0 -- corrupt data
-    // becomes a zero with no log line.
+    // LiveDataLoader builds Arrow columns as utf8 (string-of-numbers) via
+    // convert_generic_to_arrow. A blind static_pointer_cast<DoubleArray> on
+    // chunk(0) of such a column silently returns 0.0 on type mismatch --
+    // corrupt data becomes a zero with no log line.
     //
     // The safe_get_* family below dispatches on the actual Arrow column
     // type, accepts string-storage of numerics as a documented fallback
@@ -47,8 +46,6 @@ public:
      *   - STRING column            -> GetString + std::stod; on parse
      *                                 failure, logs WARN naming the bad
      *                                 value and returns an error Result.
-     *                                 (Closes §5d -- no more swallowed
-     *                                 exceptions.)
      *   - any other Arrow type     -> logs ERROR naming the actual type
      *                                 and returns an error Result.
      *   - null cell                -> error Result, never silently 0.0.
@@ -67,12 +64,11 @@ public:
      * Like safe_get_double but for integers. Doubles in the column are
      * truncated toward zero (with a single WARN about precision loss).
      *
-     * E2-F37 / BA-14 -- temporal columns. The canonical schema stores dates as
+     * Temporal columns: the canonical schema stores dates as
      * `arrow::TimestampArray`, but convert_generic_to_arrow may surface the same
      * column as utf8 or int64 depending on the source, which is why callers route
-     * timestamps through here at all. Before this there was no TIMESTAMP case, so
-     * such a column hit `default` and errored -- or, worse, arrived as a STRING
-     * and `std::stoll("2026-09-02 00:00:00")` returned **2026**: a silent,
+     * timestamps through here at all. A date string is never read with
+     * `std::stoll`, which returns 2026 for "2026-09-02 00:00:00": a silent,
      * plausible-looking integer that is not a timestamp in any unit.
      *
      * UNITS -- read this before using the result:
@@ -104,8 +100,8 @@ public:
         const std::string& column_name);
 
     // ------------------------------------------------------------
-    // Single-array helpers (kept public so existing arrow_table_to_bars
-    // pattern stays usable; promoted from private in Phase 5).
+    // Single-array helpers (public so the arrow_table_to_bars pattern
+    // stays usable).
     // ------------------------------------------------------------
 
     /**

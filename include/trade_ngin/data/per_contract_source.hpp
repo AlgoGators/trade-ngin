@@ -28,17 +28,15 @@ struct MarketDataEvent;
 namespace trade_ngin::contract_rolls {
 
 /**
- * @brief The futures bar source with portfolio.json's per_contract_rolls on (rolls step 3,
- *        ROLLS_STEP1_PLAN sections 2 and 5 step 3, HD's rulings of 2026-10-23 in sections 11 and
- *        11b).
+ * @brief The futures bar source with portfolio.json's per_contract_rolls on.
  *
  * The one futures bar query underneath every loader (PostgresDatabase::get_market_data for
  * futures, and the instrument-id rows of get_futures_instrument_ids) hands out OUR series instead
- * of the vendor's `.v.0` bars: on each date of the vendor's grid, the bar of the contract HD's rule
- * holds (contract_roll_rule.hpp), its own OHLCV, `instrument_id` the held contract's id string. A
- * roll bar is the NEW contract's bar and carries the old contract's close and id in Bar::roll_from,
- * so it flows through every store untouched. The grid stays the vendor's (plan 10b point 1): the
- * same dates, the same instants, as the query returns today. Every loader, history store and
+ * of the vendor's `.v.0` bars: on each date of the vendor's grid, the bar of the contract the roll
+ * rule holds (contract_roll_rule.hpp), its own OHLCV, `instrument_id` the held contract's id
+ * string. A roll bar is the NEW contract's bar and carries the old contract's close and id in
+ * Bar::roll_from, so it flows through every store untouched. The grid stays the vendor's: the
+ * same dates, the same instants, as the vendor's query returns. Every loader, history store and
  * window above the query stays as it is.
  *
  * No look-ahead: what a run is handed for a bar depends only on that bar and the bars before it,
@@ -57,21 +55,21 @@ namespace trade_ngin::contract_rolls {
  *     The library (roll_series.hpp) reads the next consumed bar: held going into it in the target
  *     confirms the roll on the switch bar (the legs booked on it at the switch bar's two closes, its
  *     move measured from the target's close); otherwise nothing rolled and nothing changes. A run
- *     whose consumed bars end on the switch bar holds the symbol, as today.
+ *     whose consumed bars end on the switch bar holds the symbol.
  *   - A crossover and a deadline roll are known on the roll bar itself (RollFromKind::KNOWN), and
  *     so is a vendor switch dated on a bar where the crossover or the deadline also rolls, or
  *     confirmed by an earlier bar (a Sunday switch rolled on Monday).
  *   - Every bar after a roll, up to the next one, carries the old contract's close on that date
  *     (AFTER_ROLL), so a consumer that withheld the roll bar and any bars after it (the consumed-bar
  *     rule) books the roll on its first consumed bar, the old contract's move up to it and both
- *     legs at its closes (HD 10-23). A consumer that consumed the roll bar reads nothing from it.
+ *     legs at its closes. A consumer that consumed the roll bar reads nothing from it.
  *
- * The micros (MES, MNQ, MYM, M2K) read the rule like every other root (R6, plan 10b point 5):
+ * The micros (MES, MNQ, MYM, M2K) read the rule like every other root:
  * before the vendor's 2026-02-22 change their series is the full-size root's contracts (ES, NQ, YM,
  * RTY), from it the micro's own, and the change is one roll (trigger ALIAS) between the two
  * contracts of the same expiry (contract_roll_rule.hpp, MicroAlias).
  */
-/// Rolls step 4, ruling 19 (HD 2026-10-23): the bar the source hands out on an unconfirmed vendor
+/// The bar the source hands out on an unconfirmed vendor
 /// switch bar (portfolio.json per_contract_switch_bar).
 enum class SwitchBar {
     HELD,    ///< "held": the held contract's own bar, the field naming the target (AWAITS_NEXT)
@@ -96,13 +94,13 @@ public:
     bool enabled() const;
     /// The calendar given to enable(); an empty calendar when off.
     FuturesCalendar calendar() const;
-    /// Ruling 19's setting given to enable(); HELD when off.
+    /// The switch-bar setting given to enable(); HELD when off.
     SwitchBar switch_bar() const;
-    /// Whether the bars carry carry quotes (trade-ngin #185); false when off.
+    /// Whether the bars carry carry quotes; false when off.
     bool carry_quotes() const;
-    /// Rolls step 4 (R4a open question 4): the first bar date whose rule warnings (the fallbacks) a
-    /// load logs. A live run sets its T-1, the bar it consumes for the first time (runs go on
-    /// consecutive days); Day{} (the default, and after enable()) logs a load's whole window.
+    /// The first bar date whose rule warnings (the fallbacks) a load logs. A live run sets its
+    /// T-1, the bar it consumes for the first time (runs go on consecutive days); Day{} (the
+    /// default, and after enable()) logs a load's whole window.
     void set_log_floor(Day day);
     Day log_floor() const;
     /// True the first time `message` is asked after enable() (each fallback is logged once per run,
@@ -123,9 +121,9 @@ private:
 /**
  * @brief The runners' one call: the source on when `per_contract_rolls` is true (loading the
  *        futures calendar, FuturesCalendar::resolve_path), off otherwise; `switch_bar` is
- *        per_contract_switch_bar ("held" or "vendor", ruling 19). An error when the calendar cannot
- *        be loaded or the setting is neither; the runner refuses to run. `carry_quotes` (carry on,
- *        trade-ngin #185) makes every bar carry the day's carry quote; carry reads two contracts'
+ *        per_contract_switch_bar ("held" or "vendor"). An error when the calendar cannot
+ *        be loaded or the setting is neither; the runner refuses to run. `carry_quotes` (carry on)
+ *        makes every bar carry the day's carry quote; carry reads two contracts'
  *        own closes, so it is refused with per_contract_rolls off.
  */
 Result<void> configure_per_contract_source(bool per_contract_rolls,
@@ -144,8 +142,8 @@ struct SourceBar {
     double volume{0.0};
     std::string instrument_id;  ///< the held contract's id (the target's on a roll bar)
     std::optional<RollFrom> roll_from;
-    std::optional<CarryQuote> carry;  ///< trade-ngin #185, with carry quotes on only
-    std::optional<double> own_contract_volume;  ///< MM fix round 1: HeldDay::micro_volume
+    std::optional<CarryQuote> carry;  ///< with carry quotes on only
+    std::optional<double> own_contract_volume;  ///< HeldDay::micro_volume
 };
 
 /**
@@ -159,10 +157,10 @@ struct SourceBar {
  * with RollFrom naming the target (AWAITS_NEXT); any other day the held contract's bar (a carried
  * close keeps the carried row's id), with an AFTER_ROLL RollFrom on every day after a roll, up to
  * the next, when the contract left printed that day. A fallback roll (the old contract with no bar
- * up to its last actionable bar, plan 5c) reads as the roll it stands for: RollFrom::close is the
+ * up to its last actionable bar) reads as the roll it stands for: RollFrom::close is the
  * previous day's close times the new contract's move (or that close, for a zero fallback), with a
  * WARN. Errors: a window date the series lacks, a day with no close. With `switch_bar` VENDOR
- * (ruling 19) a switch bar is the target's own bar instead, the field naming the held contract
+ * a switch bar is the target's own bar instead, the field naming the held contract
  * (AWAITS_NEXT_VENDOR); every other bar is the same.
  */
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
@@ -172,13 +170,13 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                               const std::function<bool(const std::string&)>& log_once = {});
 
 /**
- * @brief Carry (trade-ngin #185): each bar's carry quote (data/carry_quote.hpp), from the contracts of
+ * @brief Carry: each bar's carry quote (data/carry_quote.hpp), from the contracts of
  *        `book`, for the contract the book holds on the bar's date.
  *
  * The contract pair moves on the bar that confirms a roll: on a roll known on its bar the new
  * contract; on a vendor switch only the next bar confirms (HeldDay::awaits_next_bar) the old
  * contract, the new one from the next bar; on an unconfirmed switch (TentativeRoll) the held
- * contract. Which bar the source hands out on a switch bar (ruling 19) does not change the pair.
+ * contract. Which bar the source hands out on a switch bar (SwitchBar) does not change the pair.
  * The neighbour is taken from the held contract's own root's roll cycle. A bar whose date the
  * series lacks, or whose held contract or neighbour has no row that day, gets no quote.
  */
@@ -208,8 +206,8 @@ MarketDataEvent source_bar_event(const SourceBar& bar);
 /// (Bar::own_contract_volume, NULL where absent). With `with_carry` (carry on) five more,
 /// Bar::carry's (carry_held_close, carry_other_close, carry_months, carry_held_symbol,
 /// carry_other_symbol; NULL where it is absent); without it the table is the fourteen columns.
-/// (Merged on tune2/final-base: MM's roll_from_volume and own_contract_volume are columns 12 and 13
-/// in every table, carry's columns follow them.)
+/// roll_from_volume and own_contract_volume are columns 12 and 13 in every table; carry's columns
+/// follow them.
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars,
                                                            bool with_carry = false);
 

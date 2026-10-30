@@ -1,16 +1,16 @@
 // tests/backtest/test_backtest_futures_cost_feed.cpp
 //
-// T-7b-2 8c, COST-H3 (T-VOL §4, proven): the futures backtest's two cost managers (the coordinator's
-// execution manager's, which prices the stored fills, and the PortfolioManager's, which prices them
-// in backtest.executions and the optimizer's cost vector) read the same basis the live futures
-// runners read (futures_cost_feed.hpp, T-7b-1 C8a/C8d): the fill day's OWN volume, the volume of the
-// symbol's signal bar T-1 whose close prices the fill, as the impact model's only observation, and
-// the walk of the symbol's consecutive returns ending at that bar for the volatility term; from the
-// strategy feed, so a JUNK signal bar is withheld on its cycle as live withholds it (T-7b-1 C7b R10).
+// The futures backtest's two cost managers (the coordinator's execution manager's, which prices the
+// stored fills, and the PortfolioManager's, which prices them in backtest.executions and the
+// optimizer's cost vector) read the same basis the live futures runners read
+// (futures_cost_feed.hpp): the fill day's OWN volume, the volume of the symbol's signal bar T-1
+// whose close prices the fill, as the impact model's only observation, and the walk of the symbol's
+// consecutive returns ending at that bar for the volatility term; from the strategy feed, so a JUNK
+// signal bar is withheld on its cycle as live withholds it.
 //
-// The parent fed each cycle's own group, day T, to both managers before the book was sized on the
-// T-1 group and filled at the T-1 close: a 20-bar mean ending at T (a one-bar look-ahead) and a
-// volatility window with no return across a gap in the symbol's bars.
+// Feeding each cycle's own group, day T, would be a one-bar look-ahead (a 20-bar mean ending at T,
+// while the book is sized on the T-1 group and filled at the T-1 close) and would leave the
+// volatility window without the returns across a gap in the symbol's bars.
 //
 // Each test runs a whole futures backtest (run_portfolio) on bars the test controls and compares the
 // managers and the stored fill costs with live's feed of the same bars (feed_futures_cost_model into
@@ -101,7 +101,7 @@ std::vector<Bar> bars_through(const std::string& symbol, int last_day, int skip_
 TransactionCostManager live_feed(const std::string& symbol, int signal_day, int skip_day = -1) {
     TransactionCostManager tcm;
     // The run dated the next trading day; the signal bar is a weekday, so rules (1) and (3) of the
-    // weekend merge (C8c3) do not read the fill day.
+    // weekend merge do not read the fill day.
     feed_futures_cost_model(tcm, bars_through(symbol, signal_day, skip_day),
                             trading_day(signal_day + 1));
     return tcm;
@@ -225,7 +225,7 @@ protected:
     }
 
     std::vector<Row> db_rows_override_;  ///< the rows to serve instead of rows(last_day, junk)
-    std::map<std::string, std::map<Timestamp, double>> targets_at_;  ///< by instant (C8c3)
+    std::map<std::string, std::map<Timestamp, double>> targets_at_;  ///< by instant
     std::shared_ptr<ServingDb> db_;
     std::unique_ptr<BacktestCoordinator> coord_;
     std::shared_ptr<PortfolioManager> pm_;
@@ -235,8 +235,8 @@ protected:
 
 // After the last cycle (stamped day 40, its signal group day 39) both managers hold what a live run
 // with T-1 = day 39 feeds: day 39's own volume as the impact ADV, and the volatility term from the
-// walk of returns ending at day 39, XB's returns across its Monday holes included. The parent held
-// the 20-bar mean ending at day 40 and a window without XB's gap returns.
+// walk of returns ending at day 39, XB's returns across its Monday holes included; not the 20-bar
+// mean ending at day 40, nor a window without XB's gap returns.
 TEST_F(FuturesCostFeedBacktest, TheManagersHoldLivesFeedEndingAtTheLastSignalBar) {
     run(AssetClass::FUTURES, 40, /*junk=*/false, {});
 
@@ -259,7 +259,7 @@ TEST_F(FuturesCostFeedBacktest, AFillIsPricedOnItsSignalBarsOwnVolumeAndReturns)
 
     const auto on_thin = live_feed(kA, kThinDay);
     const double thin = on_thin.calculate_costs(kA, 1.0, close_of(kA, kThinDay)).total_transaction_costs;
-    TransactionCostManager parent_basis;  // the parent's: the 20 bars ending at day 31, day 31 included
+    TransactionCostManager parent_basis;  // the look-ahead basis: the 20 bars ending at day 31, day 31 included
     for (int d = 1; d <= 31; ++d) {
         parent_basis.update_market_data(kA, volume_of(kA, d), close_of(kA, d), close_of(kA, d - 1));
     }
@@ -282,11 +282,10 @@ TEST_F(FuturesCostFeedBacktest, AJunkSignalBarIsWithheldFromTheCostFeedOnItsCycl
     expect_managers_equal(kB, live_feed(kB, kJunkDay), "XB");
 }
 
-// T-7b-2 C8c4 (HD 2026-09-25 ruling 26): the equity backtest's impact and volatility windows end at
-// T-1 like live's. After the last cycle (stamped day 40, signal group day 39) both managers hold what
-// the live equity runner's feed of the same bars through day 39 holds (LiveDailyCycle::feed_cost_model:
-// a 20-bar mean ending at T-1, the returns ending at T-1). The parent fed each cycle's own group,
-// day T.
+// The equity backtest's impact and volatility windows end at T-1 like live's. After the last cycle
+// (stamped day 40, signal group day 39) both managers hold what the live equity runner's feed of the
+// same bars through day 39 holds (LiveDailyCycle::feed_cost_model: a 20-bar mean ending at T-1, the
+// returns ending at T-1), not each cycle's own group, day T.
 TEST_F(FuturesCostFeedBacktest, TheEquityBacktestsCostWindowsEndAtTheSignalBarLikeLive) {
     run(AssetClass::EQUITIES, 40, /*junk=*/false, {});
 
@@ -302,7 +301,7 @@ TEST_F(FuturesCostFeedBacktest, TheEquityBacktestsCostWindowsEndAtTheSignalBarLi
 }
 
 // ------------------------------------------------------------------------------------------------
-// T-7b-2 C8c3, the weekend merge (HD 2026-09-25 rulings 25 and 28; futures_cost_feed.hpp rules 1-3).
+// The weekend merge (futures_cost_feed.hpp rules 1-3).
 // XA prints a 4,000-lot Sunday stub before Monday, trading day 25. The cycle stamped Monday has the
 // stub as XA's signal bar: a weekday fill, priced on Friday's (day 24) volume plus the stub's. The
 // cycle stamped Tuesday has Monday as its signal bar: Monday's volume plus the stub's.
@@ -402,7 +401,7 @@ TEST_F(FuturesCostFeedBacktest, AFillAtTheStubsCloseStampedMondayIsPricedOnFrida
     TransactionCostManager live;
     feed_futures_cost_model(live, xa_bars_with_stub(kStubMonday - 1), trading_day(kStubMonday));
     ASSERT_DOUBLE_EQ(live.get_adv(kA), volume_of(kA, kStubMonday - 1) + kStubVolume);
-    TransactionCostManager stub_only;  // C8c2's basis: the stub's own volume
+    TransactionCostManager stub_only;  // the stub's own volume alone
     feed_futures_cost_model(stub_only, xa_bars_with_stub(kStubMonday - 1),
                             sunday_before(kStubMonday));
     ASSERT_DOUBLE_EQ(stub_only.get_adv(kA), kStubVolume);

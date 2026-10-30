@@ -1,10 +1,10 @@
 // tests/live/test_effective_universe.cpp
 //
-// E2-F34 / E3 F-4 -- the tradeable universe must be finalized AFTER the book is known,
-// and BA-2 / C-3 D1 -- the era test that decides which renames count must be asked
+// The tradeable universe must be finalized AFTER the book is known, and the era test
+// that decides which renames count must be asked
 // about the CURRENT holding, not the lifetime of the ticker.
 //
-// The failure shape these pin, end to end: the runner fixed `symbols` from config,
+// The failure shape these pin, end to end: a runner that fixed `symbols` from config,
 // registered instruments, loaded bars and built trading_params from it, and only then
 // -- about 1,500 lines later -- ran apply_renames. A held position whose successor was
 // not in config was re-keyed onto a symbol the run had no bars, no instrument, no cost
@@ -48,7 +48,7 @@ bool contains(const std::vector<std::string>& v, const std::string& s) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// E2-F34 / F-4
+// The successor of a held renamed ticker
 // ---------------------------------------------------------------------------
 
 // The regression. FB is held, FB -> META closed on 2022-06-09, the holding was
@@ -107,7 +107,7 @@ TEST(EffectiveUniverse, UnrelatedAliasAddsNothing) {
 }
 
 // A flat row is not a holding. Closed rows exist to carry realized P&L on the day
-// they closed (E2-F19) and nothing re-keys them, so they must not widen the universe.
+// they closed and nothing re-keys them, so they must not widen the universe.
 TEST(EffectiveUniverse, AFlatRowDoesNotWidenTheUniverse) {
     const std::vector<std::string> config{"AAPL"};
     std::unordered_map<std::string, Position> book{{"FB", held("FB", 0.0)}};
@@ -187,7 +187,7 @@ TEST(EffectiveUniverse, NoHoldingStartMeansNoAddition) {
 }
 
 // ---------------------------------------------------------------------------
-// BA-2 / C-3 D1 -- which date the era test is asked about
+// Which date the era test is asked about
 // ---------------------------------------------------------------------------
 
 // The two inputs, side by side, on one book. `get_position_inception_dates` answers
@@ -196,7 +196,7 @@ TEST(EffectiveUniverse, NoHoldingStartMeansNoAddition) {
 // `get_current_holding_start_dates` answers "when did the holding we hold now begin",
 // and the same alias then correctly does nothing.
 //
-// The live shape this is drawn from, measured 2026-09-03 on EQUITY_MR_PORTFOLIO:
+// The live shape this is drawn from, on EQUITY_MR_PORTFOLIO:
 // META's lifetime inception is 2026-06-11, its current holding began 2026-07-31 (the
 // position was closed and re-opened in between).
 TEST(RenameEraInput, LifetimeInceptionRekeysAReopenedTickerAndTheHoldingStartDoesNot) {

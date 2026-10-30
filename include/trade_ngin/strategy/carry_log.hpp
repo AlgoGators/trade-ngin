@@ -1,6 +1,6 @@
 #pragma once
 
-// Carry (trade-ngin #185, HD's Q1): the equity slow rule acts on the trend part of the blend only, so an
+// Carry: the equity slow rule acts on the trend part of the blend only, so an
 // equity index the rule names can go short on carry while its trend part alone is not short. Such shorts
 // are allowed, counted and reported: this is the one INFO line a futures run prints for them, and only
 // when a sleeve has carry on (a carry-off run prints nothing new).

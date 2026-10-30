@@ -16,7 +16,7 @@ namespace trade_ngin {
 /**
  * @brief The portfolio-scope risk REFUSE of the last process_market_data call, if there was one.
  *
- * T-RISK-ARCH Q2 (ruled yes, HD 2026-09-19). A risk REFUSE is discovered inside
+ * A risk REFUSE is discovered inside
  * process_market_data, which the futures runners call AFTER they have written the day's
  * trading.live_run_metadata row. That row records a run that did happen, so it is not deleted;
  * it is MARKED: the runner writes the same row a second time with the refusal in its
@@ -29,7 +29,7 @@ namespace trade_ngin {
  *
  * A module that FAILED and so refused the scope (PortfolioManager::refuse_on_failed_gatekeeper,
  * or the portfolio risk step itself failing, module kRiskStepModuleId) is recorded with applied
- * REFUSE and its error (T-7a commit 5), so it is seen here and in risk_decisions_json()'s
+ * REFUSE and its error, so it is seen here and in risk_decisions_json()'s
  * "outcome". Its "reason" is the error, since the module returned no decision, and "error"
  * carries it too; the runner's exit path reads the same record through
  * portfolio_risk_module_failure (risk_module_failure.hpp).
@@ -73,10 +73,10 @@ inline nlohmann::json mark_risk_refusal(nlohmann::json portfolio_config,
 }
 
 /**
- * @brief The run's portfolio_config JSON with a failed STRICT assertion written into it (T-7b-1
- *        C7b R4, T-7a_CODE_REVIEW R4). The assertion runs after the day's live_run_metadata row
+ * @brief The run's portfolio_config JSON with a failed STRICT assertion written into it. The
+ *        assertion runs after the day's live_run_metadata row
  *        was written and before anything else is stored, so a fired assertion leaves a row for a
- *        run that stored no book. As with a risk refusal (T-RISK-ARCH Q2) the row records a run
+ *        run that stored no book. As with a risk refusal the row records a run
  *        that did happen, so it is marked, not deleted; the watchdog reads the mark. Every other
  *        key of the first upsert is kept verbatim.
  */

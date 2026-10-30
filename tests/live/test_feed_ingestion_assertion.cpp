@@ -1,8 +1,8 @@
 // tests/live/test_feed_ingestion_assertion.cpp
 //
-// E2-F43 / BA-17 -- a strategy that did not ingest the day's bars must stop the run.
+// A strategy that did not ingest the day's bars must stop the run.
 //
-// PortfolioManager::process_market_data (src/portfolio/portfolio_manager.cpp:217-222) does
+// PortfolioManager::process_market_data does
 // this:
 //
 //     auto result = info.strategy->on_data(data);
@@ -13,10 +13,9 @@
 // instrument data the strategy never updated. A live process starts with an empty
 // instrument_data_ every session, so those targets are ZERO for every symbol -- and a zero
 // target map against a held book is not "no change", it is a full-book SELL at the T-1
-// closes. Before E2-F28 collapsed the double feed, the first feed returned that error to the
-// runner and the run exited 1. Removing it removed the only caller that checked.
+// closes.
 //
-// These tests pin the check the runner now performs before it reads a single target.
+// These tests pin the check the runner performs before it reads a single target.
 
 #include <gtest/gtest.h>
 

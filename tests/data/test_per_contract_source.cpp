@@ -1,4 +1,4 @@
-// The per-contract bar source (rolls step 3, per_contract_source.hpp): what each grid date hands
+// The per-contract bar source (per_contract_source.hpp): what each grid date hands
 // out, and that no bar depends on a later bar, on hand-built GC fixtures (the shipped calendar), then
 // on the clone (TRADE_NGIN_TEST_DSN, read only): the loader's own call with the switch on and off.
 // GCQ6: D* = Fri 2026-07-31, window Fri 07-24 to the LAB Wed 07-29.
@@ -315,7 +315,7 @@ TEST(PerContractSource, AFallbackRollReadsThePreviousCloseTimesTheNewContractsMo
     EXPECT_NE(std::string(r.error()->what()).find("no old bar"), std::string::npos);
 }
 
-// R4a open question 4: a fallback roll's WARN is logged from the load's log floor on, once per run: the
+// A fallback roll's WARN is logged from the load's log floor on, once per run: the
 // log_once callback is asked only for a roll on or after log_from, and a false keeps the line out.
 TEST(PerContractSource, AFallbackRollsWarnIsLoggedFromTheFloorAndOnce) {
     HeldSeries s;
@@ -376,7 +376,7 @@ TEST(PerContractSource, TheSwitchTurnsTheSourceOnAndOff) {
     EXPECT_FALSE(source.enabled());
     EXPECT_TRUE(configure_per_contract_source(false).is_ok());
     EXPECT_FALSE(source.enabled());
-    // Rolls step 4, ruling 19: the switch-bar setting rides with the switch; off reads "held".
+    // The switch-bar setting rides with the switch; off reads "held".
     source.enable(contract_rolls_test::shipped_calendars(), SwitchBar::VENDOR);
     EXPECT_EQ(source.switch_bar(), SwitchBar::VENDOR);
     source.disable();
@@ -421,13 +421,13 @@ std::vector<SourceBar> every_kind() {
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
                        RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
             source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, ""),
-            // R6: the micros' change of price source, and a bar after it (MM fix round 1: each
-            // carrying the full-size contract's own volume)
+            // The micros' change of price source, and a bar after it (each carrying the
+            // full-size contract's own volume)
             source_bar("MES.v.0", "2026-02-23 00:00:00+00", 6857.25, "m",
                        RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23", 1250000.0}),
             source_bar("MES.v.0", "2026-02-24 00:00:00+00", 6904.25, "m",
                        RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23", 980000.0}),
-            // MM fix round 1: an equity micro's bar before its change, its own contract's volume along
+            // An equity micro's bar before its change, its own contract's volume along
             [] {
                 SourceBar b = source_bar("MES.v.0", "2019-05-06 00:00:00+00", 2918.0, "736");
                 b.own_contract_volume = 162154.0;
@@ -448,7 +448,7 @@ std::shared_ptr<arrow::Table> with_column(const std::shared_ptr<arrow::Table>& t
 
 }  // namespace
 
-// R6: the rule serves every root asked for, the four micros too (no root is left on the vendor's
+// The rule serves every root asked for, the four micros too (no root is left on the vendor's
 // series); any other symbol is refused.
 TEST(PerContractSourceLoader, EveryRootIsTheRulesTheMicrosIncludedAndAnyOtherSymbolIsRefused) {
     auto roots = source_roots({"GC.v.0", "MES.v.0", "ZN.v.0", "M2K.v.0", "MNQ.v.0", "MYM.v.0"});
@@ -519,7 +519,7 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
     EXPECT_EQ(bars.value()[5].roll_from->kind, RollFromKind::SOURCE_CHANGE);
     EXPECT_EQ(bars.value()[6].roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
-    // MM fix round 1: the full-size contract's volume on the two change kinds, none elsewhere
+    // The full-size contract's volume on the two change kinds, none elsewhere
     EXPECT_EQ(bars.value()[5].roll_from->volume, std::optional<double>(1250000.0));
     EXPECT_EQ(bars.value()[6].roll_from->volume, std::optional<double>(980000.0));
     EXPECT_FALSE(bars.value()[2].roll_from->volume.has_value());
@@ -527,8 +527,8 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
     EXPECT_EQ(empty.value()->num_columns(), 14);
-    // A table without the volume column (a field before MM's fix round) reads every field with
-    // no volume.
+    // A table without the volume column (an older field layout) reads every field with no
+    // volume.
     auto no_volume = table.value()
                          ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_volume"))
                          .ValueOrDie();
@@ -536,7 +536,7 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     ASSERT_TRUE(unvolumed.is_ok()) << unvolumed.error()->what();
     EXPECT_FALSE(unvolumed.value()[5].roll_from->volume.has_value());
     EXPECT_EQ(unvolumed.value()[5].roll_from->close, 6857.25);
-    // A table without the date column (a field of step 3) reads every field with no date.
+    // A table without the date column (an older field layout) reads every field with no date.
     auto no_date = table.value()
                        ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_date"))
                        .ValueOrDie();
@@ -557,7 +557,7 @@ TEST(PerContractSourceLoader, AMalformedRollFieldIsRefusedNotReadAsAnotherKind) 
         arrow::Int8Builder kinds;
         for (int64_t i = 0; i < table->num_rows(); ++i) {
             if (i == 2) {
-                // 6: past AFTER_SOURCE_CHANGE (5), the last kind (R6)
+                // 6: past AFTER_SOURCE_CHANGE (5), the last kind
                 ASSERT_TRUE((null_kind ? kinds.AppendNull() : kinds.Append(6)).ok());
             } else {
                 ASSERT_TRUE(kinds.Append(0).ok());
@@ -702,7 +702,7 @@ TEST_F(PerContractSourceDbTest, TheGcExampleOnTheLoadersOwnCall) {
     int rolls = 0;
     for (const auto& b : ours) {
         if (b.symbol == "MES.v.0") {
-            // R6: MES is read by the rule too; it holds MESU6 all window, the vendor's contract
+            // MES is read by the rule too; it holds MESU6 all window, the vendor's contract
             const Bar* vb = v.at(key_of(b));
             EXPECT_EQ(b.close, vb->close);
             EXPECT_EQ(b.instrument_id, vb->instrument_id);
@@ -714,7 +714,7 @@ TEST_F(PerContractSourceDbTest, TheGcExampleOnTheLoadersOwnCall) {
         // roll carries the contract left
         if (b.roll_from->kind != RollFromKind::KNOWN) continue;
         ++rolls;
-        // R2's GC example: GCQ6 to GCZ6 on the crossover of Wed 2026-07-29, known on the bar
+        // The GC example: GCQ6 to GCZ6 on the crossover of Wed 2026-07-29, known on the bar
         EXPECT_EQ(core::format_utc_date(b.timestamp), "2026-07-29");
         EXPECT_NE(b.roll_from->instrument_id, b.instrument_id);
     }
@@ -749,7 +749,7 @@ TEST_F(PerContractSourceDbTest, TheGcExampleOnTheLoadersOwnCall) {
     }
 }
 
-// Rolls step 4, ruling 19: with per_contract_switch_bar "vendor" each switch bar (the one-bar stray of
+// With per_contract_switch_bar "vendor" each switch bar (the one-bar stray of
 // 07-16, the confirmed switch of 07-20, the unconfirmable switch of 08-05) is the TARGET's own bar,
 // its close, id and volume, the field naming the held contract; every other bar is the "held" one.
 TEST(PerContractSource, TheVendorSettingHandsOutTheTargetsBarOnEverySwitchBarAndNothingElse) {
@@ -845,7 +845,7 @@ TEST(PerContractSource, BothSwitchBarSettingsBookTheSameMovesAndLegs) {
     EXPECT_EQ(differing_raw, 3) << "only the three switch bars' closes";
 }
 
-// R4A fix round 1 (audit A S1): the setting reaches the bar query. CL's vendor switch of 2025-01-15 (CLG5, id 615689,
+// The setting reaches the bar query. CL's vendor switch of 2025-01-15 (CLG5, id 615689,
 // to CLH5, id 37014) through get_market_data, the loader's own call: "held" hands out CLG5's bar with the field naming
 // CLH5; "vendor" hands out CLH5's bar with the field naming CLG5. Every other bar of the window is the same.
 TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
@@ -885,7 +885,7 @@ TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
     EXPECT_EQ(switch_bars, 1);
 }
 
-// MM (HD 2026-10-27): the gold and silver micros through the loader's own call, on the loaded copy.
+// The gold and silver micros through the loader's own call, on the loaded copy.
 // Their own .v.0 starts at the listing; before it the series is the full-size contract the rule holds,
 // on the full-size root's grid (GC.v.0's Friday 2010-10-01 and Sunday 10-03), and starts where the
 // full-size series does. The listing bar is the one change of price source: MGC GCZ0 to MGCZ0 (same
@@ -944,7 +944,7 @@ TEST_F(PerContractSourceDbTest, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTh
     PerContractSource::instance().disable();
 }
 
-// R6 (plan 10b point 5): the micros read the rule through the loader's own call. Before the
+// The micros read the rule through the loader's own call. Before the
 // vendor's 2026-02-22 change MES.v.0 is the ES contract the rule holds, on Sunday 02-22 too (ESH6's
 // own bar, where the vendor names MESH6); Monday 02-23 is the one roll into MESH6, known on its bar,
 // the field ESH6's close and id; after it the field carries ESH6 while it prints. In the listing-date
@@ -984,7 +984,7 @@ TEST_F(PerContractSourceDbTest, TheMicrosReadTheFullSizeContractsUntilTheChangeA
     EXPECT_EQ(change.instrument_id, "42003800") << "MESH6";
     EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 6857.25);
     ASSERT_TRUE(change.roll_from.has_value());
-    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "HD 2026-10-26: no trade";
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE) << "no trade";
     EXPECT_EQ(change.roll_from->instrument_id, "42140878");
     EXPECT_DOUBLE_EQ(change.roll_from->close, 6857.25);
     EXPECT_EQ(change.roll_from->date, "2026-02-23");
@@ -1082,14 +1082,13 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
     std::vector<SourceBar> rows;
     for (const auto& [day, b] : carry) rows.push_back(b);
     rows.back().carry.reset();  // a day with no quote
-    // tune2/final-base (the merge of MM's fix round onto carry): MM's two columns ride along in
-    // every table, so give some rows both fields
+    // The two volume columns ride along in every table, so give some rows both fields
     for (size_t i = 0; i < rows.size(); ++i) {
         if (i % 2 == 0) rows[i].own_contract_volume = 1000.0 + static_cast<double>(i);
         if (rows[i].roll_from && i % 3 == 0) rows[i].roll_from->volume = 5000.0 + static_cast<double>(i);
     }
-    // Carry off: the fourteen columns as before (MM's roll_from_volume and own_contract_volume the
-    // thirteenth and fourteenth), and no bar carries a quote.
+    // Carry off: the fourteen columns (roll_from_volume and own_contract_volume the thirteenth
+    // and fourteenth), and no bar carries a quote.
     auto off = source_bars_to_arrow(rows);
     ASSERT_TRUE(off.is_ok());
     EXPECT_EQ(off.value()->num_columns(), 14);
@@ -1101,7 +1100,7 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
     ASSERT_TRUE(on.is_ok());
     EXPECT_EQ(on.value()->num_columns(), 19);
     EXPECT_NE(on.value()->GetColumnByName("carry_months"), nullptr);
-    // the merged layout, column by column: MM's two at 12 and 13 in both tables, carry's five after
+    // the layout, column by column: the two volume columns at 12 and 13 in both tables, carry's five after
     const std::vector<std::string> layout = {"time", "symbol", "open", "high", "low", "close", "volume",
                                              "instrument_id", "roll_from_close", "roll_from_id",
                                              "roll_from_kind", "roll_from_date", "roll_from_volume",
@@ -1120,7 +1119,7 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
         EXPECT_EQ(on_bars.value()[i].carry, rows[i].carry) << i;
         EXPECT_EQ(on_bars.value()[i].roll_from, off_bars.value()[i].roll_from) << i;
         EXPECT_EQ(on_bars.value()[i].close, off_bars.value()[i].close) << i;
-        // every field read back by name, carry on and off: MM's two as written
+        // every field read back by name, carry on and off: the two volume columns as written
         EXPECT_EQ(on_bars.value()[i].roll_from, rows[i].roll_from) << i;
         EXPECT_EQ(on_bars.value()[i].own_contract_volume, rows[i].own_contract_volume) << i;
         EXPECT_EQ(off_bars.value()[i].own_contract_volume, rows[i].own_contract_volume) << i;
@@ -1158,10 +1157,11 @@ TEST(PerContractSourceCarry, CarryNeedsThePerContractSourceAndTheSwitchSetsTheQu
     }
 }
 
-// Carry (fix round 1, audit A S1): the one production path that puts quotes on bars, the loader's own
+// Carry: the one production path that puts quotes on bars, the loader's own
 // call (get_market_data -> per_contract_bars -> attach_carry_quotes -> the five Arrow columns ->
 // Bar::carry), on the clone. Each quote's two closes are the contract table's own rows of the bar's date,
-// the pair moves on GC's crossover bar of 2026-07-29, and with the quotes off the table is today's.
+// the pair moves on GC's crossover bar of 2026-07-29, and with the quotes off the table has no carry
+// columns.
 TEST_F(PerContractSourceDbTest, TheLoadersOwnCallHandsOutCarryQuotesOnlyWithCarryOn) {
     PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, true);
     const auto quoted = load({"GC.v.0", "ZN.v.0"}, "2026-07-01", "2026-08-31");

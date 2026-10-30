@@ -1,5 +1,4 @@
-// Rolls step 4 (HD 2026-10-23, ruling 18; migration 040): the split of every per-contract roll, on its
-// closing leg only.
+// Migration 040: the split of every per-contract roll, on its closing leg only.
 //   * The tracker names the held (old) contract's move booked on the roll bar, in points: on the roll's
 //     own bar for a roll known on its bar or booked after a withheld roll bar, on the switch bar for a
 //     vendor switch the next bar confirms (both switch-bar settings), measured from the close the bar's
@@ -227,7 +226,7 @@ TEST(RollSplit, TheLiveStateCarriesThePointsToTheRunner) {
 }
 
 // The results row names the two totals only when they have a value (the switch on), at round-trip
-// precision; with the switch off it names neither, so its statement is the one before 040.
+// precision; with the switch off it names neither, so its statement names none of 040's columns.
 TEST(RollSplit, TheResultsRowNamesTheTotalsOnlyWithTheSwitchOn) {
     EXPECT_TRUE(roll_split_summary_cells(std::nullopt, std::nullopt).empty());
     const auto cells = roll_split_summary_cells(-1075.0, 3350.125);
@@ -242,7 +241,7 @@ TEST(RollSplit, TheResultsRowNamesTheTotalsOnlyWithTheSwitchOn) {
     EXPECT_EQ(*zero[0].value, "0");
 }
 
-// R4b (the report's roll footnote): the T-1 settlement names the symbols whose T-1 bar is a per-contract
+// The report's roll footnote: the T-1 settlement names the symbols whose T-1 bar is a per-contract
 // roll bar (the row books the old contract's move to its close on it), none on an ordinary bar, none on a
 // roll of the vendor's series, and none for a symbol whose roll the run legs late.
 TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
@@ -266,7 +265,7 @@ TEST(RollSplit, TheSettlementNamesThePerContractRollBarsForTheFootnote) {
 }
 
 // The writers' statements (roll_split_sql.hpp): with no split in the call they name none of 040's columns
-// (the statements before 040); with one, the three columns, their placeholders from the given number, and
+// (the statements without 040); with one, the three columns, their placeholders from the given number, and
 // the three values in order (NULL where a row has none).
 TEST(RollSplit, TheWritersNameTheColumnsOnlyForASplit) {
     auto legs = legs_of(1.0, 50.960, 51.630);
@@ -306,7 +305,7 @@ TEST(RollSplit, TheDatabasesRollViewWithNothingToRead) {
     EXPECT_TRUE(on.names.empty());
 }
 
-// S4 (R4B audit A): the results row's cells are the statistics' cells then the two totals, only with a value.
+// The results row's cells are the statistics' cells then the two totals, only with a value.
 TEST(RollSplit, TheResultsRowStoresTheStatisticsCellsThenTheTotals) {
     BacktestStatisticsColumns columns;
     const auto stats = backtest_statistics_cells(columns);
@@ -321,7 +320,7 @@ TEST(RollSplit, TheResultsRowStoresTheStatisticsCellsThenTheTotals) {
     for (size_t i = 0; i < stats.size(); ++i) EXPECT_EQ(on[i].column, stats[i].column);
 }
 
-// S7 m13 (R4B audit A): a "vendor" switch bar (per_contract_switch_bar vendor: the target's own bar, the
+// A "vendor" switch bar (per_contract_switch_bar vendor: the target's own bar, the
 // field naming the held contract) carries the held contract's close as its mark but is no roll: nothing
 // rolled yet (or ever, for a stray), so the settled row gets no "Contract rolled that day" footnote.
 TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
@@ -336,7 +335,7 @@ TEST(RollSplit, AVendorSettingSwitchBarIsNoRollBarForTheFootnote) {
     EXPECT_DOUBLE_EQ(st.t1_close_prices.at("SI.v.0"), 50.960) << "the held contract's close";
 }
 
-// R6 (HD 2026-10-26): the micros' 2026-02-23 change is a change of price source, not a trade. On its bar
+// The micros' 2026-02-23 change is a change of price source, not a trade. On its bar
 // (SOURCE_CHANGE) and, for a consumer that withheld that bar, on the next (AFTER_SOURCE_CHANGE), the series
 // reads it exactly as a known roll: the old contract's move booked to its close, the gap excluded, the held
 // contract the micro's; but the confirm is flagged, so live owes no legs for it (the runners and the

@@ -81,7 +81,7 @@ TEST(ContractBook, AReusedIdNamesTwoContractsOnTheirOwnDates) {
 }
 
 TEST(ContractBook, AnIdInsideTheContractsSpanNamesItOnADateWithNoRow) {
-    // R0's 16 Sunday no-row days: the vendor names the held contract's id on a date the table has
+    // A Sunday no-row day: the vendor names the held contract's id on a date the table has
     // no row for it. The id is resolved within the contract's own span.
     const std::vector<ContractBar> rows = {
         bar("UB", "UBU4", "500", "2014-08-29", "2014-09-19", 140.0, 10000),
@@ -95,7 +95,7 @@ TEST(ContractBook, AnIdInsideTheContractsSpanNamesItOnADateWithNoRow) {
     EXPECT_EQ(c->key->raw_symbol, "UBU4");
 }
 
-// Rolls step 4 (R3 audit A note 1): past the contract's last row read, up to its expiration, the id still
+// Past the contract's last row read, up to its expiration, the id still
 // names it, so the answer for a day does not depend on how far the rows read reach: a live run whose
 // contract bars of its last day are not loaded yet reads what a later backtest reads. After the
 // expiration nothing is named.

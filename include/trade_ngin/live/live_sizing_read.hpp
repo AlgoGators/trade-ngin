@@ -1,14 +1,14 @@
 // include/trade_ngin/live/live_sizing_read.hpp
 //
-// T-7b-3 R-3: the futures live runners' sizing reads. The runner sizes the book on the account's
+// The futures live runners' sizing reads. The runner sizes the book on the account's
 // equity at the close of T-1 (portfolio/sizing_capital.hpp), rebuilt from three stored reads: Day
 // T-1's live_results row (its costs, and whether it exists), the latest live_results row before it
 // (or before the run date without a Day T-1 row) and each sleeve's stored Day T-1 book. Each read
-// has an ordinary "nothing stored" answer, which sizes as before, and a database error.
+// has an ordinary "nothing stored" answer and a database error.
 //
-// A database error is not "nothing stored": treated as one it sized the whole book on the initial
-// capital (a failed Day T-1 row and a failed previous-row read) or on a book with a sleeve missing,
-// and the run traded on it. The only "nothing stored" answers are, per loader:
+// A database error is not "nothing stored": treated as one it would size the whole book on the
+// initial capital (a failed Day T-1 row and a failed previous-row read) or on a book with a sleeve
+// missing, and the run would trade on it. The only "nothing stored" answers are, per loader:
 //
 //   LiveDataLoader::load_live_results                INVALID_ARGUMENT "No live results found for date ..."
 //                                                    (a query that returned no row)
@@ -18,7 +18,7 @@
 //                                                    message is what tells it apart)
 //   DatabaseInterface::load_positions_by_date        none: a sleeve with no stored book is OK and empty
 //
-// Every other error stops the sizing, split by what was read (HD 2026-09-27, T-7b-3 ruling 5):
+// Every other error stops the sizing, split by what was read:
 //
 //   kHoldBook   every sleeve's Day T-1 book loaded, and the Day T-1 row or the previous-row read
 //               failed: there is a book but no equity to size it on. The run holds every strategy
@@ -76,7 +76,7 @@ enum class LiveSizingOutcome {
 
 /**
  * @brief What the run knows of the bars behind its P&L history, for the sizing capital's settled
- *        test (LOOP_SPEC section 3.1).
+ *        test.
  *
  * `bar_dates` are the dates (YYYY-MM-DD) on which the run loaded a bar of any symbol, over the
  * whole span it loaded; `first_bar_date` is the earliest of them. `no_t1_closes` and
@@ -96,7 +96,7 @@ struct LiveSizingRead {
     LiveSizingEquity equity;        ///< kSized only: the account's value rebuilt at the close of T-1
     std::string day_before_source;  ///< kSized only, for the SIZING_CAPITAL log line
     std::string failure;            ///< kHoldBook / kRefuseRun: the read(s) that failed, with the error
-    /// kSized only: the half-compounded sizing capital over the settled history (section 3.1).
+    /// kSized only: the half-compounded sizing capital over the settled history.
     HalfCompounding capital;
     std::string settled_through;    ///< the last settled date the capital read ("none": no settled day)
     int settled_rows{0};            ///< the settled days behind it, Day T-1 included when it settled
@@ -142,14 +142,14 @@ inline bool sizing_history_day_unsettled(const LiveDataLoader::PnlHistoryRow& ro
  * @brief Whether a stored day of the history before Day T-1 counts in the sizing capital.
  *
  * A row counts when its settled_at is set (migration 035: the stamp of the run that settled it,
- * or the migration's backfill, which LOOP_SPEC section 15 erratum 1 counts as settled whatever
- * the calendar says), OR when the no-bar-day rule above calls it settled.
+ * or the migration's backfill, which counts as settled whatever the calendar says), OR when the
+ * no-bar-day rule above calls it settled.
  */
 inline bool sizing_history_row_settled(const LiveDataLoader::PnlHistoryRow& row,
                                        const LiveSizingCalendar& calendar) {
     if (row.settled_at_set) return true;
-    // THE CALENDAR CLAUSE: the one place the sizing read asks the calendar (the lead and HD,
-    // 2026-10-10). A held day on which no bar printed (a Saturday) has nothing left to settle
+    // THE CALENDAR CLAUSE: the one place the sizing read asks the calendar. A held day on which
+    // no bar printed (a Saturday) has nothing left to settle
     // once a later bar has loaded, and the run that stamps it has not yet reached its stamp when
     // it reads the sizing capital: the stamp is one UPDATE after the finalize, and the no-prices
     // run before it stamped nothing. So such a row counts from the first run that loads a later
@@ -158,8 +158,8 @@ inline bool sizing_history_row_settled(const LiveDataLoader::PnlHistoryRow& row,
     return !sizing_history_day_unsettled(row, calendar);
 }
 
-/// The runner's sizing reads for the run date `now` and what they decide. The calls, their order
-/// and their arguments are the runner's before T-7b-3: Day T-1's row, the previous row (before
+/// The runner's sizing reads for the run date `now` and what they decide. The calls, in order:
+/// Day T-1's row, the previous row (before
 /// Day T-1 with a Day T-1 row, before the run date without one), then each sleeve's Day T-1 book.
 /// `t1_closes`, `t2_closes` and `zero_settlement_symbols` are the T-1 settlement on the consumed
 /// bars (consumed_t1_settlement), the inputs STEP 4 finalises Day T-1 with.
@@ -231,7 +231,7 @@ inline LiveSizingRead read_live_sizing_equity(
                                     t1_books, t1_closes, t2_closes, point_value,
                                     zero_settlement_symbols);
 
-    // The sizing capital (LOOP_SPEC section 3.1): the half compounding of the settled history in
+    // The sizing capital: the half compounding of the settled history in
     // date order, then Day T-1's net rebuilt from STEP 4's own parts, unless Day T-1 is on one of
     // the finalize's failure paths.
     std::vector<double> settled_nets;
@@ -293,7 +293,7 @@ inline std::string sizing_capital_history_log_line(const std::string& run_date,
            "risk_detail.account_value are built from the rows";
 }
 
-/// The SIZING_CAPITAL line of a sized run (LOOP_SPEC section 7.7): the capital, the account the
+/// The SIZING_CAPITAL line of a sized run: the capital, the account the
 /// settled history gives, the running peak of the cumulative settled P&L and the last settled date
 /// read, then the parts Day T-1 was rebuilt from.
 inline std::string sizing_capital_log_line(const std::string& run_date, const LiveSizingRead& read) {

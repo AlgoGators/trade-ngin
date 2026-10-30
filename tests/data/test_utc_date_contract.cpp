@@ -7,7 +7,7 @@
 
 using namespace trade_ngin;
 
-// Phase 5 §5c -- pins the loader's UTC date-string contract.
+// Pins the loader's UTC date-string contract.
 //
 // The data layer's `YYYY-MM-DD` keys are produced via format_utc_date and
 // are UTC end-to-end. This test pins three boundary-condition timestamps:

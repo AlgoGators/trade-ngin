@@ -1,4 +1,4 @@
-// HD's worked example of the per-contract roll rule (2026-10-23) on the real bars of a scratch clone
+// A worked example of the per-contract roll rule on the real bars of a test clone of the database
 // (read only, through TRADE_NGIN_TEST_DSN; skips without it or when the expiration column is not
 // filled):
 //

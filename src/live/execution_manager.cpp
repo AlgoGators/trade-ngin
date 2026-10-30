@@ -156,10 +156,10 @@ ExecutionReport ExecutionManager::generate_execution(
     // Keep fill_price as pure reference price (no embedded slippage).
     exec.fill_price = market_price;
 
-    // E2-F29: pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
+    // Pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
     // term except the SEC/TAF regulatory fees, which are sell-side only and are gated on
-    // `quantity < 0`. Passing |quantity_change| made that gate unreachable, so a config with
-    // apply_regulatory_fees charged a sell exactly what it charged a buy.
+    // `quantity < 0`. Passing |quantity_change| would make that gate unreachable, so a config
+    // with apply_regulatory_fees would charge a sell exactly what it charges a buy.
     auto cost_result = cost_manager_->calculate_costs(
         symbol, quantity_change, market_price);
 
@@ -202,18 +202,17 @@ void ExecutionManager::update_market_data(const std::string& symbol, double volu
 std::string ExecutionManager::generate_date_string(const Timestamp& timestamp) {
     // UTC, because this is the RUN DATE and every other artefact of the same run
     // is stamped in UTC: the equity runner parses the CLI date as UTC midnight
-    // (95679ea2) and formats `now_tm` with gmtime_r at every consumer, and the
+    // and formats `now_tm` with gmtime_r at every consumer, and the
     // rows this id belongs to are keyed on that UTC date.
     //
-    // std::localtime here took the previous calendar day on any negative-offset
-    // host -- the 2026-06-15 run wrote DAILY_AAPL_20260614 (E2-F46). That id is
+    // std::localtime here would take the previous calendar day on any negative-offset
+    // host -- a 2026-06-15 run would write DAILY_AAPL_20260614. That id is
     // what delete_stale_executions matches on and what a broker statement is
     // reconciled against, so naming the wrong day is not cosmetic.
     //
-    // Futures are unmoved: they still pass local midnight (E2-F42), which lands
-    // at 04:00/05:00Z on the same calendar day, so reading it in UTC yields the
-    // YYYYMMDD they always got. gmtime_r, not std::gmtime: this is called from
-    // the same paths the thread-safety sweep covered.
+    // Futures pass local midnight, which lands at 04:00/05:00Z on the same
+    // calendar day, so reading it in UTC yields the same YYYYMMDD. gmtime_r, not
+    // std::gmtime, for thread safety.
     std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
     std::tm tm{};
     if (gmtime_r(&time, &tm) == nullptr) return std::string();
@@ -234,13 +233,11 @@ std::string ExecutionManager::generate_exec_id(
     // EXEC_<symbol>_<YYYYMMDD>: the symbol and the run date, nothing else, built from the
     // same date string as the order_id (DAILY_<symbol>_<YYYYMMDD>).
     //
-    // It used to be EXEC_<symbol>_<run instant in ms>_<n>, where n was the fill's index
-    // in that call's output -- the iteration order of an unordered_map. The same fills
-    // could be numbered differently by another hash order, and a fill that appeared or
-    // disappeared renumbered its unrelated neighbours on the same day (T-4c F13: six
-    // fills re-keyed when one MYM execution moved). The instant added nothing either:
-    // it is one value per run, so it only encoded the time of day `now` happened to
-    // carry.
+    // No fill index and no run instant: an index in the call's output would follow the
+    // iteration order of an unordered_map, so the same fills could be numbered differently
+    // by another hash order, and a fill that appeared or disappeared would renumber its
+    // unrelated neighbours on the same day. A run instant is one value per run, so it
+    // would only encode the time of day `now` happened to carry.
     //
     // Unique without a counter: one generate_daily_executions call emits a symbol at
     // most once (the first loop walks current_positions' keys, the second only symbols

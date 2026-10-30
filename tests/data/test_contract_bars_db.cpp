@@ -1,10 +1,10 @@
-// The per-contract reader on a scratch clone (read only, through TRADE_NGIN_TEST_DSN only; skips
-// without it). The clone's expiration column must be filled (R2's clone: from R0's derived
-// expiries); production's is NULL until the data side fills it.
+// The per-contract reader on a test clone of the database (read only, through TRADE_NGIN_TEST_DSN
+// only; skips without it). The clone's expiration column must be filled (from derived expiries);
+// production's is NULL until the data side fills it.
 //
 //   * GC on 2026-07-29: GCQ6 and GCZ6 print, with the volumes of the worked example.
 //   * The vendor's contract is read from ohlcv_1d_raw by symbol and instant: on 6A 2025-11-05 the
-//     kept print differs from the raw row (R0 class d), and the id is still there.
+//     kept print differs from the raw row, and the id is still there.
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 
@@ -63,15 +63,15 @@ TEST_F(ContractBarsDbTest, ReadsTheVendorsContractBySymbolAndInstant) {
         EXPECT_FALSE(b.instrument_id.empty()) << ymd(b.date);
     }
     EXPECT_EQ(grid[1].date, d("2025-11-05"));
-    // The id is the raw row's of the same symbol and instant, whatever its print (R0 class d).
+    // The id is the raw row's of the same symbol and instant, whatever its print.
     const auto raw = t.exec(
         "SELECT volume, instrument_id FROM futures_data.ohlcv_1d_raw WHERE symbol = '6A.v.0'"
         " AND ts_event = '2025-11-05 00:00:00+00'");
     ASSERT_EQ(raw.size(), 1u);
     EXPECT_EQ(grid[1].instrument_id, raw[0][1].as<std::string>());
     // On the reference clone the kept 6A print of 11-05 (76,895 lots) is not the raw row's (196) and
-    // its id is read regardless. R6: the 213-row fix of algogators #36 made them one print on the
-    // tuning copy, and no bar there has a raw row of another print; so the grid's own SQL
+    // its id is read regardless. A copy whose kept prints match their raw rows has no bar with a
+    // raw row of another print; so the grid's own SQL
     // (vendor_grid_query) is also run on TEMP copies of the two tables, in an aborted transaction
     // (nothing is written), where the middle kept print is not the raw row's: its id is still read.
     {

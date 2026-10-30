@@ -64,9 +64,8 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
     }
 
     // Attempt every table even after a failure -- a signals error must not cost us the
-    // executions row -- but remember what failed. Before F-J each failure was logged and
-    // swallowed, so save_all_results returned success and the runner exited 0 with tables
-    // silently missing. Exit 0 now means every table was actually written.
+    // executions row -- but remember what failed, so the runner does not exit 0 with tables
+    // silently missing. Exit 0 means every table was actually written.
     std::vector<std::string> failed_tables;
     auto attempt = [&](const char* table, Result<void> r) {
         if (r.is_error()) {
@@ -253,11 +252,10 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
 
     // An equity value the curve cannot hold (zero, negative, NaN, infinite, or under 1,000:
     // garbage or uninitialised) is REFUSED: no curve row is written and the error is returned,
-    // so save_all_results lists equity_curve among the tables that failed (T-8D-2 R47), as the
-    // Day T-1 re-write already refuses such a value. The earlier behaviour wrote the latest
-    // stored equity of at least 1,000 in its place, with no bound on that row's date: a number
-    // with no run behind it, in a table the statistics read, beside a live_results row that
-    // kept the invalid value.
+    // so save_all_results lists equity_curve among the tables that failed, as the
+    // Day T-1 re-write already refuses such a value. Substituting the latest stored equity
+    // would put a number with no run behind it in a table the statistics read, beside a
+    // live_results row that kept the invalid value.
     const double equity_to_save = current_equity_;
     if (!storable_equity_curve_value(equity_to_save)) {
         const std::string what =
@@ -295,7 +293,7 @@ Result<void> LiveResultsManager::update_live_results(
          " fields");
 
     // A statistic of the since-inception block that has no value (profit_factor with no losing
-    // session) is assigned NULL, as a cell without a value (T-8D R12).
+    // session) is assigned NULL, as a cell without a value.
     auto number_updates = updates;
     auto all_cells = cells;
     null_cells_of_statistics_without_value(number_updates, all_cells);

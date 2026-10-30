@@ -57,12 +57,12 @@ TEST_F(BacktestResultsManagerTest, ConstructorSetsAccessors) {
     EXPECT_TRUE(mgr_->is_storage_enabled());
     EXPECT_EQ(mgr_->get_schema(), "backtest");
     EXPECT_EQ(mgr_->get_strategy_id(), "TEST_STRAT");
-    // C-17: one portfolio id, the base's. The manager used to keep a second member of the same
-    // name, so this getter answered the base's default whatever the run was handed.
+    // One portfolio id, the base's: a second member of the same name would make this getter
+    // answer the base's default whatever the run was handed.
     EXPECT_EQ(mgr_->get_portfolio_id(), "TEST_PORTFOLIO");
 }
 
-// ===== C-17: every row of the run is keyed on the portfolio id the run was handed =====
+// ===== Every row of the run is keyed on the portfolio id the run was handed =====
 
 TEST_F(BacktestResultsManagerTest, EveryBacktestWriterIsHandedTheRunsOwnPortfolioId) {
     mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5), nlohmann::json{}, "RUN", "");

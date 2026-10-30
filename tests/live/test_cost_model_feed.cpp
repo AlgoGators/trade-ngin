@@ -1,20 +1,19 @@
 // tests/live/test_cost_model_feed.cpp
 //
-// E2-F62 -- the live equity runner must give its transaction-cost model market data
-// before it prices a fill.
+// The live equity runner must give its transaction-cost model market data before it
+// prices a fill.
 //
 // The failure shape these pin: TransactionCostManager::calculate_costs reads ADV from
 // impact_model_.get_adv() and the spread widening from
-// spread_model_.get_volatility_multiplier() (transaction_cost_manager.cpp:26-27). Both
-// are populated ONLY by update_market_data. The live equity runner never called it --
-// the only runner in the tree that did not -- so every live equity fill was priced
-// against the fallbacks at :33 and :37: adv = 100000 shares, vol_mult = 1.0. For a name
-// that trades 5.4 M shares a day that is a participation rate 54x too high and the
-// 40 bps impact bucket where the truth is 10 (impact_model.cpp get_impact_k_bps).
-// Registering the tier config does NOT fix it: that writes spread ticks and caps, not
-// the ADV the impact model divides by.
+// spread_model_.get_volatility_multiplier(). Both are populated ONLY by
+// update_market_data. A runner that never calls it prices every fill against the
+// fallbacks: adv = 100000 shares, vol_mult = 1.0. For a name that trades 5.4 M shares
+// a day that is a participation rate 54x too high and the 40 bps impact bucket where
+// the truth is 10 (impact_model.cpp get_impact_k_bps). Registering the tier config
+// does NOT fix it: that writes spread ticks and caps, not the ADV the impact model
+// divides by.
 //
-// Three properties, each of which the pre-fix tree violates:
+// Three properties, each of which an unfed manager violates:
 //   1. after the feed, ADV is the mean of the last 20 volumes and vol_mult is measured
 //   2. the first bar of a symbol contributes NO fabricated log(close/close) = 0 return
 //   3. a 100-share TMUS fill at a real 5.4 M ADV is priced in the 10 bps bucket, not 40
@@ -154,7 +153,7 @@ TEST(CostModelFeed, FirstBarContributesVolumeButNoFabricatedZeroReturn) {
     // What the fabricated-zero path would have produced, so the assertion above is
     // shown to discriminate rather than merely to pass. This is the number the futures
     // live runner gets from ExecutionManager's 3-arg form
-    // (execution_manager.cpp:186 defaults prev_close to the bar's own close).
+    // (execution_manager.cpp defaults prev_close to the bar's own close).
     const std::vector<double> with_fake_zero{0.0, real_returns[0], real_returns[1]};
     const double fabricated = sample_stdev(with_fake_zero) * std::sqrt(252.0);
     EXPECT_GT(std::abs(expected - fabricated), 0.05)
@@ -166,7 +165,7 @@ TEST(CostModelFeed, FirstBarContributesVolumeButNoFabricatedZeroReturn) {
 // 3. A 100-share TMUS fill at a real 5.4 M ADV must land in the 10 bps bucket.
 // -----------------------------------------------------------------------------
 // impact_model.cpp get_impact_k_bps: adv > 1e6 -> 10 bps; 50k < adv <= 200k -> 40 bps.
-// The unfed manager's adv = 100000 fallback (transaction_cost_manager.cpp:33) lands in
+// The unfed manager's adv = 100000 fallback (TransactionCostManager) lands in
 // the 40 bps bucket AND overstates participation by 54x, so it compounds twice.
 TEST(CostModelFeed, HundredShareTmusFillIsPricedInTheTenBpsBucketNotForty) {
     const double kAdv = 5'400'000.0;
@@ -201,11 +200,11 @@ TEST(CostModelFeed, HundredShareTmusFillIsPricedInTheTenBpsBucketNotForty) {
     ASSERT_NEAR(fed.get_adv("TMUS"), kAdv, 1e-9);
     ASSERT_DOUBLE_EQ(unfed.get_adv("TMUS"), 0.0) << "unfed is the pre-fix state";
     ASSERT_DOUBLE_EQ(unfed.get_volatility_multiplier("TMUS"), 1.0)
-        << "no returns at all -> the transaction_cost_manager.cpp:37 default";
+        << "no returns at all -> the TransactionCostManager default";
     ASSERT_DOUBLE_EQ(fed.get_volatility_multiplier("TMUS"), 0.8)
         << "twenty exact-zero returns -> sigma 0 -> z -2 -> 1 + 0.15*-2 = 0.7, floored at 0.8";
 
-    // spread_model.cpp:18-36, per manager, from that manager's own multiplier.
+    // The spread model's rule (spread_model.cpp), per manager, from that manager's own multiplier.
     auto spread_of = [&](double vol_mult) {
         double ticks = std::clamp(tier.baseline_spread_ticks * vol_mult,
                                   tier.min_spread_ticks, tier.max_spread_ticks);
@@ -226,7 +225,7 @@ TEST(CostModelFeed, HundredShareTmusFillIsPricedInTheTenBpsBucketNotForty) {
     EXPECT_NEAR(k_bps_of(before.implicit_price_impact, 100000.0, 1.0), 40.0, 1e-6);
     EXPECT_NEAR(kAdv / 100000.0, 54.0, 0.001);
 
-    // Which is the whole point: the pre-fix manager charges strictly more for the same
+    // Which is the whole point: the unfed manager charges strictly more for the same
     // trade, and by a factor rather than a rounding. The expected factor is not guessed
     // -- it is rebuilt from the model constants, so if any of them moves this test says
     // so instead of quietly still passing.

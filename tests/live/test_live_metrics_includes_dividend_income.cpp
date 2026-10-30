@@ -11,7 +11,7 @@
 
 using namespace trade_ngin;
 
-// Phase 4.5 test TDI.2 — wire-up contract.
+// The wire-up contract.
 //
 // The live equity app builds its metrics map at daily finalization with a
 // "total_dividend_income" key whose value comes from
@@ -85,8 +85,7 @@ TEST_F(LiveMetricsIncludesDividendIncomeTest, MetricsMapPicksUpCumulativeFromAud
     ASSERT_TRUE(double_metrics.count("total_dividend_income"));
     EXPECT_DOUBLE_EQ(double_metrics["total_dividend_income"], 75.0);
 
-    // Sanity: total_pnl is independent (we did NOT add dividend income to it,
-    // per the audit's locked decision #8).
+    // Sanity: total_pnl is independent (dividend income is NOT added to it).
     EXPECT_DOUBLE_EQ(double_metrics["total_pnl"], 1234.5);
 }
 
@@ -98,7 +97,7 @@ TEST_F(LiveMetricsIncludesDividendIncomeTest, MissingStateFileYieldsZeroMetric) 
     EXPECT_DOUBLE_EQ(div_log.total_cumulative_dividend_income(), 0.0);
 }
 
-// T-8D-2 R44 (b): the counter the live equity app stores. It is dated by ex-date and counted on
+// The counter the live equity app stores. It is dated by ex-date and counted on
 // the shares of the position row dated the ex-date, which include the fill the run of the
 // ex-date made at the cum-dividend close; the recorded qty_held is the row of the day before.
 namespace {

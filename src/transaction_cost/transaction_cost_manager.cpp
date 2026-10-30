@@ -159,21 +159,19 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         } else {
             effective_max = asset_config.max_commission_per_order;
         }
-        // E2-C2: the cap is a CEILING and must be applied last.
+        // The cap is a CEILING and must be applied last.
         //
-        // This was `max(floor, min(cap, raw))`, which lets the floor override the cap. IBKR
+        // `max(floor, min(cap, raw))` would let the floor override the cap. IBKR
         // publishes the schedule as "Minimum per order: USD 1.00 / Maximum per order: 1
         // percent of trade value" -- a maximum that a minimum can exceed is not a maximum.
         //
-        // The old order also made max_commission_pct DEAD for any normal stock: the inner
+        // That order would also make max_commission_pct DEAD for any normal stock: the inner
         // min(cap, raw) picks the cap only when `pct * price < commission_per_unit`, i.e.
-        // below $0.50 a share, so above that the expression collapsed to max(floor, raw) and
-        // the configured cap could not change a single output value.
+        // below $0.50 a share, so above that the expression collapses to max(floor, raw) and
+        // the configured cap cannot change a single output value.
         //
         // The two only collide on very small orders, which is exactly what a fractional-share
-        // book trades. Measured 2026-07-24..08-03: the cap should have bound on 5 of 15
-        // executions and did not -- an $18.70 AMZN trade paid $1.00 (535 bps) where the 1%
-        // cap says $0.187. 21% over-charge, concentrated on the smallest clips.
+        // book trades: an $18.70 AMZN trade pays $0.187 under the 1% cap, not the $1.00 floor.
         //
         // The floor protects the broker on small-but-normal orders; the cap protects the
         // client on tiny ones. Both belong here, in this order.
@@ -188,15 +186,14 @@ TransactionCostResult TransactionCostManager::calculate_costs(
 
     // 1b. Regulatory fees (equity sell-side only)
     //
-    // E2-F29: this is the ONLY place the SIGN of `quantity` is read; everything else uses
-    // abs_qty. Every caller used to pass |qty| -- generate_execution() had already split the
-    // trade into a positive filled_quantity plus a Side -- so the gate was unreachable and
-    // these fees were dead code. The callers now pass the signed trade; do not "normalise"
-    // the argument at a call site.
+    // This is the ONLY place the SIGN of `quantity` is read; everything else uses
+    // abs_qty. The callers pass the signed trade (generate_execution() splits it into a
+    // positive filled_quantity plus a Side); do not "normalise" the argument at a call
+    // site, or the gate is unreachable.
     //
-    // Note this is latent rather than live: every production config sets
-    // apply_regulatory_fees = false (IBKR Pro FIXED is all-inclusive, E2-C3). It arms the
-    // day anyone switches an equity config to Tiered, where fees are passed through.
+    // Every production config sets apply_regulatory_fees = false (IBKR Pro FIXED is
+    // all-inclusive). It arms the day anyone switches an equity config to Tiered, where
+    // fees are passed through.
     if (asset_config.apply_regulatory_fees && quantity < 0) {
         double trade_value = abs_qty * reference_price;
         // SEC Transaction Fee (sell-side only)
@@ -228,15 +225,14 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     result.implicit_price_impact =
         result.spread_price_impact + result.market_impact_price_impact;
 
-    // E2-C5: enforce max_total_implicit_bps.
+    // Enforce max_total_implicit_bps.
     //
-    // This field is set on EVERY asset config (75-200 bps depending on tier) and was read by
-    // NOTHING -- the documented cap on total implicit cost did not exist. max_impact_bps
-    // bounds the market-impact term alone; nothing bounded spread + impact together.
+    // This field is set on EVERY asset config (75-200 bps depending on tier) and caps spread
+    // + impact together; max_impact_bps bounds the market-impact term alone.
     //
     // It should not bind in normal conditions: the impact term is already capped below this
-    // value and futures spreads are a tick or two, so the sum stays well under. That is
-    // precisely why it went unnoticed. It is a tail guard, so when it DOES bind that is worth
+    // value and futures spreads are a tick or two, so the sum stays well under. It is a tail
+    // guard, so when it DOES bind that is worth
     // seeing rather than absorbing silently -- hence the warning.
     if (asset_config.max_total_implicit_bps >= 0.0 && reference_price > 0.0) {
         const double cap = (asset_config.max_total_implicit_bps / 10000.0) * reference_price;
@@ -288,7 +284,7 @@ void TransactionCostManager::set_own_day_volume(const std::string& symbol, doubl
 void TransactionCostManager::record_log_return(const std::string& symbol, double close_price,
                                                double prev_close_price, bool change_bar) {
     if (prev_close_price > 0.0 && close_price > 0.0) {
-        // T-ROLLX: a change bar's return is 0 (the splice step is not a return), the date kept.
+        // A change bar's return is 0 (the splice step is not a return), the date kept.
         double log_return = change_bar ? 0.0 : std::log(close_price / prev_close_price);
         spread_model_.update_log_returns(symbol, log_return);
     }
@@ -335,21 +331,20 @@ int TransactionCostManager::register_equity_costs_from_bars(
     for (const auto& symbol : symbols) {
         auto it = bars_by_symbol.find(symbol);
         if (it == bars_by_symbol.end() || it->second.empty()) {
-            // E2-F14: register the untiered equity default rather than skipping.
+            // Register the untiered equity default rather than skipping.
             //
-            // Skipping left the symbol ABSENT from configs_, and an absent symbol does NOT
-            // fall back to the equity default -- AssetCostConfigRegistry::get_config() only
+            // Skipping would leave the symbol ABSENT from configs_, and an absent symbol does
+            // NOT fall back to the equity default -- AssetCostConfigRegistry::get_config() only
             // reaches get_equity_default_config() when the caller passes
-            // AssetType::EQUITY, and NONE of the nine production call sites passes an
-            // AssetType at all. So an unregistered equity resolved to the FUTURES default:
+            // AssetType::EQUITY, and NONE of the production call sites passes an
+            // AssetType at all. So an unregistered equity would resolve to the FUTURES default:
             // $1.50 per SHARE instead of $0.005, and point_value 100 instead of 1, i.e. 100x
-            // the slippage. The old WARN here claimed "will use equity default if traded",
-            // which was simply untrue.
+            // the slippage.
             //
             // Worse, configs_ is one flat symbol->config map shared across asset classes, and
             // real tickers collide with futures roots: CL is Colgate-Palmolive AND Crude Oil,
-            // ES is Eversource AND the E-mini S&P. An unregistered CL equity would have
-            // resolved to the Crude Oil config -- point_value 1000.
+            // ES is Eversource AND the E-mini S&P. An unregistered CL equity would
+            // resolve to the Crude Oil config -- point_value 1000.
             //
             // Registering the default keeps every configured equity inside the equity cost
             // model, so the futures fallthrough is unreachable for them regardless of what
@@ -376,7 +371,7 @@ int TransactionCostManager::register_equity_costs_from_bars(
         const double adv = volume_sum / static_cast<double>(n);
 
         if (adv <= 0.0) {
-            // E2-F14: same reasoning as the no-bars branch above -- never leave a configured
+            // Same reasoning as the no-bars branch above -- never leave a configured
             // equity unregistered, or it inherits futures pricing.
             WARN("register_equity_costs_from_bars: zero ADV for " + symbol +
                  " over " + std::to_string(n) + " bars -- registering the untiered equity "

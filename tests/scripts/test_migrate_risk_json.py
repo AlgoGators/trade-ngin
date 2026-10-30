@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scripts/migrate_risk_json.py, driven end to end.
 
-Its own ctest entry rather than a case inside the gtest binary (T-6a lead ruling 16), so a
+Its own ctest entry rather than a case inside the gtest binary, so a
 machine without python3 fails this entry loudly instead of silently skipping the test of
 the one thing on the migration path that is not C++.
 
@@ -327,10 +327,10 @@ class MigrateRiskJsonTest(unittest.TestCase):
         self.assertEqual(code, 3, out)
         self.assertIn("split the book", out)
 
-    # ----- T-6b-fix F2: a schema-2 file that still says "bars" -----
+    # ----- a schema-2 file that still says "bars" -----
 
     def _migrate_then_say_bars(self):
-        """A tree migrated before T-6b commit 9: schema 2, lookback_unit "bars"."""
+        """A tree on schema 2 with lookback_unit "bars"."""
         self.assertEqual(self.run_script(self.config, "--in-place")[0], 0)
         paths = [os.path.join(self.config, "portfolios", n, "risk.json") for n in BOOKS]
         for path in paths:
@@ -372,10 +372,10 @@ class MigrateRiskJsonTest(unittest.TestCase):
         self.assertIn("Nothing to migrate", out)
         self.assertEqual(snapshot(self.config), after_first)
 
-    # ----- T-6b-fix F4: a book the template assigns `none` -----
+    # ----- a book the template assigns `none` -----
 
     def test_a_carver_written_for_a_book_the_template_assigns_none_prints_a_note(self):
-        # config_template/portfolios/equity_mr/risk.json is `none` (HD, 2026-09-18); the
+        # config_template/portfolios/equity_mr/risk.json is `none` (a ruled assignment); the
         # script still writes a carver there and must say so, naming the ruling it will not copy.
         code, out = self.run_script(self.config)
         self.assertEqual(code, 10, out)
@@ -386,8 +386,8 @@ class MigrateRiskJsonTest(unittest.TestCase):
         self.assertIn("config_template/README.md", notes[0])
 
     def test_the_note_is_repeated_on_a_migrated_file_that_still_gates(self):
-        # The production case: a file migrated in T-6a (schema 2, carver, "bars") is upgraded to
-        # "dates" -- and still gates a book HD ruled `none`.
+        # The production case: a file already on schema 2 (carver, "bars") is upgraded to
+        # "dates" -- and still gates a book the template assigns `none`.
         self._migrate_then_say_bars()
         code, out = self.run_script(self.config, "--in-place")
         self.assertEqual(code, 0, out)

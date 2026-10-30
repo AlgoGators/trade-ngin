@@ -1,6 +1,6 @@
 #pragma once
 
-// A sleeve for the one pass's portfolio-level tests (LOOP_SPEC sections 4 to 6): a BaseStrategy
+// A sleeve for the one pass's portfolio-level tests: a BaseStrategy
 // whose per-symbol rows the test writes directly, published through the same three calls the trend
 // sleeve answers (get_target_positions, overlay_series, is_signalling). The portfolio manager sees
 // nothing else of a sleeve, so a book built on this stub runs the real one pass.

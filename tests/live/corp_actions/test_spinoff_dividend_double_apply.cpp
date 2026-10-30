@@ -1,6 +1,6 @@
 // tests/live/corp_actions/test_spinoff_dividend_double_apply.cpp
 //
-// BA-26 -- the terms feed lags the price feed, and the routing never noticed.
+// The terms feed lags the price feed, and the routing must notice.
 //
 // THE SEQUENCE.
 //   run N    `equities_data.ohlcv_1d` carries MMM's div_cash 17.3875 on 2024-04-01.
@@ -10,24 +10,24 @@
 //            basis /= 1 + 17.3875/94.02, and a DIVIDEND dedup row is written.
 //   later    the terms row arrives.
 //   run N+k  the routing sees a spinoff bar and checks the ledger -- for is_applied(SPINOFF),
-//            and since E2-F50 for is_applied(SPLIT|ADR_SPLIT). It never checked
-//            is_applied(DIVIDEND). So it routes the SAME bar to the spinoff handler, which
+//            and for is_applied(SPLIT|ADR_SPLIT). Without a check of
+//            is_applied(DIVIDEND) it would route the SAME bar to the spinoff handler, which
 //            divides the basis by 1 + d/c a SECOND time and delivers a child against it.
 //
 // The double restatement is the whole distribution applied twice: on MMM's real numbers a
 // basis of 106.07 goes to 89.5155 (correct) and then to 75.5486 (wrong by 15.6 %), and the
 // child's allocated basis is struck off the wrong pool.
 //
-// WHAT IS ACTUALLY WRONG, AND WHAT IS NOT (corrected in B-5d). The class-1 dividend divided
+// WHAT IS ACTUALLY WRONG, AND WHAT IS NOT. The class-1 dividend divided
 // the basis by 1 + d/c against the same ex-date close `SpinoffBarColumns` uses, and on a
 // dividend-encoded bar that is EXACTLY the factor the spinoff path would have divided by. So
-// the PARENT'S BASIS IS ALREADY RIGHT. The first version of this WARN said the book "needs a
-// manual restatement", which pointed a reader at the one number that is correct.
+// the PARENT'S BASIS IS ALREADY RIGHT, and a WARN saying the book "needs a manual
+// restatement" would point a reader at the one number that is correct.
 //
 // What is missing is the CHILD: never received, never priced, never sold. The value that left
 // the parent's basis -- the pool `B(1 - 1/F)` -- went nowhere instead of into the child's.
 //
-// THE FIX IS STILL A REFUSAL, NOT A CORRECTION, but for a narrower reason: delivering the
+// THE GUARD IS A REFUSAL, NOT A CORRECTION, for a narrow reason: delivering the
 // child now would need the share count held on the ex-date and the child's first close at the
 // time, and the dividend row recorded neither. Inventing either would be a guess written into
 // `average_price` and stamped in `trading.corp_action_applied`, where nothing reconsiders it.
@@ -69,7 +69,7 @@ std::string read_runner() {
     return ss.str();
 }
 
-// A scratch state directory the audit log can own without touching the real one.
+// A temporary state directory the audit log can own without touching the real one.
 class TempStateDir {
 public:
     TempStateDir() {
@@ -107,8 +107,8 @@ TEST(SpinoffDividendDoubleApply, TheLedgerRemembersTheDividendTheEarlierRunAppli
     applied.ratio_change = 1.0 + 17.3875 / 94.02;
     log.record(applied);
 
-    // Run N+k asks the three questions the routing asks. Only the third was ever asked
-    // before BA-26, and it is the one that is true.
+    // Run N+k asks the three questions the routing asks; the third is the one that is
+    // true.
     EXPECT_FALSE(log.is_applied("MMM", "2024-04-01", CorpActionType::SPINOFF));
     EXPECT_FALSE(log.is_applied("MMM", "2024-04-01", CorpActionType::SPLIT));
     EXPECT_TRUE(log.is_applied("MMM", "2024-04-01", CorpActionType::DIVIDEND))
@@ -127,7 +127,7 @@ TEST(SpinoffDividendDoubleApply, RoutingItAgainWouldRestateTheBasisTwiceOverMMMs
     const double after_dividend = basis / factor;      // what run N left in the book
     const double after_spinoff_too = after_dividend / factor;  // what run N+k would leave
 
-    EXPECT_NEAR(after_dividend, 89.515530, 1e-6) << "B-4's hand-checked figure";
+    EXPECT_NEAR(after_dividend, 89.515530, 1e-6) << "the hand-checked figure";
     EXPECT_NEAR(after_spinoff_too, 75.544736, 1e-6);
     EXPECT_GT((after_dividend - after_spinoff_too) / after_dividend, 0.15)
         << "the second restatement moves the basis by more than 15 %, and it is persisted "
@@ -186,7 +186,7 @@ TEST(SpinoffDividendDoubleApply, TheRoutingAsksTheLedgerAndRefusesRatherThanCorr
     // It asks.
     EXPECT_NE(src.find("const bool dividend_already_applied ="), std::string::npos)
         << "the routing does not consult is_applied(DIVIDEND); a bar an earlier run applied "
-           "as a dividend would be routed as a spinoff and restated a second time (BA-26)";
+           "as a dividend would be routed as a spinoff and restated a second time";
 
     // The answer keeps the bar in class 1 rather than routing it.
     EXPECT_NE(src.find("dividend_already_applied ||"), std::string::npos)
@@ -207,8 +207,8 @@ TEST(SpinoffDividendDoubleApply, TheRoutingAsksTheLedgerAndRefusesRatherThanCorr
 }
 
 TEST(SpinoffDividendDoubleApply, AnUnrecordedDividendDoesNotBlockANormalSpinoff) {
-    // The converse: with nothing in the ledger the routing must proceed exactly as before.
-    // This is the ordinary case -- B-4's MMM replay and B-5a's RTX replay both ran it -- and
+    // The converse: with nothing in the ledger the routing must proceed as for any spinoff.
+    // This is the ordinary case (the MMM and RTX bars both take it), and
     // a check that refused every spinoff would be worse than the defect.
     TempStateDir dir;
     CorporateActionsAuditLog log(dir.str());
@@ -229,14 +229,14 @@ TEST(SpinoffDividendDoubleApply, AnUnrecordedDividendDoesNotBlockANormalSpinoff)
 }
 
 // ---------------------------------------------------------------------------
-// B-viii: what is ACTUALLY still wrong when an earlier run applied part of the bar.
+// What is ACTUALLY still wrong when an earlier run applied part of the bar.
 //
-// The BA-26 branch computed `residual = spinoff_factor / dividend_factor` and, whenever
-// that was not 1, told the operator the parent was "additionally short by a factor of
-// <residual>". That is right only when the earlier run applied the DIVIDEND row alone.
+// Computing `residual = spinoff_factor / dividend_factor` and, whenever that is not 1,
+// telling the operator the parent is "additionally short by a factor of <residual>" is
+// right only when the earlier run applied the DIVIDEND row alone.
 //
 // If it also applied the bar's split_factor row as an ordinary class-1 split -- which is
-// what a pre-spinoff-path run did, and is exactly E2-F31 -- then the basis was divided by
+// what a run without the spinoff path does -- then the basis was divided by
 // dividend_factor AND by split_factor, i.e. by total_factor, which is the whole step the
 // spinoff path would have applied. The basis is therefore ALREADY CORRECT, and what is
 // wrong is the SHARE COUNT: a split_factor above 1 on a spinoff bar is part of the
@@ -244,7 +244,7 @@ TEST(SpinoffDividendDoubleApply, AnUnrecordedDividendDoesNotBlockANormalSpinoff)
 // phantom shares.
 //
 // Telling the operator the basis is short when the shares are inflated points the repair at
-// the wrong column. The routing never asked is_applied(SPLIT), so it could not tell the two
+// the wrong column. The routing asks is_applied(SPLIT) to tell the two
 // cases apart.
 // ---------------------------------------------------------------------------
 
@@ -280,7 +280,7 @@ TEST(SpinoffDividendDoubleApply, BothApplied_TheBasisIsRightAndTheSHARESAreInfla
     EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-12);
     EXPECT_NEAR(gap.shares_inflated_by, 2.0116, 1e-12)
         << "a split_factor above 1 on a spinoff bar is distribution, not a share-count "
-           "change -- applying it as class-1 minted phantom shares (E2-F31)";
+           "change -- applying it as class-1 minted phantom shares";
 }
 
 TEST(SpinoffDividendDoubleApply, ARealReverseSplitAppliedAsClass1DoesNotInflateShares) {
@@ -315,14 +315,13 @@ TEST(SpinoffDividendDoubleApply, ADividendOnlyBarLeavesNothingShort) {
 }
 
 // ---------------------------------------------------------------------------
-// B-viii, second shape: a coincident REVERSE split must not be reported as a basis shortfall.
+// A coincident REVERSE split must not be reported as a basis shortfall.
 //
 // With only the DIVIDEND dedup present on a bar that also carries a reverse split,
 // total_factor()/dividend_factor() is the reverse-split step -- a number BELOW 1 -- and the
-// WARN called it "the parent is additionally short by a factor of 0.333333". It is not: a
-// reverse split is a real share-count change and the class-1 path applies it itself
-// (E2-F48 / b11bdea8). The operator was being pointed at a restatement that was about to
-// happen anyway.
+// WARN would call it "the parent is additionally short by a factor of 0.333333". It is not:
+// a reverse split is a real share-count change and the class-1 path applies it itself, so
+// the operator would be pointed at a restatement that is about to happen anyway.
 // ---------------------------------------------------------------------------
 
 TEST(SpinoffDividendDoubleApply, AReverseSplitIsNotABasisShortfall) {

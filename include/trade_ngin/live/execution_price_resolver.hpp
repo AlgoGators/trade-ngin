@@ -55,8 +55,6 @@ public:
         std::vector<std::string> widened;
         /** Symbols with no usable close at all. These must not be traded. */
         std::vector<std::string> unpriced;
-
-        bool all_priced() const { return unpriced.empty(); }
     };
 
     /**

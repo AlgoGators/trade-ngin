@@ -1,6 +1,6 @@
 // tests/live/corp_actions/test_rename_eras.cpp
 //
-// FIX-1: renames are bound to the era the position was established in.
+// Renames are bound to the era the position was established in.
 //
 // ticker_aliases is a historical map, but tickers get REUSED. Our own backfill maps
 // META -> METV (effective_until 2022-01-31); META has been Meta Platforms ever since,
@@ -8,7 +8,7 @@
 // position opened in 2026 re-keys a live holding onto a symbol with no prices -- and
 // 131 historical tickers in the live table are still actively trading, 33 of them with
 // two or more successors, so a map keyed on historical_ticker alone also picks an
-// arbitrary winner. The fix resolves an alias against the date the POSITION was
+// arbitrary winner. The lookup resolves an alias against the date the POSITION was
 // established, the same way the dedup mirror resolves one against an event's ex_date.
 //
 // The class-3 delisting guard is tested here too: it is the same hazard (a stale row

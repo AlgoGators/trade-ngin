@@ -1,7 +1,6 @@
 // tests/live/test_futures_cost_feed.cpp
 //
-// T-7b-1 C8a: K2 redesigned, the live futures runners' cost feed with two inputs (HD 2026-09-17
-// "thin sessions are traded", 2026-09-19 "K2 with two volume inputs"):
+// The live futures runners' cost feed with two inputs:
 //
 //   * the participation term and the k_bps impact tier are priced off the FILL DAY'S OWN volume
 //     (the T-1 bar whose close prices the fill), so a thin session is charged its own cost;
@@ -9,9 +8,9 @@
 //     ending at that T-1 bar, on the loader's one-bar-per-instant feed, never de-duplicated again;
 //   * the first bar contributes no return (no fabricated log(close/close) = 0), and with fewer than
 //     2 returns the model's neutral 1.0 stands;
-//   * commissions never move, and the impact term is the parent's to the bit (the parent fed ONE
-//     bar through ExecutionManager's 3-arg form: the same own-day volume, one zero return, so
-//     vol_mult was always 1.0).
+//   * commissions never move, and the impact term is, to the bit, that of a feed of ONE bar
+//     through ExecutionManager's 3-arg form (the same own-day volume, one zero return, so
+//     vol_mult 1.0).
 //
 // The pure cases run feed_futures_cost_model (futures_cost_feed.hpp) against the real
 // TransactionCostManager; the wiring cases read the two runner sources (they are main()s and
@@ -64,7 +63,7 @@ Bar bar_at(const std::string& symbol, int day_index, double close, double volume
 }
 
 /// The date of the run whose T-1 bar is the feed's latest bar: the day after it (the fill day the
-/// feed's weekend merge reads, T-7b-2 C8c3).
+/// feed's weekend merge reads).
 Timestamp run_date_after(const std::vector<Bar>& bars) {
     Timestamp latest{};
     for (const auto& b : bars) latest = std::max(latest, b.timestamp);
@@ -116,8 +115,8 @@ double k_bps(double adv) {
     return 80.0;
 }
 
-/// The parent's feed: the latest bar only, through the 3-arg ExecutionManager form, which in a
-/// fresh process passes prev_close = close (execution_manager.cpp update_market_data).
+/// The one-bar feed: the latest bar only, through the 3-arg ExecutionManager form, which in a
+/// fresh process passes prev_close = close (ExecutionManager::update_market_data).
 void parent_one_bar_feed(TransactionCostManager& tcm, const std::vector<Bar>& bars) {
     const Bar& last = bars.back();
     const double close = static_cast<double>(last.close);
@@ -164,7 +163,7 @@ TEST(K2FuturesCostFeed, ParticipationAndTheTierArePricedOnTheFillDaysOwnVolume) 
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     // Twenty sessions at 1.2M lots (the 10 bps tier), then a thin T-1 session of 30,000 lots
     // (the 60 bps tier). The fill is priced off the thin session alone. first_day 1: the T-1 bar is
-    // a Tuesday (2023-12-05), so no weekend bar is merged into it (C8c3; with first_day 0 it was a
+    // a Tuesday (2023-12-05), so no weekend bar is merged into it (with first_day 0 it would be a
     // Monday after two of the fixture's 1.2M-lot weekend days).
     auto bars = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);
     bars.back().volume = 30'000.0;
@@ -187,7 +186,7 @@ TEST(K2FuturesCostFeed, ParticipationAndTheTierArePricedOnTheFillDaysOwnVolume) 
 
 TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheTwentyBarMean) {
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
-    auto normal = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);  // T-1 a Tuesday (C8c3)
+    auto normal = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);  // T-1 a Tuesday
     auto thin = normal;
     thin.back().volume = 30'000.0;
     const double price = static_cast<double>(thin.back().close);
@@ -211,7 +210,7 @@ TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheT
 
 TEST(K2FuturesCostFeed, TheImpactTermAndTheCommissionAreTheParentsToTheBit) {
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
-    // The parent priced participation and the tier on the same own-day volume; only vol_mult
+    // The one-bar feed prices participation and the tier on the same own-day volume; only vol_mult
     // (the spread) may move. A 2 % zigzag is far above the 1 % baseline, so vol_mult is 1.3.
     const auto bars = zigzag(kNg, 30, 3.0, 0.02, 90'000.0);
     const double price = static_cast<double>(bars.back().close);
@@ -336,7 +335,7 @@ TEST(K2FuturesCostFeed, ADuplicateFreeFeedIsWalkedOnceAndARepeatedInstantIsRepor
     EXPECT_TRUE(out_clean.repeated_instants.empty());
     EXPECT_EQ(out_clean.returns_fed, 24u);
 
-    // A second copy of one bar (what the loader's max-volume DISTINCT ON removes, T-6c B0).
+    // A second copy of one bar (what the loader's max-volume DISTINCT ON removes).
     auto dup = clean;
     Bar copy = dup[12];
     copy.volume = 1.0;
@@ -441,7 +440,7 @@ TEST(K2FuturesCostFeedRunnerSource, BothTwinsFeedTheExecutionManagersCostModelTh
             << "the cost model is fed one bar per symbol";
         EXPECT_EQ(block.find("execution_manager->update_market_data("), npos)
             << "the one-bar 3-arg feed is still there";
-        // H-2 (T-7b-1 C8d) feeds the PortfolioManager's cost manager through the same two-input
+        // The PortfolioManager's cost manager is fed through the same two-input
         // feed (test_optimizer_cost_vector.cpp), never through update_cost_manager_market_data.
         EXPECT_EQ(src.find("update_cost_manager_market_data"), npos);
         blocks.push_back(block);
@@ -451,7 +450,7 @@ TEST(K2FuturesCostFeedRunnerSource, BothTwinsFeedTheExecutionManagersCostModelTh
 }
 
 // -----------------------------------------------------------------------------------------------
-// T-7b-2 C8c3, the weekend merge (HD 2026-09-25 rulings 25 and 28). A run dated T prices its fill at
+// The weekend merge. A run dated T prices its fill at
 // the symbol's T-1 bar B; V is the impact model's only input (futures_cost_feed.hpp, rules 1-3):
 //   (1) B a session (weekday bar): B + the weekend bars right before it (Tuesday-dated: Monday + stub);
 //   (2) B a weekend bar, T a weekday: the last session before the stub(s) + the stub(s)
@@ -575,7 +574,7 @@ TEST(WeekendMergeFuturesCostFeed, AHolidayMondayMergesTheStubIntoTheNextSession)
         << "Wednesday-dated";
 }
 
-// Control (passes on the parent too): a weekday after a weekday, a Monday with no weekend bar before
+// Control (passes without the merge too): a weekday after a weekday, a Monday with no weekend bar before
 // it (the ags print no Sunday session) and a thin weekday session keep their own volume (3).
 TEST(WeekendMergeFuturesCostFeed, AWeekdayWithNoStubBeforeItKeepsItsOwnVolume) {
     const auto week = plus(weekdays_to_friday(kNg), {cal_bar(kNg, 2, 3.02, 3000.0),
@@ -630,7 +629,7 @@ TEST(WeekendMergeFuturesCostFeed, TheStepFormEqualsTheOneShotFeedThroughTheWeeke
 }
 
 // -----------------------------------------------------------------------------------------------
-// MM fix round 1: a listing predecessor's legs are priced on the full-size contract's own volume
+// A listing predecessor's legs are priced on the full-size contract's own volume
 // -----------------------------------------------------------------------------------------------
 
 namespace {
@@ -644,7 +643,7 @@ Bar silver_bar(const std::string& symbol, const std::string& date, double close,
     return b;
 }
 
-/// SIL.v.0 as the per-contract source hands it out around SIL's 2013-06-17 listing under ruling (b):
+/// SIL.v.0 as the per-contract source hands it out around SIL's 2013-06-17 listing:
 /// SIN3's own bars (the full-size grid) to Friday 06-14, the change bar 06-17 withheld, and 06-18
 /// SILU3's bar (30 lots) carrying SIN3's close and own volume (AFTER_SOURCE_CHANGE).
 std::vector<Bar> silver_to_the_switch_bar() {
@@ -676,11 +675,11 @@ ContractCostSpecSource silver_specs() {
 
 }  // namespace
 
-// Audits A and B (MUST-FIX): at SIL's listing switch a held SI is exited (the LC- leg) on SI.v.0's
+// At SIL's listing switch a held SI is exited (the LC- leg) on SI.v.0's
 // copy of SILU3's bar. The copy carries SIN3's own 24,211 lots (Bar::cost_volume), so the leg pays
 // impact on them, 60 x sqrt(1 / 24,211) bps, not on SILU3's 30 lots at the 100-lot floor (8 bps, $86.40
 // on one SI at 21.60). SIL's own entry (the LO- leg) pays on SILU3's own 30 lots: 80 x sqrt(2 / 100)
-// bps for two (audit A's mutant M14: the impact on the micro's own volume, through the feed). The
+// bps for two (the impact on the micro's own volume, through the feed). The
 // predecessor's volatility walk is SIN3's own: the copy's return on 06-18 is SIN3's move from 06-14.
 TEST(ListingCostVolume, AHeldPredecessorsExitIsPricedOnTheFullSizeContractsOwnVolume) {
     ListingDates::instance().clear();
@@ -731,7 +730,7 @@ TEST(ListingCostVolume, AHeldPredecessorsExitIsPricedOnTheFullSizeContractsOwnVo
     EXPECT_NE(tcm.get_volatility_multiplier("SI.v.0"), 1.0) << "a walk, not the neutral value";
 }
 
-// The absent path (the lead's condition 2): with cost_volume empty the feed reads `volume`, so a feed
+// The absent path: with cost_volume empty the feed reads `volume`, so a feed
 // of bars that carry none (every bar but a predecessor's copy from the micro's change) is the feed it
 // was: the same entries, the same impact window and the same volatility walk, symbol for symbol,
 // through a weekend merge too. Adding pairs for symbols the run does not trade changes nothing.
@@ -770,7 +769,7 @@ TEST(ListingCostVolume, WithNoCostVolumeTheFeedReadsTheBarsOwnVolume) {
     }
 }
 
-// MM fix round 1 (the equity micros): on its 2019-05-06 listing MES.v.0's Monday bar and the Sunday
+// The equity micros: on its 2019-05-06 listing MES.v.0's Monday bar and the Sunday
 // stub before it carry MESM9's own volume as cost_volume (ListingDates), so the LO- leg's participation
 // is MESM9's 162,154 + 787 lots, not ESM9's 1,865,666 + 137,577: the 40 bps tier, not the 10.
 TEST(ListingCostVolume, TheListedEquityMicrosEntryIsPricedOnItsOwnSession) {

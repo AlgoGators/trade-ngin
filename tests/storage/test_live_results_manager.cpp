@@ -202,7 +202,7 @@ TEST_F(LiveResultsManagerTest, SaveAllResultsReportsEquityCurveFailedOnAnInvalid
     EXPECT_EQ(db_->call_count("store_live_results_complete"), 1);
 }
 
-// T-8D R12, through the manager as the runners drive it. The day's row: the block's INSERT
+// A statistic with no value, through the manager as the runners drive it. The day's row: the block's INSERT
 // columns are copied into the row's metrics, so a profit factor without a value is no column of
 // the INSERT. The Day T-1 refresh: the block's UPDATE columns go to update_live_results, which
 // hands the writer a NULL cell for it and no number.
@@ -252,7 +252,7 @@ TEST_F(LiveResultsManagerTest, UpdateLiveResultsInvokesUpdate) {
     EXPECT_EQ(db_->call_count("update_live_results"), 1);
 }
 
-// T-8D-2 R42: the Day T-1 statistics refresh must know when its UPDATE changed no row.
+// The Day T-1 statistics refresh must know when its UPDATE changed no row.
 TEST_F(LiveResultsManagerTest, UpdateLiveResultsReportsTheRowsTheUpdateChanged) {
     size_t rows = 99;
     db_->update_live_results_rows = 1;
@@ -325,13 +325,13 @@ TEST_F(LiveResultsManagerTest, NotConnectedDbCausesError) {
     EXPECT_TRUE(r.is_error());
 }
 
-// ===================== FIX-0: storage key threading =====================
+// ===================== storage key threading =====================
 //
-// Live rows are keyed (strategy_id, strategy_name, portfolio_id). Before FIX-0
-// ResultsManagerBase passed strategy_id_ for BOTH id and name, and the equity runner
-// never set portfolio_id, so the coordinator's BASE_PORTFOLIO default (the futures
-// book) went on the row. Two of three key columns differed from what every read used,
-// which is why run N+1 loaded an empty book. These tests pin all three columns at the
+// Live rows are keyed (strategy_id, strategy_name, portfolio_id). Passing strategy_id_
+// for BOTH id and name, with no portfolio_id set (so the coordinator's BASE_PORTFOLIO
+// default, the futures book, goes on the row), would leave two of three key columns
+// different from what every read uses, and run N+1 would load an empty book. These
+// tests pin all three columns at the
 // DB-call boundary in both shapes: the equity shape (distinct name) and the futures
 // shape (empty name, which must still write id-as-name byte-for-byte).
 
@@ -359,7 +359,7 @@ TEST_F(LiveResultsManagerKeyTest, PositionsWriteUnderDistinctStrategyName) {
 
     auto key = db_->last_key("store_positions");
     EXPECT_EQ(key.strategy_id, "LIVE_EQUITY_MEAN_REVERSION");
-    // Pre-FIX-0 this was "LIVE_EQUITY_MEAN_REVERSION" — strategy_id_ was passed twice.
+    // Not "LIVE_EQUITY_MEAN_REVERSION": strategy_id_ is not passed twice.
     EXPECT_EQ(key.strategy_name, "EQUITY_MEAN_REVERSION");
     EXPECT_EQ(key.portfolio_id, "EQUITY_PORTFOLIO");
 }
@@ -388,7 +388,7 @@ TEST_F(LiveResultsManagerKeyTest, ExecutionsAndSignalsShareThePositionsKey) {
 
 TEST_F(LiveResultsManagerKeyTest, EmptyStrategyNameFallsBackToStrategyIdForFutures) {
     // Inverse pin: the futures runners never set strategy_name, and their existing rows
-    // are keyed (strategy_id, strategy_id, portfolio_id). FIX-0 must not move them.
+    // are keyed (strategy_id, strategy_id, portfolio_id). The key threading must not move them.
     auto mgr = make_mgr("LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", "");
     mgr->set_positions({make_pos("ES", 5.0)});
     ASSERT_TRUE(mgr->save_positions_snapshot(date_at(2026, 3, 15)).is_ok());
@@ -407,7 +407,7 @@ TEST_F(LiveResultsManagerKeyTest, DefaultedStrategyNameArgPreservesFuturesKey) {
     EXPECT_EQ(mgr.get_strategy_name(), "LIVE_TREND_FOLLOWING");
 }
 
-// ===================== F-J: save_all_results failure propagation =====================
+// ===================== save_all_results failure propagation =====================
 
 TEST_F(LiveResultsManagerKeyTest, SaveAllResultsReportsAFailedTableInsteadOfExitingClean) {
     auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
@@ -418,8 +418,8 @@ TEST_F(LiveResultsManagerKeyTest, SaveAllResultsReportsAFailedTableInsteadOfExit
     db_->fail_on_call("store_live_results_complete");
 
     auto r = mgr->save_all_results("RUN_1", date_at(2026, 3, 15));
-    // Pre-F-J every per-table error was logged and swallowed, so this returned ok and the
-    // runner exited 0 with trading.live_results missing.
+    // A per-table error logged and swallowed would return ok here, and the runner would exit 0
+    // with trading.live_results missing.
     ASSERT_TRUE(r.is_error());
     EXPECT_EQ(r.error()->code(), ErrorCode::DATABASE_ERROR);
     EXPECT_NE(std::string(r.error()->what()).find("live_results"), std::string::npos);
