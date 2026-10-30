@@ -130,8 +130,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         }
         // Rolls step 3: the per-contract source's roll field (Bar::roll_from), three columns that
         // only its table carries, NULL where the field is absent; step 4 adds roll_from_date.
+        // MM fix round 1 adds roll_from_volume (RollFrom::volume, NULL where absent).
         std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array,
-            roll_date_array;
+            roll_date_array, roll_volume_array;
         if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
             roll_close_array = c->chunk(0);
             auto i = table->GetColumnByName("roll_from_id");
@@ -146,6 +147,9 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             roll_kind_array = k->chunk(0);
             if (auto dc = table->GetColumnByName("roll_from_date"); dc != nullptr) {
                 roll_date_array = dc->chunk(0);
+            }
+            if (auto vc = table->GetColumnByName("roll_from_volume"); vc != nullptr) {
+                roll_volume_array = vc->chunk(0);
             }
         }
         // Carry (trade-ngin #185): the per-contract source's carry quote (Bar::carry), five
@@ -169,6 +173,12 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             carry_months_array = mc->chunk(0);
             carry_held_symbol_array = hs->chunk(0);
             carry_other_symbol_array = os->chunk(0);
+        }
+
+        // MM fix round 1: the per-contract source's own_contract_volume (Bar::own_contract_volume)
+        std::shared_ptr<arrow::Array> own_volume_array;
+        if (auto c = table->GetColumnByName("own_contract_volume"); c != nullptr) {
+            own_volume_array = c->chunk(0);
         }
 
         // Prepare result vector
@@ -249,6 +259,16 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                     }
                     bar.roll_from->date = date_from.value();
                 }
+                if (roll_volume_array && !roll_volume_array->IsNull(i)) {
+                    auto volume_from = extract_double(roll_volume_array, i);
+                    if (volume_from.is_error()) {
+                        return make_error<std::vector<Bar>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Error extracting the roll field's volume at row " + std::to_string(i),
+                            "DataConversionUtils");
+                    }
+                    bar.roll_from->volume = volume_from.value();
+                }
             }
             if (carry_held_close_array && !carry_held_close_array->IsNull(i)) {
                 auto held_close = extract_double(carry_held_close_array, i);
@@ -267,6 +287,16 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                     held_close.value(), other_close.value(),
                     std::static_pointer_cast<arrow::Int32Array>(carry_months_array)->Value(i),
                     held_symbol.value(), other_symbol.value()};
+            }
+            if (own_volume_array && !own_volume_array->IsNull(i)) {
+                auto own = extract_double(own_volume_array, i);
+                if (own.is_error()) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting own_contract_volume at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.own_contract_volume = own.value();
             }
 
             bars.push_back(bar);

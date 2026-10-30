@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -100,7 +101,7 @@ struct SymbolDayVerdict {
     bool has_bar{false};
     double volume{0.0};
     double close{0.0};
-    std::optional<double> norm;  ///< trailing weekday median; empty while the symbol has none
+    std::optional<double> norm;  ///< weekday median from its last source change; empty if none
     int norm_bars{0};            ///< how many weekday bars the norm was taken over
     std::optional<double> ratio; ///< volume / norm
     std::string last_bar_date;   ///< no bar: the symbol's latest bar strictly before `date`
@@ -140,7 +141,10 @@ struct SymbolDayVerdict {
  * The rule, in order:
  *
  *   norm(s, D) = median volume of s's trailing 20 weekday bars strictly before D whose own
- *                verdict was SESSION (T-7b-1 C7b R7); while s has no SESSION weekday bar yet,
+ *                verdict was SESSION (T-7b-1 C7b R7), counting only bars dated on or after the
+ *                latest change of price source of s strictly before D (MM, HD 2026-10-28: a micro
+ *                is judged on its own bars from the change, as a new symbol is; the change bar
+ *                itself against the norm before it); while s has no SESSION weekday bar yet,
  *                the median of its trailing 20 weekday bars (T-7a's norm, so a thin contract can
  *                start); none when s has no weekday bar before D, and none when the median is 0
  *                (a norm of 0 would disable both volume limbs).
@@ -217,10 +221,10 @@ public:
     SymbolDayVerdict classify_symbol_day(const std::string& symbol, Day date,
                                          const HolidayLookup& holidays) const;
 
-    /// Median volume of the symbol's trailing weekday SESSION bars strictly before `date` (all its
-    /// weekday bars while it has no SESSION one); empty when it has no weekday bar before `date`
-    /// or when that median is 0. `bars_used` receives how many bars it was taken
-    /// over. Each earlier bar's own verdict is computed forward in date order and cached; adding
+    /// Median volume of the symbol's trailing weekday SESSION bars strictly before `date` and on or
+    /// after its latest change of price source before `date` (all such weekday bars while none is
+    /// SESSION); empty when it has none or when that median is 0. `bars_used` receives the count
+    /// of bars. Each earlier bar's own verdict is computed forward in date order and cached; adding
     /// a bar drops the cached verdicts from its date on. Not safe for concurrent calls (the
     /// runners and the backtest coordinator use one classifier from one thread).
     std::optional<double> norm(const std::string& symbol, Day date, int* bars_used = nullptr) const;
@@ -242,10 +246,14 @@ private:
     /// The verdict of a bar against a norm (no norm: the floor alone), with the limb in words.
     SessionVerdict judge_bar(const DayBar& bar, const std::optional<double>& norm,
                              std::string* reason) const;
-    /// The median over `flags`' SESSION weekday bars of `series` strictly before `date`.
+    /// The median over `flags`' SESSION weekday bars of `series` strictly before `date`, none dated
+    /// before `since` (the symbol's latest change of price source before `date`, if any).
     std::optional<double> session_norm(const std::map<Day, DayBar>& series,
                                        const std::map<Day, bool>& flags, Day date,
-                                       int* bars_used) const;
+                                       int* bars_used,
+                                       std::optional<Day> since = std::nullopt) const;
+    /// The symbol's latest change of price source strictly before `date` (MM), if any.
+    std::optional<Day> source_change_before(const std::string& symbol, Day date) const;
     /// The symbol's per-bar SESSION flags, filled forward in date order up to (not including)
     /// `date`.
     const std::map<Day, bool>& session_flags(const std::string& symbol, Day date) const;
@@ -276,6 +284,11 @@ private:
     std::unordered_map<std::string, std::map<Day, DayBar>> bars_;
     /// T-7b-2 C10a: symbol -> day -> vendor instrument id.
     std::unordered_map<std::string, std::map<Day, std::string>> ids_;
+    /// MM: per symbol, the dates of its changes of price source (a bar handed out as SOURCE_CHANGE,
+    /// or the change an AFTER_SOURCE_CHANGE bar names).
+    std::unordered_map<std::string, std::set<Day>> source_changes_;
+    /// MM fix round 1: the AFTER_SOURCE_CHANGE dates that did not parse, warned once each
+    std::set<std::string> malformed_source_change_dates_;
     mutable std::unordered_map<std::string, std::map<Day, bool>> session_flags_;
 };
 

@@ -65,8 +65,38 @@ private:
     TradingCalendar cal_;
 };
 
+/// The rows of futures_data.ohlcv_1d (aliased `o`) that are `root`'s vendor grid, as a predicate
+/// whose placeholders start at $first_param, and the values they take: `<root>.v.0`, or, for a micro
+/// whose alias reads the full-size grid before its change (MGC, SIL), `<root>.v.0` from the change
+/// and `<full_root>.v.0` before it.
+struct GridRows {
+    std::string predicate;
+    pqxx::params params;
+};
+GridRows grid_rows(const std::string& root, int first_param);
+
+/// One read of the vendor's grid: the rows of `symbol` over [from, to].
+struct GridRead {
+    std::string symbol;
+    Day from{};
+    Day to{};
+};
+/// The reads of `root`'s grid over [start, end], in date order: `<root>.v.0` over the range, or for a
+/// micro whose alias reads the full-size grid before its change, `<full_root>.v.0` to the day before
+/// the change and `<root>.v.0` from it (the second left out when the range ends before the change).
+std::vector<GridRead> root_grid_reads(const std::string& root, Day start, Day end);
+
+/// The vendor's grid of `root` over [start, end]: root_grid_reads, each read with read_vendor_grid.
+/// Read only; throws what pqxx throws.
+std::vector<VendorBar> read_root_grid(pqxx::transaction_base& txn, const std::string& root,
+                                      Day start, Day end);
+
+/// series_start's SELECT and its parameters: $1 to $3 the root the contracts are read under before the
+/// change, the change date and the root itself; grid_rows from $4.
+std::pair<std::string, pqxx::params> series_start_query(const std::string& root);
+
 /// The first grid date of `root`'s vendor series on which the contracts the series reads that day
-/// have a row (for a micro before 2026-02-22, its full-size root's). Read only.
+/// have a row (for a micro before its change, its full-size root's). Read only.
 Result<Day> series_start(pqxx::transaction_base& txn, const std::string& root);
 
 /**

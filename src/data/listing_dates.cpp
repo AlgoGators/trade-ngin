@@ -1,12 +1,16 @@
 // src/data/listing_dates.cpp
 #include "trade_ngin/data/listing_dates.hpp"
 
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/contract_roll_rule.hpp"
 #include "trade_ngin/optimization/one_pass.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <cstdio>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -185,6 +189,85 @@ std::vector<std::string> ListingDates::stored_symbols(const std::vector<std::str
             std::any_of(entries_.begin(), entries_.end(),
                         [&](const Entry& entry) { return root == entry.contract.before; });
         if (!predecessor) out.push_back(symbol);
+    }
+    return out;
+}
+
+std::vector<std::string> ListingDates::run_universe(const std::vector<std::string>& symbols,
+                                                    std::vector<std::string>* dropped) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    for (const auto& symbol : symbols) {
+        const std::string root = root_of(symbol);
+        const bool carried = std::any_of(entries_.begin(), entries_.end(), [&](const Entry& entry) {
+            if (root != entry.contract.before) return false;
+            const std::string listed = entry.contract.symbol + suffix_of(symbol);
+            return std::find(symbols.begin(), symbols.end(), listed) != symbols.end();
+        });
+        if (carried) {
+            if (dropped) dropped->push_back(symbol);
+        } else {
+            out.push_back(symbol);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> ListingDates::refusals(const std::vector<std::string>& stored_symbols,
+                                               bool per_contract_rolls) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    const auto stored = [&](const std::string& s) {
+        return std::find(stored_symbols.begin(), stored_symbols.end(), s) != stored_symbols.end();
+    };
+    for (const auto& entry : entries_) {
+        const ListedContract& c = entry.contract;
+        const std::string listed = c.symbol + ".v.0";
+        const std::string before = c.before + ".v.0";
+        if (stored(before) && !stored(listed)) {
+            out.push_back("LISTING_REFUSED " + c.symbol + " (listed " + c.listed + ", before it " +
+                          c.before + "): " + before + " is stored and " + listed +
+                          " is not, so " + c.before +
+                          " would read no bars (the listed contract's continuous rows are not "
+                          "loaded); load them or take the pair out of listing_dates");
+        }
+        const auto alias = contract_rolls::micro_alias(c.symbol);
+        if (alias && alias->full_size_grid && !per_contract_rolls) {
+            out.push_back("LISTING_REFUSED " + c.symbol + " (listed " + c.listed + ", before it " +
+                          c.before + "): per_contract_rolls is off, and " + c.symbol +
+                          "'s history before its listing is " + c.before +
+                          "'s contracts, which only the per-contract source reads; set "
+                          "per_contract_rolls true or take the pair out of listing_dates");
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> ListingDates::unpaired_micro_refusals(
+    const std::vector<std::string>& stored_symbols, const std::vector<ListedContract>& declared) {
+    std::vector<std::string> out;
+    const auto stored = [&](const std::string& s) {
+        return std::find(stored_symbols.begin(), stored_symbols.end(), s) != stored_symbols.end();
+    };
+    for (const auto& symbol : stored_symbols) {
+        if (symbol.size() < 5 || symbol.compare(symbol.size() - 4, 4, ".v.0") != 0) continue;
+        const std::string root = root_of(symbol);
+        const auto alias = contract_rolls::micro_alias(root);
+        if (!alias) continue;
+        const std::string full = alias->full_root + ".v.0";
+        if (!stored(full)) continue;
+        const bool paired = std::any_of(declared.begin(), declared.end(), [&](const ListedContract& c) {
+            return c.symbol == root && c.before == alias->full_root;
+        });
+        if (paired) continue;
+        out.push_back("LISTING_REFUSED " + root + ": " + symbol + " and " + full +
+                      " are both stored and listing_dates has no pair for them, so the run would "
+                      "trade " + alias->full_root + " and " + root +
+                      " side by side; add {\"symbol\": \"" + root + "\", \"before\": \"" +
+                      alias->full_root +
+                      "\", \"listed\": <its listing date>, \"ratio\": <" + root +
+                      " contracts per " + alias->full_root +
+                      ">} to portfolio.json's listing_dates contracts");
     }
     return out;
 }
@@ -452,11 +535,65 @@ void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
     if (entries_.empty()) return;
     const auto pairs = pairs_in(symbols);
     const size_t stored = bars.size();
+    // MM fix round 1: the listed contract's own legs on its listing date's session (the bar dated on
+    // the listing date and a weekend stub right before it, which the cost feed merges into it) are
+    // priced on its own contract's volume where its series still carries the full-size contract's
+    // (the equity micros before 2026-02-22). Only where that volume is known.
     for (const auto& [predecessor, listed] : pairs) {
+        for (const auto& entry : entries_) {
+            if (entry.contract.symbol + suffix_of(listed) != listed) continue;
+            const auto listed_day = std::chrono::floor<std::chrono::days>(entry.listed_at);
+            const bool weekday = std::chrono::weekday{listed_day}.iso_encoding() <= 5;
+            for (size_t i = 0; i < stored; ++i) {
+                Bar& row = bars[i];
+                if (row.symbol != listed || !row.own_contract_volume) continue;
+                const auto day = std::chrono::floor<std::chrono::days>(row.timestamp);
+                const unsigned wd = std::chrono::weekday{day}.iso_encoding();
+                const bool stub = weekday && wd >= 6 && day < listed_day &&
+                                  listed_day - day <= std::chrono::days{2};
+                if (day == listed_day || stub) row.cost_volume = row.own_contract_volume;
+            }
+        }
+    }
+    for (const auto& [predecessor, listed] : pairs) {
+        std::vector<size_t> rows;  // the listed contract's rows, appended in their stored order
         for (size_t i = 0; i < stored; ++i) {
-            if (bars[i].symbol != listed) continue;
+            if (bars[i].symbol == listed) rows.push_back(i);
+        }
+        // the cost volumes walk the rows in date order (the last full-size volume seen)
+        std::vector<size_t> by_date = rows;
+        std::stable_sort(by_date.begin(), by_date.end(), [&](size_t a, size_t b) {
+            return bars[a].timestamp < bars[b].timestamp;
+        });
+        std::map<size_t, std::optional<double>> cost_volume;
+        const auto alias = contract_rolls::micro_alias(root_of(listed));
+        std::optional<double> full_size_volume;
+        bool logged_stale = false;
+        for (size_t i : by_date) {
+            const Bar& row = bars[i];
+            const auto day = std::chrono::floor<std::chrono::days>(row.timestamp);
+            if (!alias || day < alias->change) {
+                full_size_volume = row.volume;  // the copied bar is the full-size contract's own
+                continue;
+            }
+            if (row.roll_from && is_price_source_change(row.roll_from->kind) && row.roll_from->volume) {
+                full_size_volume = *row.roll_from->volume;
+            } else if (full_size_volume && !logged_stale) {
+                logged_stale = true;
+                WARN("LISTING_COST_VOLUME " + predecessor + " " + contract_rolls::ymd(day) +
+                     ": this copy of " + listed + " carries no full-size bar; a leg of " +
+                     predecessor + " from here (it trades none after its listing switch) is priced "
+                     "on the last full-size volume of the load, " +
+                     std::to_string(*full_size_volume) + ", not on " + listed + "'s (logged once)");
+            }
+            cost_volume[i] = full_size_volume;
+        }
+        for (size_t i : rows) {
             Bar copy = bars[i];
             copy.symbol = predecessor;
+            copy.own_contract_volume.reset();  // the listed contract's own, not the predecessor's
+            auto cv = cost_volume.find(i);
+            copy.cost_volume = cv == cost_volume.end() ? std::nullopt : cv->second;
             bars.push_back(std::move(copy));
         }
     }

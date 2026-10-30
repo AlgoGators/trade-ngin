@@ -421,11 +421,18 @@ std::vector<SourceBar> every_kind() {
             source_bar("GC.v.0", "2026-07-28 00:00:00+00", 2228.0, "z",
                        RollFrom{2028.0, "q", RollFromKind::AFTER_ROLL, "2026-07-27"}),
             source_bar("MES.v.0", "2026-07-28 00:00:00+00", 6000.0, ""),
-            // R6: the micros' change of price source, and a bar after it
+            // R6: the micros' change of price source, and a bar after it (MM fix round 1: each
+            // carrying the full-size contract's own volume)
             source_bar("MES.v.0", "2026-02-23 00:00:00+00", 6857.25, "m",
-                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23"}),
+                       RollFrom{6857.25, "e", RollFromKind::SOURCE_CHANGE, "2026-02-23", 1250000.0}),
             source_bar("MES.v.0", "2026-02-24 00:00:00+00", 6904.25, "m",
-                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23"})};
+                       RollFrom{6904.25, "e", RollFromKind::AFTER_SOURCE_CHANGE, "2026-02-23", 980000.0}),
+            // MM fix round 1: an equity micro's bar before its change, its own contract's volume along
+            [] {
+                SourceBar b = source_bar("MES.v.0", "2019-05-06 00:00:00+00", 2918.0, "736");
+                b.own_contract_volume = 162154.0;
+                return b;
+            }()};
 }
 
 /// `table` with column `name` replaced by `column`.
@@ -483,7 +490,7 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
     const std::vector<SourceBar> source = every_kind();
     auto table = source_bars_to_arrow(source);
     ASSERT_TRUE(table.is_ok()) << table.error()->what();
-    EXPECT_EQ(table.value()->num_columns(), 12);
+    EXPECT_EQ(table.value()->num_columns(), 14);
     EXPECT_EQ(table.value()->num_rows(), static_cast<int64_t>(source.size()));
     auto bars = DataConversionUtils::arrow_table_to_bars(table.value());
     ASSERT_TRUE(bars.is_ok()) << bars.error()->what();
@@ -502,17 +509,33 @@ TEST(PerContractSourceLoader, TheArrowTableRoundTripsEveryKindOfTheField) {
         EXPECT_EQ(b.volume, s.volume);
         EXPECT_EQ(b.instrument_id, s.instrument_id);
         EXPECT_EQ(b.roll_from, s.roll_from);
+        EXPECT_EQ(b.own_contract_volume, s.own_contract_volume);
     }
+    EXPECT_EQ(bars.value()[7].own_contract_volume, std::optional<double>(162154.0));
+    EXPECT_FALSE(bars.value()[5].own_contract_volume.has_value());
     EXPECT_EQ(bars.value()[1].roll_from->kind, RollFromKind::AWAITS_NEXT);
     EXPECT_EQ(bars.value()[2].roll_from->kind, RollFromKind::KNOWN);
     EXPECT_EQ(bars.value()[3].roll_from->kind, RollFromKind::AFTER_ROLL);
     EXPECT_EQ(bars.value()[3].roll_from->date, "2026-07-27") << "rolls step 4: the roll's date";
     EXPECT_EQ(bars.value()[5].roll_from->kind, RollFromKind::SOURCE_CHANGE);
     EXPECT_EQ(bars.value()[6].roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
-    // An empty source is an empty table of the same twelve columns.
+    // MM fix round 1: the full-size contract's volume on the two change kinds, none elsewhere
+    EXPECT_EQ(bars.value()[5].roll_from->volume, std::optional<double>(1250000.0));
+    EXPECT_EQ(bars.value()[6].roll_from->volume, std::optional<double>(980000.0));
+    EXPECT_FALSE(bars.value()[2].roll_from->volume.has_value());
+    // An empty source is an empty table of the same fourteen columns.
     auto empty = source_bars_to_arrow({});
     ASSERT_TRUE(empty.is_ok());
-    EXPECT_EQ(empty.value()->num_columns(), 12);
+    EXPECT_EQ(empty.value()->num_columns(), 14);
+    // A table without the volume column (a field before MM's fix round) reads every field with
+    // no volume.
+    auto no_volume = table.value()
+                         ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_volume"))
+                         .ValueOrDie();
+    auto unvolumed = DataConversionUtils::arrow_table_to_bars(no_volume);
+    ASSERT_TRUE(unvolumed.is_ok()) << unvolumed.error()->what();
+    EXPECT_FALSE(unvolumed.value()[5].roll_from->volume.has_value());
+    EXPECT_EQ(unvolumed.value()[5].roll_from->close, 6857.25);
     // A table without the date column (a field of step 3) reads every field with no date.
     auto no_date = table.value()
                        ->RemoveColumn(table.value()->schema()->GetFieldIndex("roll_from_date"))
@@ -862,6 +885,65 @@ TEST_F(PerContractSourceDbTest, TheSwitchBarSettingReachesTheBarQuery) {
     EXPECT_EQ(switch_bars, 1);
 }
 
+// MM (HD 2026-10-27): the gold and silver micros through the loader's own call, on the loaded copy.
+// Their own .v.0 starts at the listing; before it the series is the full-size contract the rule holds,
+// on the full-size root's grid (GC.v.0's Friday 2010-10-01 and Sunday 10-03), and starts where the
+// full-size series does. The listing bar is the one change of price source: MGC GCZ0 to MGCZ0 (same
+// expiry) on Monday 2010-10-04, SIL SIN3 to SILU3 (SIL lists no July) on Monday 2013-06-17.
+TEST_F(PerContractSourceDbTest, TheGoldAndSilverMicrosReadTheFullSizeRootUntilTheirListing) {
+    {
+        pqxx::connection c(contract_rolls_test::dsn());
+        pqxx::read_transaction t(c);
+        if (t.exec("SELECT count(*) FROM futures_data.ohlcv_1d WHERE symbol IN ('MGC.v.0', 'SIL.v.0')")[0][0]
+                .as<int64_t>() == 0) {
+            GTEST_SKIP() << "MGC and SIL are not loaded on this database";
+        }
+        for (const auto& [root, full] : {std::pair<std::string, std::string>{"MGC", "GC"}, {"SIL", "SI"}}) {
+            auto start = series_start(t, root);
+            ASSERT_TRUE(start.is_ok()) << start.error()->what();
+            auto full_start = series_start(t, full);
+            ASSERT_TRUE(full_start.is_ok()) << full_start.error()->what();
+            EXPECT_EQ(ymd(start.value()), ymd(full_start.value())) << root;
+            EXPECT_EQ(ymd(start.value()), "2010-06-07") << root;
+        }
+    }
+    PerContractSource::instance().enable(contract_rolls_test::shipped_calendars());
+    const auto gold = load({"MGC.v.0"}, "2010-09-27", "2010-10-08");
+    std::map<std::string, const Bar*> on;
+    for (const auto& b : gold) on[core::format_utc_date(b.timestamp)] = &b;
+    ASSERT_EQ(on.size(), 11u) << "the grid's 09-27 to 10-01 and 10-03 are GC.v.0's, 10-04 to 10-08 MGC.v.0's";
+    for (const char* day : {"2010-09-27", "2010-10-01", "2010-10-03"}) {
+        ASSERT_TRUE(on.count(day)) << day;
+        EXPECT_EQ(on.at(day)->instrument_id, "197012") << day << ": GCZ0";
+        EXPECT_FALSE(on.at(day)->roll_from.has_value()) << day;
+    }
+    EXPECT_DOUBLE_EQ(static_cast<double>(on.at("2010-10-01")->close), 1320.0) << "GCZ0's own close";
+    const Bar& change = *on.at("2010-10-04");
+    EXPECT_EQ(change.instrument_id, "88890") << "MGCZ0";
+    EXPECT_DOUBLE_EQ(static_cast<double>(change.close), 1315.8);
+    ASSERT_TRUE(change.roll_from.has_value());
+    EXPECT_EQ(change.roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(change.roll_from->instrument_id, "197012");
+    EXPECT_DOUBLE_EQ(change.roll_from->close, 1315.8);
+    EXPECT_EQ(on.at("2010-10-05")->roll_from->kind, RollFromKind::AFTER_SOURCE_CHANGE);
+
+    const auto silver = load({"SIL.v.0"}, "2013-06-10", "2013-06-21");
+    on.clear();
+    for (const auto& b : silver) on[core::format_utc_date(b.timestamp)] = &b;
+    for (const char* day : {"2013-06-10", "2013-06-14", "2013-06-16"}) {
+        ASSERT_TRUE(on.count(day)) << day;
+        EXPECT_EQ(on.at(day)->instrument_id, "113863") << day << ": SIN3";
+    }
+    const Bar& listing = *on.at("2013-06-17");
+    EXPECT_EQ(listing.instrument_id, "131488") << "SILU3";
+    EXPECT_DOUBLE_EQ(static_cast<double>(listing.close), 21.8);
+    ASSERT_TRUE(listing.roll_from.has_value());
+    EXPECT_EQ(listing.roll_from->kind, RollFromKind::SOURCE_CHANGE);
+    EXPECT_EQ(listing.roll_from->instrument_id, "113863");
+    EXPECT_DOUBLE_EQ(listing.roll_from->close, 21.83);
+    PerContractSource::instance().disable();
+}
+
 // R6 (plan 10b point 5): the micros read the rule through the loader's own call. Before the
 // vendor's 2026-02-22 change MES.v.0 is the ES contract the rule holds, on Sunday 02-22 too (ESH6's
 // own bar, where the vendor names MESH6); Monday 02-23 is the one roll into MESH6, known on its bar,
@@ -1000,18 +1082,37 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
     std::vector<SourceBar> rows;
     for (const auto& [day, b] : carry) rows.push_back(b);
     rows.back().carry.reset();  // a day with no quote
-    // Carry off: the twelve columns as before, and no bar carries a quote.
+    // tune2/final-base (the merge of MM's fix round onto carry): MM's two columns ride along in
+    // every table, so give some rows both fields
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i % 2 == 0) rows[i].own_contract_volume = 1000.0 + static_cast<double>(i);
+        if (rows[i].roll_from && i % 3 == 0) rows[i].roll_from->volume = 5000.0 + static_cast<double>(i);
+    }
+    // Carry off: the fourteen columns as before (MM's roll_from_volume and own_contract_volume the
+    // thirteenth and fourteenth), and no bar carries a quote.
     auto off = source_bars_to_arrow(rows);
     ASSERT_TRUE(off.is_ok());
-    EXPECT_EQ(off.value()->num_columns(), 12);
+    EXPECT_EQ(off.value()->num_columns(), 14);
     auto off_bars = DataConversionUtils::arrow_table_to_bars(off.value());
     ASSERT_TRUE(off_bars.is_ok());
     for (const auto& b : off_bars.value()) EXPECT_FALSE(b.carry.has_value());
     // Carry on: five more columns, the quote round-trips exactly, NULL stays absent.
     auto on = source_bars_to_arrow(rows, true);
     ASSERT_TRUE(on.is_ok());
-    EXPECT_EQ(on.value()->num_columns(), 17);
+    EXPECT_EQ(on.value()->num_columns(), 19);
     EXPECT_NE(on.value()->GetColumnByName("carry_months"), nullptr);
+    // the merged layout, column by column: MM's two at 12 and 13 in both tables, carry's five after
+    const std::vector<std::string> layout = {"time", "symbol", "open", "high", "low", "close", "volume",
+                                             "instrument_id", "roll_from_close", "roll_from_id",
+                                             "roll_from_kind", "roll_from_date", "roll_from_volume",
+                                             "own_contract_volume", "carry_held_close", "carry_other_close",
+                                             "carry_months", "carry_held_symbol", "carry_other_symbol"};
+    for (int c = 0; c < on.value()->num_columns(); ++c) {
+        EXPECT_EQ(on.value()->schema()->field(c)->name(), layout[static_cast<size_t>(c)]) << c;
+        if (c < off.value()->num_columns()) {
+            EXPECT_EQ(off.value()->schema()->field(c)->name(), layout[static_cast<size_t>(c)]) << c;
+        }
+    }
     auto on_bars = DataConversionUtils::arrow_table_to_bars(on.value());
     ASSERT_TRUE(on_bars.is_ok()) << on_bars.error()->what();
     ASSERT_EQ(on_bars.value().size(), rows.size());
@@ -1019,6 +1120,12 @@ TEST(PerContractSourceCarry, TheArrowTableCarriesTheQuoteOnlyWithCarryOn) {
         EXPECT_EQ(on_bars.value()[i].carry, rows[i].carry) << i;
         EXPECT_EQ(on_bars.value()[i].roll_from, off_bars.value()[i].roll_from) << i;
         EXPECT_EQ(on_bars.value()[i].close, off_bars.value()[i].close) << i;
+        // every field read back by name, carry on and off: MM's two as written
+        EXPECT_EQ(on_bars.value()[i].roll_from, rows[i].roll_from) << i;
+        EXPECT_EQ(on_bars.value()[i].own_contract_volume, rows[i].own_contract_volume) << i;
+        EXPECT_EQ(off_bars.value()[i].own_contract_volume, rows[i].own_contract_volume) << i;
+        EXPECT_EQ(on_bars.value()[i].instrument_id, rows[i].instrument_id) << i;
+        EXPECT_EQ(on_bars.value()[i].volume, rows[i].volume) << i;
     }
     EXPECT_FALSE(on_bars.value().back().carry.has_value());
     // A table with only part of the quote's columns is refused, never read as no quote.
@@ -1108,9 +1215,9 @@ TEST_F(PerContractSourceDbTest, TheLoadersOwnCallHandsOutCarryQuotesOnlyWithCarr
     };
     auto table = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
     ASSERT_TRUE(table.is_ok());
-    EXPECT_EQ(table.value()->num_columns(), 12);
+    EXPECT_EQ(table.value()->num_columns(), 14);
     PerContractSource::instance().enable(contract_rolls_test::shipped_calendars(), SwitchBar::HELD, true);
     auto table_on = db_->get_market_data({"GC.v.0"}, ts("2026-07-01"), ts("2026-08-31"), AssetClass::FUTURES);
     ASSERT_TRUE(table_on.is_ok());
-    EXPECT_EQ(table_on.value()->num_columns(), 17);
+    EXPECT_EQ(table_on.value()->num_columns(), 19);
 }

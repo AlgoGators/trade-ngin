@@ -233,6 +233,147 @@ TEST(SessionClassifierRule, TheFloorIsConjunctiveSoASmallContractKeepsItsSession
               SessionVerdict::SESSION);
 }
 
+// MM (HD 2026-10-28, ruling (b)): a change of price source restarts the symbol's norm. MGC.v.0
+// reads GC's contracts (about 150,000 lots a day) until its listing and its own (a few hundred)
+// from it. The change bar is judged against the norm before it; every later bar against the
+// micro's own bars from the change, as a new symbol is (no SESSION bar yet: all its weekday bars).
+// The same volume step with no change of source stays judged against the old norm.
+TEST(SessionClassifierRule, AChangeOfPriceSourceRestartsTheNorm) {
+    auto change_bar = [](const std::string& date, double v, RollFromKind kind, const std::string& named) {
+        Bar b = bar_on("MGC.v.0", date, v);
+        RollFrom from;
+        from.close = 100.5;
+        from.instrument_id = "gcz0";
+        from.kind = kind;
+        from.date = named;
+        b.roll_from = from;
+        return b;
+    };
+    SessionClassifier c;
+    add_weekdays_before(c, "MGC.v.0", "2010-10-04", 20, 150000);
+    c.add_bar(change_bar("2010-10-04", 64, RollFromKind::SOURCE_CHANGE, "2010-10-04"));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-05", 300));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-06", 300));
+    auto v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-04"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 150000.0) << "the change bar is judged against the norm before it";
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 64.0) << "no SESSION bar since the change: its weekday bars bootstrap it";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-06"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 300.0) << "the micro's own SESSION bars from the change";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+
+    // A consumer that withheld the change bar learns the change from the next bar's field.
+    SessionClassifier after;
+    add_weekdays_before(after, "MGC.v.0", "2010-10-04", 20, 150000);
+    after.add_bar(change_bar("2010-10-05", 300, RollFromKind::AFTER_SOURCE_CHANGE, "2010-10-04"));
+    v = after.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    EXPECT_FALSE(v.norm.has_value()) << "nothing on or after the change before this bar: the floor alone";
+    EXPECT_EQ(v.verdict, SessionVerdict::SESSION) << v.reason;
+
+    // No change of source: the same step is judged against the old norm, as before.
+    SessionClassifier same;
+    add_weekdays_before(same, "MGC.v.0", "2010-10-04", 20, 150000);
+    same.add_bar(bar_on("MGC.v.0", "2010-10-04", 64));
+    same.add_bar(bar_on("MGC.v.0", "2010-10-05", 300));
+    v = same.classify_symbol_day("MGC.v.0", ymd_day("2010-10-05"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 150000.0);
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+}
+
+// MMB audit (M10): a change learned late, from an AFTER_SOURCE_CHANGE bar that comes after bars
+// already judged, drops the cached verdicts from the change on. Here 10-05 and 10-06 are judged
+// (against GC's norm: JUNK) before the 10-07 bar names the change of 10-04; afterwards 10-05 and
+// 10-06 are SESSION on the restarted norm, so 10-07's norm is their median, 350. A stale 10-05 flag
+// would leave 10-06 alone: 300.
+TEST(SessionClassifierRule, AChangeLearnedLateDropsTheVerdictsCachedSinceIt) {
+    SessionClassifier c;
+    add_weekdays_before(c, "MGC.v.0", "2010-10-04", 20, 150000);
+    c.add_bar(bar_on("MGC.v.0", "2010-10-04", 64));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-05", 400));
+    c.add_bar(bar_on("MGC.v.0", "2010-10-06", 300));
+    auto v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-06"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 150000.0) << "the change not known yet";
+    EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << v.reason;
+    Bar after = bar_on("MGC.v.0", "2010-10-07", 300);
+    RollFrom from;
+    from.close = 100.5;
+    from.instrument_id = "gcz0";
+    from.kind = RollFromKind::AFTER_SOURCE_CHANGE;
+    from.date = "2010-10-04";
+    after.roll_from = from;
+    c.add_bar(after);
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-10-07"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 350.0) << "10-05 and 10-06 judged again on the restarted norm";
+    EXPECT_EQ(v.norm_bars, 2);
+}
+
+// MM fix round 1 (MMB's NOTE 1): an AFTER_SOURCE_CHANGE bar whose date does not parse registers no
+// change (before, the bar's own date was taken for the change and restarted the norm there). The
+// bar, and the bar after it, are judged against the norm before them, as with no change. (A change
+// dated on the bar itself would leave that bar on the old norm and restart the next one's from it:
+// the next bar is what tells the two apart.)
+TEST(SessionClassifierRule, AMalformedChangeDateRegistersNoChange) {
+    for (const char* bad : {"2010-1O-04", "", "2010-13-04", "04/10/2010"}) {
+        SCOPED_TRACE(std::string("date '") + bad + "'");
+        SessionClassifier c;
+        add_weekdays_before(c, "MGC.v.0", "2010-10-04", 20, 150000);
+        Bar after = bar_on("MGC.v.0", "2010-10-07", 300);
+        RollFrom from;
+        from.close = 100.5;
+        from.instrument_id = "gcz0";
+        from.kind = RollFromKind::AFTER_SOURCE_CHANGE;
+        from.date = bad;
+        after.roll_from = from;
+        c.add_bar(after);
+        c.add_bar(after);  // a second reading of the same bar: still nothing, warned once
+        c.add_bar(bar_on("MGC.v.0", "2010-10-08", 300));
+        for (const char* day : {"2010-10-07", "2010-10-08"}) {
+            const auto v = c.classify_symbol_day("MGC.v.0", ymd_day(day), kNoHolidays);
+            ASSERT_TRUE(v.norm.has_value()) << day << ": no change, the norm before the bar";
+            EXPECT_DOUBLE_EQ(*v.norm, 150000.0) << day;
+            EXPECT_EQ(v.verdict, SessionVerdict::JUNK) << day << " " << v.reason;
+        }
+    }
+}
+
+// MMB audit (M11): with two changes of source for one symbol, the latest before the date rules.
+// The norm after the second change is taken over the bars from it (5,000 and 9,000: 7,000), not
+// over the first change's 300-lot bars.
+TEST(SessionClassifierRule, TheLatestChangeOfSourceRules) {
+    auto change = [](const std::string& date, double v) {
+        Bar b = bar_on("MGC.v.0", date, v);
+        RollFrom from;
+        from.close = 100.5;
+        from.instrument_id = "old";
+        from.kind = RollFromKind::SOURCE_CHANGE;
+        from.date = date;
+        b.roll_from = from;
+        return b;
+    };
+    SessionClassifier c;
+    add_weekdays_before(c, "MGC.v.0", "2010-10-04", 20, 150000);
+    c.add_bar(change("2010-10-04", 64));
+    add_weekdays_before(c, "MGC.v.0", "2010-11-01", 19, 300);  // 10-05 to 10-29
+    c.add_bar(change("2010-11-01", 5000));
+    c.add_bar(bar_on("MGC.v.0", "2010-11-02", 9000));
+    c.add_bar(bar_on("MGC.v.0", "2010-11-03", 9000));
+    auto v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-11-01"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 300.0) << "the second change bar against the first change's norm";
+    v = c.classify_symbol_day("MGC.v.0", ymd_day("2010-11-03"), kNoHolidays);
+    ASSERT_TRUE(v.norm.has_value());
+    EXPECT_DOUBLE_EQ(*v.norm, 7000.0) << "the bars from the latest change only";
+    EXPECT_EQ(v.norm_bars, 2);
+}
+
 TEST(SessionClassifierRule, WithNoNormYetTheFloorAppliesOnItsOwn) {
     SessionClassifier c;
     c.add_bar(bar_on("NEW", "2026-03-04", 49));

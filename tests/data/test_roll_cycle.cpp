@@ -28,6 +28,9 @@ TEST(RollCycle, TableLookupsAndTheNextCycleMonth) {
     EXPECT_EQ(roll_cycle("GC").value(), "GJMQZ");
     EXPECT_EQ(roll_cycle("ZC").value(), "HKNZ");
     EXPECT_EQ(roll_cycle("6A").value(), "HMUZ");
+    // MM: the gold and silver micros hold their full-size roots' months (step 0: their own .v.0)
+    EXPECT_EQ(roll_cycle("MGC").value(), roll_cycle("GC").value());
+    EXPECT_EQ(roll_cycle("SIL").value(), roll_cycle("SI").value());
     EXPECT_TRUE(roll_cycle("XX").is_error());
     EXPECT_TRUE(in_cycle("GJMQZ", 8));    // Aug
     EXPECT_FALSE(in_cycle("GJMQZ", 10));  // Oct: never held
