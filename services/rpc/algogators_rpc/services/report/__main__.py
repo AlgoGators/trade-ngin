@@ -63,6 +63,15 @@ def book_recipients(settings, portfolio_dir: str, extra_cc: str = ""):
     return to, _clean(cc_raw, seen)
 
 
+def report_conninfo(db) -> dict:
+    """The engine's connection settings, in a UTC session: every timestamp's date is the UTC day
+    the engine stored it under, whatever the server's or the role's time zone."""
+    kwargs = dict(db.conninfo_kwargs())
+    kwargs["options"] = (kwargs.get("options", "") + " -c TimeZone=UTC").strip()
+    kwargs["application_name"] = "engine-rpc/report"
+    return kwargs
+
+
 RISK_PREFIX = "[RISK MODULE FAILED - BOOK HELD] "
 
 
@@ -119,9 +128,7 @@ def main(argv=None) -> int:
     try:
         day = data.report_day(args.date)
         settings = load_settings()
-        # A UTC session: every timestamp's date is the UTC day the engine stored it under.
-        with psycopg.connect(**settings.db.conninfo_kwargs(), row_factory=dict_row,
-                             options="-c TimeZone=UTC") as conn:
+        with psycopg.connect(**report_conninfo(settings.db), row_factory=dict_row) as conn:
             email = build_email(conn, args.portfolio_id, day, flags, args.strategy_id)
     except (data.ReportDataError, ConfigError, psycopg.Error, ReportPayloadError) as exc:
         print(f"report: {type(exc).__name__}: {exc}", file=sys.stderr)

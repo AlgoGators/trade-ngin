@@ -204,3 +204,13 @@ def test_rolls_that_are_not_json_are_refused(capsys):
     rc = main(["--portfolio-id", "P", "--date", "2026-10-23", "--rolls", "{not json"])
     assert rc == 2
     assert "--rolls is not JSON" in capsys.readouterr().err
+
+
+def test_the_report_session_is_utc_and_keeps_the_engines_statement_timeout():
+    from algogators_rpc.services.desk.config import DbConfig
+    from algogators_rpc.services.report.__main__ import report_conninfo
+
+    db = DbConfig(host="h", port="5432", user="u", password="p", dbname="d", source="env")
+    kwargs = report_conninfo(db)
+    assert "statement_timeout" in kwargs["options"] and "TimeZone=UTC" in kwargs["options"]
+    assert kwargs["application_name"] == "engine-rpc/report"
