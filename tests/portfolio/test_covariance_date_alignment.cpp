@@ -1,19 +1,18 @@
 // tests/portfolio/test_covariance_date_alignment.cpp
 //
-// T-7a INSERT S3, the optimizer's covariance aligned by DATE (ledger PM-covariance-count-aligned).
-// Before S3, PortfolioManager::calculate_covariance_matrix took the last min_periods returns of each
-// symbol by COUNT (min_periods = the shortest symbol's return count), so a symbol whose date set
-// differs from the others' (a feed gap, a Sunday-stamped bar, MBT's weekend bars) had its k-th-last
-// return paired with a different day of every other symbol. Measured on the clone for 2026-05-01:
-// 475 of the 480 MBT/MES rows paired different dates.
+// The optimizer's covariance aligned by DATE. Taking the last min_periods returns of each symbol by
+// COUNT (min_periods = the shortest symbol's return count) would pair the k-th-last return of a
+// symbol whose date set differs from the others' (a feed gap, a Sunday-stamped bar, MBT's weekend
+// bars) with a different day of every other symbol: on the clone for 2026-05-01, 475 of the 480
+// MBT/MES rows.
 //
-// After S3 the series are built on the INTERSECTION of the dates the symbols in the matrix have: a
-// date one symbol lacks is dropped for all, and the return on the next shared date runs from the
-// previous SHARED date for every symbol, so each return spans the same interval for every symbol.
+// PortfolioManager::calculate_covariance_matrix builds the series on the INTERSECTION of the dates
+// the symbols in the matrix have: a date one symbol lacks is dropped for all, and the return on the
+// next shared date runs from the previous SHARED date for every symbol, so each return spans the
+// same interval for every symbol.
 //
 // These tests drive a real PortfolioManager with the optimizer on and read the covariance the
-// optimizer was handed (cached_covariance_, cached_symbols_), which exist before and after the
-// fix, so the same file is RED on the parent source and GREEN on the fix. Every bar of a run is
+// optimizer was handed (cached_covariance_, cached_symbols_). Every bar of a run is
 // fed in one process_market_data call; a symbol's close on a calendar day is the same whichever
 // other days it has (one random walk per series over every calendar day).
 
@@ -233,10 +232,10 @@ protected:
 
 // An extra weekend date on ONE symbol changes nothing. AAA and BBB on 45 weekdays; then the same,
 // with AAA also printing on the Sunday after its 20th weekday.
-//   before: AAA has 45 returns (Fri->Sun and Sun->Mon among them), BBB 44; min_periods 44, and
+//   count:  AAA has 45 returns (Fri->Sun and Sun->Mon among them), BBB 44; min_periods 44, and
 //           AAA's last 44 returns pair Sun->Mon with BBB's Fri->Mon and every older AAA return one
 //           row later than BBB's: a different matrix.
-//   after:  the Sunday is not in BBB's dates, so it is dropped; AAA's return on that Monday runs
+//   date:   the Sunday is not in BBB's dates, so it is dropped; AAA's return on that Monday runs
 //           from the Friday, exactly as without the Sunday: the same matrix, bit for bit.
 TEST_F(CovarianceDateAlignment, AnExtraWeekendDateOnOneSymbolGivesTheSameCorrelation) {
     const auto w = weekdays(45);
@@ -258,10 +257,10 @@ TEST_F(CovarianceDateAlignment, AnExtraWeekendDateOnOneSymbolGivesTheSameCorrela
 // A symbol missing a weekday shifts nothing for the others beyond dropping that day. AAA, BBB, CCC
 // on 45 weekdays, CCC without the 26th. The reference is the same three series with that day
 // removed from ALL of them; the AAA/BBB block is also the two-symbol matrix without that day.
-//   before: CCC has 43 returns, AAA and BBB 44; AAA and BBB lose their FIRST return instead of the
+//   count:  CCC has 43 returns, AAA and BBB 44; AAA and BBB lose their FIRST return instead of the
 //           gap day and keep two returns (into and out of the gap day) where CCC has one, so from
 //           the gap back every CCC return is paired with the other two's previous day.
-//   after:  the gap day is dropped for all; every other day is paired with itself.
+//   date:   the gap day is dropped for all; every other day is paired with itself.
 TEST_F(CovarianceDateAlignment, AMissingWeekdayOnOneSymbolOnlyDropsThatDayForTheOthers) {
     const auto w = weekdays(45);
     const std::set<int> gap{w[25]};
@@ -287,9 +286,9 @@ TEST_F(CovarianceDateAlignment, AMissingWeekdayOnOneSymbolOnlyDropsThatDayForThe
 // The pairing is by date. BBB is AAA's own price series (the same close on every date both
 // have), but BBB lacks a whole week (the MES 2026-04-13..17 shape) and AAA has one Sunday bar
 // (the Sunday-stamped bar each side had in the clone's window).
-//   before: pairing by count, AAA's returns are paired with BBB's from five and six rows away:
+//   count:  AAA's returns are paired with BBB's from five and six rows away:
 //           the correlation of a series with itself comes out far from 1.
-//   after:  on the dates both have, the two series are identical, so every return pair is
+//   date:   on the dates both have, the two series are identical, so every return pair is
 //           equal and the correlation is exactly 1: cov(AAA,BBB) == var(AAA) == var(BBB).
 TEST_F(CovarianceDateAlignment, ReturnsArePairedByDate) {
     const auto w = weekdays(45);

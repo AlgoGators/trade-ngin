@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from algogators_rpc.services.report import data
-from algogators_rpc.services.report.__main__ import book_recipients
+from algogators_rpc.services.report.__main__ import book_recipients, main
 
 
 def _settings(tmp_path, to_emails, approvers="vp=vp@x.org,president=pres@x.org"):
@@ -144,3 +144,63 @@ def test_no_registry_row_at_all_is_refused():
 
     with pytest.raises(data.ReportDataError):
         data.fetch_registry(_OneCur(None, None), "P", "S9")
+
+
+class _Server:
+    """A stand-in SMTP server: records the send, then fails as told."""
+
+    def __init__(self, fail_at=None):
+        self.fail_at, self.sent, self.closed = fail_at, False, False
+
+    def starttls(self, context=None):
+        pass
+
+    def login(self, user, password):
+        if self.fail_at == "login":
+            raise OSError("auth")
+
+    def send_message(self, msg, to_addrs=None):
+        self.sent = True
+
+    def quit(self):
+        if self.fail_at == "quit":
+            raise OSError("connection dropped after the message was accepted")
+
+    def close(self):
+        self.closed = True
+
+
+def _smtp(port=587):
+    return SimpleNamespace(host="h", port=port, username="u", password="p", from_email="f@x.org",
+                           use_tls=True)
+
+
+def _email():
+    return SimpleNamespace(subject="s", text="t", html="<p>h</p>", images={})
+
+
+def test_a_message_the_server_accepted_is_delivered_whatever_the_goodbye_does(monkeypatch):
+    from algogators_rpc.services.report import mailer
+
+    server = _Server(fail_at="quit")
+    monkeypatch.setattr(mailer.smtplib, "SMTP", lambda *a, **k: server)
+    mailer.send_message(_smtp(), ["a@x.org"], [], _email())  # no exception: the send happened
+    assert server.sent and server.closed
+
+
+def test_a_failure_before_the_send_is_a_failure(monkeypatch):
+    import pytest
+
+    from algogators_rpc.services.report import mailer
+
+    server = _Server(fail_at="login")
+    monkeypatch.setattr(mailer.smtplib, "SMTP", lambda *a, **k: server)
+    with pytest.raises(OSError):
+        mailer.send_message(_smtp(), ["a@x.org"], [], _email())
+    assert not server.sent
+
+
+def test_rolls_that_are_not_json_are_refused(capsys):
+    rc = main(["--portfolio-id", "P", "--date", "2026-10-23", "--rolls", "{not json"])
+    assert rc == 2
+    assert "--rolls is not JSON" in capsys.readouterr().err

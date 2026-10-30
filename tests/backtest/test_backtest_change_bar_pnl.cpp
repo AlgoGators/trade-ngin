@@ -1,8 +1,8 @@
 // tests/backtest/test_backtest_change_bar_pnl.cpp
 //
-// LOOP_SPEC v6.1 sections 2.1, 6.6 and 7 in the futures backtest (T-ROLLX-FIX commit 2): the daily
-// P&L of a held position is q x (close - previous CONSUMED close) x M on every consumed bar, 0 on a
-// change bar (the splice's price gap) and 0 on a WITHHELD bar (K-01: never consumed, it moves no
+// In the futures backtest the daily P&L of a held position is q x (close - previous CONSUMED close)
+// x M on every consumed bar, 0 on a change bar (the splice's price gap) and 0 on a WITHHELD bar
+// (never consumed, it moves no
 // previous close, so the next consumed bar books against the last consumed close); every stored row
 // carries the contract held after its bar.
 //
@@ -13,6 +13,7 @@
 #include "../risk/risk_module_test_helpers.hpp"
 
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -66,6 +67,17 @@ public:
         p.average_price = Decimal(100.0);
         p.last_update = wday(0);
         return {{"XA", p}};
+    }
+};
+
+// The same book short 2.
+class HoldMinusTwo : public HoldTwo {
+public:
+    using HoldTwo::HoldTwo;
+    std::unordered_map<std::string, Position> get_target_positions() const override {
+        auto book = HoldTwo::get_target_positions();
+        book["XA"].quantity = Decimal(-2.0);
+        return book;
     }
 };
 
@@ -169,12 +181,208 @@ TEST_F(BacktestChangeBarPnlTest, ChangeAndWithheldBarsBookNothingAndRowsCarryThe
     roll_cost[3] = 0.0;
     EXPECT_EQ(roll_cost, std::vector<double>(roll_cost.size(), 0.0));
     // The book is 2 contracts from cycle 1 on and never trades again, so each cycle's equity move plus
-    // its roll cost is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (the parent booked
-    // 2 x 7 x 50 = 700); d4 against the change bar's close 110; d5 100; d6 withheld 0 (the parent
-    // booked 2 x (50 - 112) x 50); d7 against d5's 112, the last CONSUMED close (not d6's 50).
+    // its roll cost is its P&L: d2 2 x (103 - 101) x 50; d3 the change bar 0 (not the gap's
+    // 2 x 7 x 50 = 700); d4 against the change bar's close 110; d5 100; d6 withheld 0 (not
+    // 2 x (50 - 112) x 50); d7 against d5's 112, the last CONSUMED close (not d6's 50).
     const std::vector<double> want{200.0, 0.0, 100.0, 100.0, 0.0, 100.0};
     ASSERT_EQ(move.size(), want.size());
     for (size_t i = 0; i < want.size(); ++i) EXPECT_NEAR(move[i], want[i], 1e-6) << "cycle " << i + 2;
     EXPECT_EQ(held, (std::vector<std::string>{"A", "A", "B", "B", "B", "B"}))
         << "the change bar's row is held in the outgoing contract, the confirming bar's in the new one";
+}
+
+// With per_contract_rolls on, the roll bar books the old contract's own move over it,
+// q x (old close on the roll bar - previous close) x M, and both ROLL legs are priced on the roll
+// bar (closing at the old contract's close, opening at the new contract's), booked on the cycle that
+// consumes the bar a run first knows the roll from.
+namespace {
+
+Bar rolled(Bar b, double old_close, const char* old_id, RollFromKind kind) {
+    b.roll_from = RollFrom{old_close, old_id, kind, ""};
+    return b;
+}
+
+struct Booked {
+    std::vector<double> move;     // equity move plus roll cost, cycles 2 on
+    std::map<int, std::vector<double>> legs;  // cycle -> ROLL leg prices, in stored order
+    std::vector<std::string> held;
+};
+
+void expect_moves(const std::vector<double>& got, const std::vector<double>& want) {
+    ASSERT_EQ(got.size(), want.size());
+    for (size_t i = 0; i < want.size(); ++i) EXPECT_NEAR(got[i], want[i], 1e-6) << "cycle " << i + 2;
+}
+
+}  // namespace
+
+class BacktestPerContractPnlTest : public BacktestChangeBarPnlTest {
+protected:
+    Booked book(const std::vector<Bar>& xa) {
+        Booked out;
+        for (int d = 0; d < static_cast<int>(xa.size()); ++d) {
+            auto r = coord_->process_portfolio_day(wday(d), {xa[d]}, pm_, execs_, equity_, risk_,
+                                                   false, 1'000'000.0);
+            EXPECT_TRUE(r.is_ok()) << r.error()->what();
+            if (d < 2) continue;
+            double cost = 0.0;
+            for (const auto& e : execs_) {
+                if (e.fill_time == wday(d) && e.execution_type == ExecutionType::ROLL) {
+                    cost += static_cast<double>(e.total_transaction_costs);
+                    out.legs[d].push_back(static_cast<double>(e.fill_price));
+                }
+            }
+            out.move.push_back(equity_.back().second - equity_[equity_.size() - 2].second + cost);
+            out.held.push_back(coord_->row_held_id_["XA"]);
+        }
+        return out;
+    }
+};
+
+TEST_F(BacktestPerContractPnlTest, AKnownRollBooksTheOldContractsMoveAndBothLegsOnItsBar) {
+    // d3: the crossover onto B (B's 110, A's 104 that day); d4 carries A's 105 (AFTER_ROLL).
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL),
+                         bar(5, 112, "B")});
+    // d2 2 x 2 x 50; d3 A's own 103 -> 104 (today: 0); d4 and d5 B's moves.
+    expect_moves(b.move, {200.0, 100.0, 100.0, 100.0});
+    // The legs on the cycle consuming d3 (cycle 4), at d3's two closes.
+    ASSERT_EQ(b.legs.size(), 1u);
+    EXPECT_EQ(b.legs.at(4), (std::vector<double>{104.0, 110.0}));
+    EXPECT_EQ(b.held, (std::vector<std::string>{"A", "B", "B", "B"}));
+}
+
+TEST_F(BacktestPerContractPnlTest, AVendorSwitchIsLeggedOnTheConfirmingBarAtTheSwitchBarsCloses) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL),
+                         bar(5, 112, "B")});
+    // the switch bar books A's own move once; the confirming bar B's
+    expect_moves(b.move, {200.0, 100.0, 100.0, 100.0});
+    ASSERT_EQ(b.legs.size(), 1u);
+    EXPECT_EQ(b.legs.at(5), (std::vector<double>{104.0, 110.0})) << "on the cycle consuming d4";
+    EXPECT_EQ(b.held, (std::vector<std::string>{"A", "A", "B", "B"}));
+}
+
+TEST_F(BacktestPerContractPnlTest, AnUnconfirmedVendorSwitchBooksTheOldContractsBarsAndNoLegs) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
+                         bar(4, 105, "A"), bar(5, 106, "A")});
+    // d4 moves from A's 104 on d3, not from B's 110
+    expect_moves(b.move, {200.0, 100.0, 100.0, 100.0});
+    EXPECT_TRUE(b.legs.empty());
+    EXPECT_EQ(b.held, (std::vector<std::string>{"A", "A", "A", "A"}));
+}
+
+TEST_F(BacktestPerContractPnlTest, AWithheldRollBarIsBookedOnTheNextConsumedBarAtItsCloses) {
+    // d3's roll bar is a locked print (withheld): d4 books the roll, A's move 103 -> 105 and
+    // both legs at d4's closes.
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B", true), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL),
+                         bar(5, 112, "B")});
+    expect_moves(b.move, {200.0, 0.0, 200.0, 100.0});
+    ASSERT_EQ(b.legs.size(), 1u);
+    EXPECT_EQ(b.legs.at(5), (std::vector<double>{105.0, 111.0}));
+    EXPECT_EQ(b.held, (std::vector<std::string>{"A", "A", "B", "B"}));
+}
+
+// The roll's split on its closing leg, as the cycle booked it.
+// roll_bar_move is exactly the move the cycle consuming the roll bar booked (cycle 3's 100 for the
+// crossover and the vendor switch, whose roll bar is the switch bar; cycle 4's 200 when the roll bar
+// was withheld), the gap the two legs' difference and its value 2 x gap x 50; the opening leg none.
+namespace {
+void expect_split(const std::vector<ExecutionReport>& execs, const Booked& b, size_t roll_cycle_index,
+                  double move, double gap) {
+    std::vector<ExecutionReport> legs;
+    for (const auto& e : execs) if (e.execution_type == ExecutionType::ROLL) legs.push_back(e);
+    ASSERT_EQ(legs.size(), 2u);
+    ASSERT_TRUE(legs[0].roll_bar_move.has_value());
+    EXPECT_NEAR(*legs[0].roll_bar_move, move, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_bar_move, b.move.at(roll_cycle_index), 1e-6) << "the move the roll bar booked";
+    EXPECT_NEAR(*legs[0].roll_gap_points, gap, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_gap_points,
+                static_cast<double>(legs[1].fill_price) - static_cast<double>(legs[0].fill_price), 1e-12);
+    EXPECT_NEAR(*legs[0].roll_gap_value, 2.0 * gap * 50.0, 1e-9);
+    EXPECT_FALSE(legs[1].roll_bar_move.has_value());
+    EXPECT_FALSE(legs[1].roll_gap_points.has_value());
+    EXPECT_FALSE(legs[1].roll_gap_value.has_value());
+}
+}  // namespace
+
+TEST_F(BacktestPerContractPnlTest, ACrossoverRollsClosingLegCarriesItsBarsMoveAndTheGap) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 1, 100.0, 6.0);
+}
+
+TEST_F(BacktestPerContractPnlTest, AVendorSwitchsClosingLegCarriesTheSwitchBarsMoveAndTheGap) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 104, "A"), 110, "B", RollFromKind::AWAITS_NEXT),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 1, 100.0, 6.0);
+}
+
+TEST_F(BacktestPerContractPnlTest, AWithheldRollBarsClosingLegCarriesTheMoveBookedOnTheNextBar) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B", true), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    expect_split(execs_, b, 2, 200.0, 6.0);
+}
+
+// The vendor's series (today's change bar, the micros with the switch on): no split on any row.
+TEST_F(BacktestChangeBarPnlTest, ARollOfTheVendorsSeriesCarriesNoSplit) {
+    const std::vector<Bar> xa = {bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"), bar(3, 110, "B"),
+                                 bar(4, 111, "B"), bar(5, 112, "B")};
+    for (int d = 0; d < static_cast<int>(xa.size()); ++d) {
+        ASSERT_TRUE(coord_->process_portfolio_day(wday(d), {xa[d]}, pm_, execs_, equity_, risk_, false,
+                                                  1'000'000.0)
+                        .is_ok());
+    }
+    int rolls = 0;
+    for (const auto& e : execs_) {
+        if (e.execution_type == ExecutionType::ROLL) ++rolls;
+        EXPECT_FALSE(e.roll_bar_move.has_value());
+        EXPECT_FALSE(e.roll_gap_points.has_value());
+        EXPECT_FALSE(e.roll_gap_value.has_value());
+    }
+    EXPECT_EQ(rolls, 2);
+}
+
+// Short 2: the closing leg's split is signed with the position, as the coordinator books
+// it: a crossover from 103 to A's 104 is -2 x 1 x 50 = -100 (the cycle's own P&L), the gap 6 points, its
+// value -2 x 6 x 50 = -600.
+class BacktestPerContractShortTest : public BacktestPerContractPnlTest {
+protected:
+    void SetUp() override {
+        BacktestPerContractPnlTest::SetUp();
+        static int n = 0;
+        pm_ = std::make_shared<PortfolioManager>(plain_config(), "PM_PNL_SHORT_" + std::to_string(++n));
+        StrategyConfig sc;
+        sc.capital_allocation = 1'000'000.0;
+        sc.max_leverage = 10.0;
+        sc.asset_classes = {AssetClass::FUTURES};
+        sc.frequencies = {DataFrequency::DAILY};
+        auto s = std::make_shared<HoldMinusTwo>("PNL_SHORT_" + std::to_string(n), sc, db_);
+        ASSERT_TRUE(s->initialize().is_ok());
+        ASSERT_TRUE(s->start().is_ok());
+        ASSERT_TRUE(pm_->add_strategy(s, 1.0, false).is_ok());
+    }
+};
+
+TEST_F(BacktestPerContractShortTest, AShortsClosingLegCarriesItsSignedSplit) {
+    const auto b = book({bar(0, 100, "A"), bar(1, 101, "A"), bar(2, 103, "A"),
+                         rolled(bar(3, 110, "B"), 104, "A", RollFromKind::KNOWN),
+                         rolled(bar(4, 111, "B"), 105, "A", RollFromKind::AFTER_ROLL), bar(5, 112, "B")});
+    std::vector<ExecutionReport> legs;
+    for (const auto& e : execs_) if (e.execution_type == ExecutionType::ROLL) legs.push_back(e);
+    ASSERT_EQ(legs.size(), 2u);
+    ASSERT_TRUE(legs[0].roll_bar_move.has_value());
+    EXPECT_EQ(legs[0].side, Side::BUY) << "the closing leg of a short buys";
+    EXPECT_NEAR(*legs[0].roll_bar_move, -100.0, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_bar_move, b.move.at(1), 1e-6) << "the move the roll bar booked";
+    EXPECT_NEAR(*legs[0].roll_gap_points, 6.0, 1e-9);
+    EXPECT_NEAR(*legs[0].roll_gap_value, -600.0, 1e-9);
+    EXPECT_FALSE(legs[1].roll_bar_move.has_value());
 }

@@ -18,7 +18,7 @@ namespace {
 // Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (also accepting the 'T'
 // separator) as MICROSECONDS since the Unix epoch. UTC by construction --
 // timegm, never mktime, because a stored timestamptz is already a UTC instant
-// and mktime would re-interpret it in the host zone (E2-F22).
+// and mktime would re-interpret it in the host zone.
 //
 // Returns false on anything else, so a caller can distinguish "not a datetime"
 // from a datetime at the epoch.
@@ -107,7 +107,7 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         }
     }
 
-    // An empty result is an empty set of bars (T-ROLLX-FIX commit 5, finding 2): a table with no
+    // An empty result is an empty set of bars: a table with no
     // row need not carry a chunk in any column, and chunk(0) of such a column is past the end.
     if (table->num_rows() == 0) {
         return Result<std::vector<Bar>>(std::vector<Bar>{});
@@ -122,11 +122,63 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         auto low_array = table->GetColumnByName("low")->chunk(0);
         auto close_array = table->GetColumnByName("close")->chunk(0);
         auto volume_array = table->GetColumnByName("volume")->chunk(0);
-        // T-ROLLX: the futures loader's eighth column, the kept print's vendor instrument id;
+        // The futures loader's eighth column, the kept print's vendor instrument id;
         // absent on an equity table, NULL where the raw table has no such print (both: empty).
         std::shared_ptr<arrow::Array> instrument_id_array;
         if (auto id_column = table->GetColumnByName("instrument_id"); id_column != nullptr) {
             instrument_id_array = id_column->chunk(0);
+        }
+        // The per-contract source's roll field (Bar::roll_from): roll_from_close, roll_from_id and
+        // roll_from_kind, and where present roll_from_date and roll_from_volume (RollFrom::volume),
+        // columns that only its table carries, NULL where the field is absent.
+        std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array,
+            roll_date_array, roll_volume_array;
+        if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
+            roll_close_array = c->chunk(0);
+            auto i = table->GetColumnByName("roll_from_id");
+            auto k = table->GetColumnByName("roll_from_kind");
+            if (i == nullptr || k == nullptr) {
+                return make_error<std::vector<Bar>>(
+                    ErrorCode::INVALID_DATA,
+                    "roll_from_close without roll_from_id and roll_from_kind",
+                    "DataConversionUtils");
+            }
+            roll_id_array = i->chunk(0);
+            roll_kind_array = k->chunk(0);
+            if (auto dc = table->GetColumnByName("roll_from_date"); dc != nullptr) {
+                roll_date_array = dc->chunk(0);
+            }
+            if (auto vc = table->GetColumnByName("roll_from_volume"); vc != nullptr) {
+                roll_volume_array = vc->chunk(0);
+            }
+        }
+        // Carry: the per-contract source's carry quote (Bar::carry), five
+        // columns that only its table with carry on carries, NULL where the day has no quote.
+        std::shared_ptr<arrow::Array> carry_held_close_array, carry_other_close_array,
+            carry_months_array, carry_held_symbol_array, carry_other_symbol_array;
+        if (auto c = table->GetColumnByName("carry_held_close"); c != nullptr) {
+            auto oc = table->GetColumnByName("carry_other_close");
+            auto mc = table->GetColumnByName("carry_months");
+            auto hs = table->GetColumnByName("carry_held_symbol");
+            auto os = table->GetColumnByName("carry_other_symbol");
+            if (oc == nullptr || mc == nullptr || hs == nullptr || os == nullptr) {
+                return make_error<std::vector<Bar>>(
+                    ErrorCode::INVALID_DATA,
+                    "carry_held_close without carry_other_close, carry_months, carry_held_symbol "
+                    "and carry_other_symbol",
+                    "DataConversionUtils");
+            }
+            carry_held_close_array = c->chunk(0);
+            carry_other_close_array = oc->chunk(0);
+            carry_months_array = mc->chunk(0);
+            carry_held_symbol_array = hs->chunk(0);
+            carry_other_symbol_array = os->chunk(0);
+        }
+
+        // The per-contract source's own_contract_volume (Bar::own_contract_volume)
+        std::shared_ptr<arrow::Array> own_volume_array;
+        if (auto c = table->GetColumnByName("own_contract_volume"); c != nullptr) {
+            own_volume_array = c->chunk(0);
         }
 
         // Prepare result vector
@@ -177,6 +229,74 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                                                         "DataConversionUtils");
                 }
                 bar.instrument_id = id_result.value();
+            }
+            if (roll_close_array && !roll_close_array->IsNull(i)) {
+                auto close_from = extract_double(roll_close_array, i);
+                auto id_from = extract_string(roll_id_array, i);
+                if (close_from.is_error() || id_from.is_error() || roll_kind_array->IsNull(i)) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting the roll field at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                const int8_t kind = std::static_pointer_cast<arrow::Int8Array>(roll_kind_array)->Value(i);
+                if (kind < 0 || kind > static_cast<int8_t>(RollFromKind::AFTER_SOURCE_CHANGE)) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Unknown roll_from_kind " + std::to_string(kind) + " at row " +
+                            std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.roll_from = RollFrom{
+                    close_from.value(), id_from.value(), static_cast<RollFromKind>(kind), {}};
+                if (roll_date_array && !roll_date_array->IsNull(i)) {
+                    auto date_from = extract_string(roll_date_array, i);
+                    if (date_from.is_error()) {
+                        return make_error<std::vector<Bar>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Error extracting the roll field's date at row " + std::to_string(i),
+                            "DataConversionUtils");
+                    }
+                    bar.roll_from->date = date_from.value();
+                }
+                if (roll_volume_array && !roll_volume_array->IsNull(i)) {
+                    auto volume_from = extract_double(roll_volume_array, i);
+                    if (volume_from.is_error()) {
+                        return make_error<std::vector<Bar>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Error extracting the roll field's volume at row " + std::to_string(i),
+                            "DataConversionUtils");
+                    }
+                    bar.roll_from->volume = volume_from.value();
+                }
+            }
+            if (carry_held_close_array && !carry_held_close_array->IsNull(i)) {
+                auto held_close = extract_double(carry_held_close_array, i);
+                auto other_close = extract_double(carry_other_close_array, i);
+                auto held_symbol = extract_string(carry_held_symbol_array, i);
+                auto other_symbol = extract_string(carry_other_symbol_array, i);
+                if (held_close.is_error() || other_close.is_error() || held_symbol.is_error() ||
+                    other_symbol.is_error() || carry_months_array->IsNull(i) ||
+                    carry_months_array->type_id() != arrow::Type::INT32) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting the carry quote at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.carry = CarryQuote{
+                    held_close.value(), other_close.value(),
+                    std::static_pointer_cast<arrow::Int32Array>(carry_months_array)->Value(i),
+                    held_symbol.value(), other_symbol.value()};
+            }
+            if (own_volume_array && !own_volume_array->IsNull(i)) {
+                auto own = extract_double(own_volume_array, i);
+                if (own.is_error()) {
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::CONVERSION_ERROR,
+                        "Error extracting own_contract_volume at row " + std::to_string(i),
+                        "DataConversionUtils");
+                }
+                bar.own_contract_volume = own.value();
             }
 
             bars.push_back(bar);
@@ -283,7 +403,7 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
 }
 
 // ----------------------------------------------------------------------------
-// safe_get_* (Phase 5 §1.17a + §5d) -- type-aware chunked accessors. See the
+// safe_get_* -- type-aware chunked accessors. See the
 // header for the dispatch contract.
 // ----------------------------------------------------------------------------
 
@@ -392,9 +512,9 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                      column_name + " at row " + std::to_string(row));
                 return Result<int64_t>(static_cast<int64_t>(d));
             }
-            // E2-F37 / BA-14: temporal columns. The canonical schema stores dates as
-            // TimestampArray; without these cases such a column fell through to
-            // `default` and errored. The value is returned in the column's OWN unit
+            // Temporal columns. The canonical schema stores dates as
+            // TimestampArray; without these cases such a column would fall through to
+            // `default` and error. The value is returned in the column's OWN unit
             // (the canonical schema is microseconds, which is what
             // LiveDataLoader::load_previous_day_data reads) -- see the header.
             case arrow::Type::TIMESTAMP:
@@ -415,7 +535,7 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                     s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
                 }
                 // A FULLY integral string is an integer. `std::stoll` stops at the
-                // first non-digit, so "2026-09-02 00:00:00" used to come back as
+                // first non-digit, so "2026-09-02 00:00:00" would come back as
                 // 2026 -- a silent, plausible integer that is not a timestamp in any
                 // unit. Require the whole string to be consumed before believing it.
                 try {

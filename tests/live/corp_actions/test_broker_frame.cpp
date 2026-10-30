@@ -1,6 +1,6 @@
 // tests/live/corp_actions/test_broker_frame.cpp
 //
-// F-8 -- the adjusted-frame <-> broker-basis rule (docs/BROKER_BASIS_RECONCILIATION.md).
+// The adjusted-frame <-> broker-basis rule (docs/BROKER_BASIS_RECONCILIATION.md).
 //
 // Pure arithmetic, no database. These pin the two statements the rule makes that a
 // reconciliation cannot get wrong without either "fixing" a correct number or accepting a
@@ -10,7 +10,7 @@
 //   identity 3  the P&L gap is NOT zero, and its size is knowable
 //
 // The bare identity `ratio_change x avg_after == avg_before` already passes on the applier;
-// it is a tripwire on one event, not this rule. What is new here is the CHAIN (many events,
+// it is a tripwire on one event, not this rule. What this file adds is the CHAIN (many events,
 // inverted from the ledger) and the fact that a missing factor is UNKNOWN rather than 1.0.
 
 #include <gtest/gtest.h>
@@ -65,7 +65,7 @@ TEST(BrokerFrame, RawBasisRecoveredFromAdjustedBasisAndDividendChain) {
     // A CHAIN. Three dividends and a 4:1 split between the second and the third. The split
     // must contribute NOTHING -- both frames divide the basis by 4 -- so the answer is the
     // same whether it is in the list or not. Getting this wrong is off by the split factor,
-    // which is the shape of E2-F15 seen from the reconciliation side.
+    // which is the split-unit mismatch seen from the reconciliation side.
     const double r1 = broker_frame::dividend_basis_ratio(0.63, 100.00);
     const double r2 = broker_frame::dividend_basis_ratio(0.71, 112.50);
     const double r3 = broker_frame::dividend_basis_ratio(0.24, 30.00);
@@ -197,12 +197,11 @@ TEST(BrokerFrame, PnLGapEqualsDividendTimesBasisDistance) {
         EXPECT_NEAR(q * (M2 - b_book) - (q * (M2 - b_broker) + q * d), gap, 1e-9);
     }
 
-    // Case 3 -- a chain of two dividends and a split BETWEEN them (BA-23). The cash the
-    // broker actually paid is NOT `q * (0.63 + 0.24)`: the 0.63 was paid before a 4:1 split,
-    // when the holder had a quarter of today's shares. Both this derivation and the
-    // implementation used to sum the two per-share figures and charge them at today's count,
-    // which over-states the cash by the split factor -- the same size of error the whole
-    // comparison exists to detect, hidden because the test made the same mistake.
+    // Case 3 -- a chain of two dividends and a split BETWEEN them. The cash the broker
+    // actually paid is NOT `q * (0.63 + 0.24)`: the 0.63 was paid before a 4:1 split, when
+    // the holder had a quarter of today's shares. Summing the two per-share figures and
+    // charging them at today's count over-states the cash by the split factor -- the same
+    // size of error the whole comparison exists to detect.
     {
         const double b_broker = 90.0;
         const std::vector<broker_frame::AppliedEvent> chain = {
@@ -269,7 +268,7 @@ TEST(BrokerFrame, PnLGapEqualsDividendTimesBasisDistance) {
                     1e-9);
     }
 
-    // Case 5 -- a split and a dividend on the SAME ex-date (the E2-F47 bar shape). The
+    // Case 5 -- a split and a dividend on the SAME ex-date (one bar with both). The
     // per-bar feed emits the split row first and the applier applies it first, so the
     // dividend was paid at the POST-split count: its own bar's split is not in S_i. Order
     // within the vector must not matter -- the chain is sorted with splits first on a tie.

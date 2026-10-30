@@ -27,7 +27,7 @@ double BacktestMetricsCalculator::calculate_total_return(double start_value, dou
 
 double BacktestMetricsCalculator::calculate_annualized_return(double total_return, int trading_days,
                                                               double sessions_per_year) const {
-    // The CAGR, (1 + R)^(K / n) - 1 (T-8D R36): the live statistics' own function, so the
+    // The CAGR, (1 + R)^(K / n) - 1: the live statistics' own function, so the
     // backtest's annualised return and the live total_annualized_return are one formula.
     return grid_annualized_return(1.0 + total_return, trading_days, sessions_per_year);
 }
@@ -58,8 +58,8 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     double sessions_per_year,
     double risk_free_rate) const {
-    // No returns, no sessions a year, or no volatility to divide by: the ratio has no value
-    // (T-8D R12), which is not a measured 0.
+    // No returns, no sessions a year, or no volatility to divide by: the ratio has no value,
+    // which is not a measured 0.
     if (returns.empty() || !(sessions_per_year > 0.0)) {
         return kNoRatio;
     }
@@ -92,7 +92,7 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
 
     if (!(downside_vol > 0.0)) {
         // No return under the target: there is no downside to divide by, so the ratio has no
-        // value (T-8D R12). It was 999 with a mean at or above 0 and 0 with one below.
+        // value.
         return kNoRatio;
     }
 
@@ -102,7 +102,7 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
 }
 
 double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
-    // No drawdown to divide by: no value (T-8D R12). It was 999 or 0 by the return's sign.
+    // No drawdown to divide by: no value.
     if (!(max_drawdown > 0.0)) {
         return kNoRatio;
     }
@@ -220,7 +220,7 @@ double BacktestMetricsCalculator::calculate_cvar_95(const std::vector<double>& r
     std::sort(sorted_returns.begin(), sorted_returns.end());
 
     // The index calculate_var_95 reads: the tail is the returns up to AND INCLUDING the VaR
-    // observation (T-8D R36), so CVaR is never smaller than VaR.
+    // observation, so CVaR is never smaller than VaR.
     size_t var_index = static_cast<size_t>(returns.size() * 0.05);
     if (var_index >= sorted_returns.size()) {
         var_index = sorted_returns.size() - 1;
@@ -252,11 +252,11 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_ris
 
 namespace {
 
-// LOOP_SPEC v6.2 section 6.5: a trade held through a roll scores the held contracts' whole move, so
+// A trade held through a roll scores the held contracts' whole move, so
 // the open trade's entry price is carried across the roll by the leg gap,
 // entry := entry + (opening leg price - closing leg price), longs and shorts alike.
 //
-// T-ROLLX-FIX commit 5 (finding 11): the gap of a roll is read from the legs' OWN identity, never
+// The gap of a roll is read from the legs' OWN identity, never
 // from the order they arrive in. The legs of one (symbol, bar) are collected first; the bar's
 // rolls are resolved when the walk reaches the bar's first row of any type, so a STRATEGY fill
 // stored ahead of its bar's legs is scored against the carried entry too (the legs are priced on
@@ -399,8 +399,7 @@ private:
     std::map<std::pair<std::string, Timestamp>, Bar> bars_;
 };
 
-// The rank of a row inside a bar: ROLL legs, then the STRATEGY fills, then the BORROW rows
-// (LOOP_SPEC section 6.5).
+// The rank of a row inside a bar: ROLL legs, then the STRATEGY fills, then the BORROW rows.
 int type_rank(const ExecutionReport& e) {
     return e.execution_type == ExecutionType::ROLL       ? 0
            : e.execution_type == ExecutionType::STRATEGY ? 1
@@ -413,19 +412,19 @@ double signed_quantity(const ExecutionReport& e) {
 }
 
 // The pairing of the account's fills into trades, the one walk the trade statistics and the
-// per-symbol P&L both read (T-8D R11), so the two cannot part. Its rows are
+// per-symbol P&L both read, so the two cannot part. Its rows are
 // BacktestMetricsCalculator::account_fills' (the book's fills, netted between sleeves).
 //
 //   the tracker    one per contract: the account's net position and its average entry price.
 //   the rows       STRATEGY rows only. A ROLL leg and a BORROW row move no position and realise
 //                  nothing; a roll's leg gap is carried into the open entry once per contract
-//                  (section 6.5, RollEntryCarry) before the bar's first row is scored.
+//                  (RollEntryCarry) before the bar's first row is scored.
 //   the dollars    what the closed quantity made: quantity x (fill price - entry) x the side of the
 //                  position x the point value of the symbol, from the source the equity curve
 //                  reads (BacktestPnLManager::get_point_value: the metadata).
 //   the flip       a fill that takes the position through zero closes what was held and opens the
 //                  remainder at the fill price: the entry is reset there.
-//   flat           a position under 1e-9 contracts or shares after a fill is flat (T-8D R11 (d)):
+//   flat           a position under 1e-9 contracts or shares after a fill is flat:
 //                  fractional share quantities summed in binary leave a residue near 1e-14 after a
 //                  full close, which is no position; the next fill then opens, it is not a trade.
 //                  Stored quantities carry six decimals, so no real position is that small.
@@ -639,7 +638,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         const std::string& symbol = exec.symbol;
         const TradePairing::Fill fill = pairing.apply(exec);
 
-        // T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5; code review D1): a ROLL leg is mechanical. It
+        // A ROLL leg is mechanical. It
         // never moves the tracked position (the pair nets to 0 per sleeve), scores no trade and
         // leaves the open time. The open trade's entry price is carried across the roll by the leg
         // gap (opening leg price - closing leg price), so the trade's later close scores the move of
@@ -713,8 +712,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
             stats.total_loss / losing_trades : 0.0;
     }
 
-    // The profit factor divides by the losing trades' loss; with none it has no value (T-8D
-    // R12). It was 999 with a profit and no loss, and 0 with neither.
+    // The profit factor divides by the losing trades' loss; with none it has no value.
     stats.profit_factor = stats.total_loss > 0 ? stats.total_profit / stats.total_loss : kNoRatio;
 
     if (!holding_periods.empty()) {
@@ -858,7 +856,7 @@ StatisticsSeries BacktestMetricsCalculator::statistics_series(
         return StatisticsSeries();
     }
 
-    // The live statistics' own fold (T-8D R1, R6): the curve's first row is the book's start and
+    // The live statistics' own fold: the curve's first row is the book's start and
     // its level the base, so it is never a return row; every later grid date takes the last
     // level on or before it. A run on its own rows has every row's date as its grid.
     std::vector<DatedLevel> levels;
@@ -909,7 +907,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.total_return = calculate_total_return(
         filtered_curve.front().second, filtered_curve.back().second);
 
-    // The statistics grid (T-8D R1, R3): the rows after the warm-up folded onto the grid's
+    // The statistics grid: the rows after the warm-up folded onto the grid's
     // dates, and the returns taken on its levels. Every annualised figure below uses the grid's
     // own sessions a year, which the result records.
     const double sessions_per_year = grid.sessions_per_year;
@@ -930,7 +928,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.max_drawdown = calculate_max_drawdown(grid_curve);
 
     // Calmar ratio: the CAGR on the grid, (1 + R)^(K / n) - 1 with R from the base to the last
-    // grid level and n the grid's returns, over the maximum drawdown (T-8D R36)
+    // grid level and n the grid's returns, over the maximum drawdown
     results.annualized_return = calculate_annualized_return(
         calculate_total_return(grid_curve.front().second, grid_curve.back().second),
         results.statistics_days, sessions_per_year);
@@ -959,7 +957,7 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
     results.avg_holding_period = trade_stats.avg_holding_period;
     results.actual_trades = trade_stats.actual_trades;
 
-    // The statistics of migration 037 (LOOP_SPEC sections 7.4 and 10), on the same rows as the
+    // The statistics of migration 037, on the same rows as the
     // statistics above: the grid series of the rows after the warm-up, whose first row is the
     // base. The fill count is the trade statistics' own count of the account's fills.
     results.statistics_columns = backtest_statistics_columns(

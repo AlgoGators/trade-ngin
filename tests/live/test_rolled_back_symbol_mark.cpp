@@ -1,8 +1,8 @@
-// B-iv regression pins -- a holding that could not be priced must be MARKED at the level it
+// A holding that could not be priced must be MARKED at the level it
 // was carried at, so the row and the aggregate agree and the day still writes.
 //
-// THE DEFECT: execute_day_t rule 3 rolls an unpriceable holding back to its T-1 row
-// (live_daily_cycle.hpp:389-397) with `positions[symbol] = prev_it->second`, overwriting
+// THE HAZARD: execute_day_t rule 3 rolls an unpriceable holding back to its T-1 row
+// (LiveDailyCycle::execute_day_t) with `positions[symbol] = prev_it->second`, overwriting
 // only last_update. That copy carries the T-1 row's stored `unrealized_pnl` -- a LEVEL.
 //
 // The day-T aggregate is summed over `positions`, so it includes that carried level. But
@@ -10,21 +10,18 @@
 // the staleness bound has no entry in either `t1_closes` or `execution_prices`, so its row
 // is written with unrealized 0.
 //
-// Row says 0, aggregate says -402.65, and 3dc65a62's in-run unrealized identity is FATAL at
+// Row says 0, aggregate says -402.65, and the in-run unrealized identity check is FATAL at
 // 1e-4 on a trading day -- so the run exits 1 and the day is not written at all. The guard
 // that exists to catch a marking disagreement is triggered by the one case where the book is
 // behaving correctly: a symbol that genuinely did not trade.
 //
-// THE FIX: on rollback, carry the T-1 row's implied mark forward alongside the row, so the
-// row and the aggregate are computed from the same level. This is the same policy R-2
-// settled for the finalizer ("carry the last mark for an unprinted symbol"), applied to the
+// THE RULE: on rollback, carry the T-1 row's implied mark forward alongside the row, so the
+// row and the aggregate are computed from the same level. This is the policy the finalizer
+// applies ("carry the last mark for an unprinted symbol"), applied to the
 // day-T side. The mark is recovered from the row itself rather than from a price series --
 // there is no price series, which is why the symbol was rolled back.
 //
 //     unrealized = qty * (mark - basis)   =>   mark = basis + unrealized / qty
-//
-// Run R4 is the end-to-end evidence: a real delisted symbol, seeded held, run past the end
-// of its bars.
 
 #include <gtest/gtest.h>
 

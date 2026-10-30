@@ -430,6 +430,19 @@ DayResult rebalance(const DayInputs& in) {
         for (std::size_t a = 0; a < k; ++a) part_returns[d][a] = in.returns[d][out.participants[a]];
     }
     out.window = overlay::gate_window(part_returns, in.ordinals);
+    Vector part_sigma(k, 0.0);
+    for (std::size_t a = 0; a < k; ++a) {
+        const std::size_t i = out.participants[a];
+        part_sigma[a] = i < in.sizing_sigma.size() ? in.sizing_sigma[i] : 0.0;
+    }
+    // the carver window, for the record's carver readings; the book's own window on a carver book
+    overlay::GateWindow carver_window = out.window;
+    if (in.overlay_carver) {
+        overlay::carver_covariance(out.window, part_returns, in.ordinals, part_sigma);
+        carver_window = out.window;
+    } else {
+        overlay::carver_covariance(carver_window, part_returns, in.ordinals, part_sigma);
+    }
     Vector sigma_jump(k, 0.0);
     const double jump_factor = out.window.blind() ? 0.0 : std::sqrt(out.window.bars_per_year);
     for (std::size_t a = 0; a < k; ++a) {
@@ -576,6 +589,8 @@ DayResult rebalance(const DayInputs& in) {
     out.trim_capped = trimmed.capped;
     out.book = book;
     out.stored_readings = trimmed.readings;
+    out.carver_readings = overlay::readings(weights_of(target_book), carver_window, sigma_jump);
+    out.carver_stored_readings = overlay::readings(weights_of(book), carver_window, sigma_jump);
     out.over_limit = over_limit(out.stored_readings, in.limits);
     double u_max = 0.0;
     for (std::size_t a = 0; a < k; ++a) {

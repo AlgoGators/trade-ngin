@@ -1,7 +1,7 @@
 // The trend strategies' vol estimate is annualised by the bars a year the series actually has
-// (T-VOL C1). The per-bar EWMA stddev used to be multiplied by a fixed 16 (sqrt 256) on every
-// bar, including the Sunday session bars most futures print: a six-bar week then spreads the
-// same weekly variance over six bars and 16 understates the annual vol by about 8.6 percent.
+// (not a fixed 16, sqrt 256, on every bar: with the Sunday session bars most futures print, a
+// six-bar week spreads the same weekly variance over six bars and 16 understates the annual vol
+// by about 8.6 percent).
 //
 // Synthetic series: log returns alternate +r / -r, so the EWMA per-bar stddev settles at
 // r * (N - 1) / N for an EWMA span N (the EWMA mean oscillates at +/- r / N around zero). A
@@ -326,12 +326,12 @@ TYPED_TEST(VolAnnualisationTest, ForecastVolDoesNotDependOnTheCalendar) {
     EXPECT_NEAR(f6 / e6.attenuation, f5 / e5.attenuation, 1e-12 * std::abs(f6 / e6.attenuation));
 }
 
-// R-4 (T-7b-3): the factor is written to the log, per symbol per signal computation, with the
+// The factor is written to the log, per symbol per signal computation, with the
 // window it was counted over, so the live and backtest factors can be compared. The line's numbers
 // must be the ones the estimator was scaled by.
 //
 // Six-bar calendar of 997 bars: the first 900 in one call, then 97 daily calls, so 98 lines. The
-// count is over the trailing 256 bars (HD ruling 11, T-7b-3). The bulk call counts bars 644..899
+// count is over the trailing 256 bars. The bulk call counts bars 644..899
 // (2023-01-24..2023-11-17, 297 days); the last daily call counts bars 741..996
 // (2023-05-17..2024-03-10, 298 days): 255 returns x 365.25 / 298 = 312.5420 bars a year.
 TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
@@ -382,7 +382,7 @@ TYPED_TEST(VolAnnualisationTest, LogLineCarriesTheWindowAndTheFactorUsed) {
         << "vol6=" << vol6 << " vol5=" << vol5;
 }
 
-// HD ruling 11 (T-7b-3): the factor is counted over the trailing 256 bars the estimator has, so the
+// The factor is counted over the trailing 256 bars the estimator has, so the
 // engines agree on the same bars whatever history each loaded.
 //
 // The calendar changes density: 500 bars of five-bar weeks (2021-01-04..2022-12-02), then 600

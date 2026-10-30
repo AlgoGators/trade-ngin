@@ -40,8 +40,12 @@ struct PythonMailRequest {
     std::string date;  ///< YYYY-MM-DD, the day being sent
     std::string strategy_id;  ///< the strategy the day is stored under (combined id); may be empty
     bool no_session{false};  ///< the run found no session on the day before and carried its book
+    bool equities{false};    ///< an equity book: no futures notes, margin lines or symbols reference
     std::string alert;       ///< the run's risk-module failure (risk_module_failure_text), or empty
     std::vector<std::string> attachments;  ///< files the run exported, as paths
+    /// What the e-mail says about rolls with per_contract_rolls on (report_rolls_json), as JSON;
+    /// empty with the switch off.
+    std::string rolls_json;
     /// QT_MAIL_TEST_TO: send to this one address (no Cc). Empty: the portfolio's recipients.
     std::string test_to;
 };
@@ -49,7 +53,8 @@ struct PythonMailRequest {
 struct PythonMailSettings {
     std::string python{"/opt/rpc/venv/bin/python"};
     std::string app_dir{"/opt/rpc/app"};
-    std::chrono::milliseconds timeout{std::chrono::seconds(120)};
+    // Above the module's own limits: four SMTP steps of 30 s each, the reads and the charts.
+    std::chrono::milliseconds timeout{std::chrono::seconds(300)};
 };
 
 /// QT_MAIL_PYTHON, QT_MAIL_APP, QT_MAIL_TIMEOUT (seconds) over the defaults.

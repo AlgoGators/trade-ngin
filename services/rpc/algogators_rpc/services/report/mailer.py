@@ -56,8 +56,15 @@ def send_message(cfg, to, cc, email, attachments=()):
         server = smtplib.SMTP_SSL(cfg.host, cfg.port, context=context, timeout=30)
     else:
         server = smtplib.SMTP(cfg.host, cfg.port, timeout=30)
-    with server:
+    try:
         if cfg.port != 465 and cfg.use_tls:
             server.starttls(context=context)
         server.login(cfg.username, cfg.password)
         server.send_message(message, to_addrs=list(to) + list(cc))
+    finally:
+        # Once send_message returned the server holds the message: a failed QUIT or a dropped
+        # connection after it must not report the send as failed (the engine would send again).
+        try:
+            server.quit()
+        except Exception:  # noqa: BLE001 - the goodbye's outcome is not the send's
+            server.close()

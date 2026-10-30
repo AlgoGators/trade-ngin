@@ -201,11 +201,11 @@ def test_cme_closure_applies_only_when_every_held_group_was_closed():
     assert holiday_name(date(2025, 12, 25), []) == "Christmas Day"  # every group closed
 
 
-# --- per-sleeve tables and migration 040's stored marks ---------------------------------------
+# --- per-sleeve tables and migration 041's stored marks ---------------------------------------
 
 
 def _sleeves_rows(**over):
-    """Two sleeves, one symbol held by both, rows written by a binary of migration 040."""
+    """Two sleeves, one symbol held by both, rows written by a binary of migration 041."""
     return _rows(
         positions=[
             {"strategy_name": "TREND_FOLLOWING", "symbol": "ES.v.0", "quantity": 2,
@@ -271,8 +271,8 @@ def test_the_settled_table_shows_the_settles_prices_and_its_marks():
     assert [n for n, _ in report.notes] == [1, 2, 3]
 
 
-def test_rows_settled_before_migration_040_carry_no_notes():
-    report = _report()  # the rows of _rows() have no migration-040 columns
+def test_rows_settled_before_migration_041_carry_no_notes():
+    report = _report()  # the rows of _rows() have no migration-041 columns
     assert report.notes == ()
     assert all(p.note == 0 for p in report.positions)
 
@@ -302,7 +302,7 @@ def test_the_annualized_return_is_labelled_while_under_a_year_of_sessions():
     assert "Annualized return (extrapolated: under one year of sessions)" in labels(young)
     grown = _report(latest=_latest(total_days=400, statistics_sessions_per_year=311.0574))
     assert "Annualized return" in labels(grown)
-    unknown = _report()  # a row written before migration 040: no K, no label
+    unknown = _report()  # a row written before migration 041: no K, no label
     assert "Annualized return" in labels(unknown)
 
 
@@ -318,3 +318,91 @@ def test_the_sleeved_report_renders_its_tables_and_notes():
     email = HtmlReportRenderer().render_daily(_sleeves_report())
     assert email.html.count("Trend Following Fast") >= 2  # positions and the settled table
     assert "No price received that day" in email.html and "<sup" in email.html
+
+
+# --- the review's fixes ---------------------------------------------------------------------------
+
+
+def test_a_statistic_stored_null_has_no_line_never_a_zero():
+    report = _report(latest=_latest(equity_to_margin_ratio=None, margin_cushion=None,
+                                    sharpe_ratio=None))
+    labels = [m.label for m in report.metrics]
+    assert "Equity-to-margin ratio" not in labels and "Margin cushion" not in labels
+    assert "Sharpe ratio" not in labels and "Sortino ratio" in labels
+
+
+def test_a_row_with_no_account_value_is_no_report():
+    assert _detail(latest=_latest(current_portfolio_value=None)) is None
+
+
+def test_an_equity_book_has_its_own_notes_and_no_futures_sections():
+    flags = ReportFlags(equities=True)
+    report = _report(flags)
+    labels = [m.label for m in report.metrics]
+    for gone in ("Sizing capital", "Equity-to-margin ratio", "Margin cushion", "Roll costs"):
+        assert gone not in labels, gone
+    assert report.symbols == ()
+    assert report.footnotes[0] == "This strategy is based on daily OHLCV data for equity assets."
+    assert not any("tradeable universe" in n for n in report.footnotes)
+
+
+def test_the_settled_table_is_labelled_with_the_settled_rows_own_date():
+    # an equity Monday settles Friday: the table says Friday, as the previous-day box does
+    prev = {**_previous(), "date": date(2026, 10, 16)}
+    report = _report(previous=prev)
+    assert report.realized_label == "2026-10-16" == report.previous_day_label
+
+
+def test_a_borrow_row_is_neither_a_trade_nor_a_roll_leg():
+    rows = _rows()
+    borrow = {**rows["executions"][0], "execution_type": "BORROW", "quantity": 0}
+    report = _report(executions=[*rows["executions"], borrow])
+    assert len(report.executions) == 1 and len(report.roll_legs) == 1
+
+
+ROLLS = {
+    "lines": ["Silver, December to March: market move booked -$1,075; contract price difference "
+              "0.670 ($3,350, not profit or loss); roll cost $45.29."],
+    "rollover": [{"label": "SI", "held": "SIZ6", "target": "SIH7", "by": "11-20",
+                  "deadline": "11-25", "deadline_kind": "first notice"}],
+    "front_month": {"ES": "ESZ6"},
+    "contract_months": {"ES": "Mar Jun Sep Dec"},
+    "footer": "Each position is held in the front contract of its cycle and rolled to the next one "
+              "before the first notice day or the last trading day.",
+    "roll_bar_note": "Contract rolled that day. The old contract's move that day is booked; the price "
+                     "difference between the two contracts is not profit or loss.",
+    "roll_bar_symbols": ["NQ.v.0"],
+}
+
+
+def test_the_engines_roll_texts_reach_the_report():
+    cfg = {"id": "qt", "name": "Trend Following", "description": "", "initial_equity": 500000.0,
+           "portfolio_id": "P", "strategy_type": "S"}
+    payload = build_daily_payload(
+        build_strategy_detail(cfg, _rows()), "QT_C", "QT C", date(2026, 10, 21),
+        symbols={"rows": [{"db": "ES", "ib": "ES", "name": "E-mini S&P", "months": "HMUZ"}],
+                 "missing": []},
+        flags=ReportFlags(rolls=ROLLS),
+    )
+    report = parse_daily_report(payload)
+    assert report.roll_lines == tuple(ROLLS["lines"])
+    assert report.rollover[0]["held"] == "SIZ6"
+    assert (report.symbols[0].front_month, report.symbols[0].months) == ("ESZ6", "Mar Jun Sep Dec")
+    assert report.footnotes[0].endswith("the first notice day or the last trading day.")
+    nq = next(r for r in report.realized if r.symbol == "NQ")
+    assert dict(report.notes)[nq.note] == ROLLS["roll_bar_note"]
+    html = HtmlReportRenderer().render_daily(report).html
+    for needle in ("Rollover notice", "SIH7", "Front month", "ESZ6", "Silver, December to March"):
+        assert needle in html, needle
+
+
+def test_a_chart_that_cannot_be_drawn_costs_that_chart_only(monkeypatch):
+    from algogators_rpc.services.report import charts
+
+    def boom(_points):
+        raise ValueError("no")
+
+    monkeypatch.setattr(charts, "drawdown", boom)
+    email = HtmlReportRenderer().render_daily(_report())
+    assert "Drawdown from the peak: not shown (ValueError)" in email.html
+    assert "drawdown" not in email.images and "equity" in email.images

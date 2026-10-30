@@ -1,6 +1,6 @@
 // tests/live/test_live_roll_write_order.cpp
 //
-// T-ROLLX-FIX commit 5 (LOOP_SPEC v6.2 sections 6.5, 7), the parts of the fix-up that live in the two
+// The roll write order: the parts that live in the two
 // runners' main() and in the backtest's catch blocks, where no fixture can drive them: pinned on the
 // source text of both twins. Their behaviour is proven by the replays (a run killed before the leg
 // store, between the leg store and the Day T-1 re-write, and after it; a failing executions store on
@@ -10,15 +10,15 @@
 //       re-written: the stored row's contract is the state the legs are booked from, so a run
 //       stopped anywhere leaves either that state or the legs a re-run reads;
 //   3   a failed executions store while ROLL legs are owed is a ROLL_LEG STOP, exit 1, before any
-//       position or result is written, and (commit 6) before any execution row of any sleeve;
-//   4   (commit 6) what earlier runs booked of a late roll's moves is read from the stored rows;
+//       position or result is written, and before any execution row of any sleeve;
+//   4   what earlier runs booked of a late roll's moves is read from the stored rows;
 //   7   the unplaced-contract refusal names its remedy and says that it repeats;
-//   8   a stored book that cannot be read refuses the run (it was skipped silently);
+//   8   a stored book that cannot be read refuses the run (never skipped silently);
 //   10  the backtest's exception paths stop on an owed roll as its error return does;
 //   12  the two classifier-history ERROR lines carry the classifier's family.
 //
-// And finding 9: the arguments that defaulted to "nothing" (and so silently sized, settled or held
-// on the raw maps) are required.
+// And: the arguments that would default to "nothing" (and so silently size, settle or hold on
+// the raw maps) are required.
 
 #include <gtest/gtest.h>
 
@@ -118,7 +118,7 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
                                                "t1_position_rewrites) {",
                                           "======= Daily Position Report =======");
         EXPECT_NE(write.find("db->store_positions(finalized_positions,"), npos) << runner;
-        // T-DATED R3: no sweep is committed apart from its store. Every sleeve's rows of the day
+        // No sweep is committed apart from its store. Every sleeve's rows of the day
         // are replaced by the one-transaction call; the runners call no bare delete.
         EXPECT_EQ(src.find("db->delete_day_executions("), npos) << runner;
         EXPECT_EQ(src.find("db->delete_roll_executions("), npos) << runner;
@@ -128,11 +128,11 @@ TEST(LiveRollWriteOrder, TheDaysExecutionsAreStoredBeforeTheDayT1RowsAreReWritte
 }
 
 // 3. In both runners: the replace of the sleeves with ROLL legs that fails is a ROLL_LEG STOP that
-// returns 1 before the Day T-1 rows, the Day T rows and the results. Commit 6 (the lead's fix B): the
+// returns 1 before the Day T-1 rows, the Day T rows and the results. The
 // sleeves with legs are stored FIRST, in name order, all in one transaction, so the STOP leaves no
 // execution row of ANY sleeve of the run; the sweep and the stores of the sleeves without legs come
-// after it. (The STOP returned from inside a loop over an unordered map of sleeves: a sleeve
-// without legs iterated earlier had already committed its executions.)
+// after it. (A STOP returned from inside a loop over an unordered map of sleeves would leave a
+// sleeve without legs iterated earlier with its executions already committed.)
 TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositionsAndResults) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
@@ -181,7 +181,7 @@ TEST(LiveRollWriteOrder, AFailedExecutionsStoreWithRollLegsOwedStopsBeforePositi
     }
 }
 
-// Finding 4 (commit 6, the lead's ruling): what earlier runs booked of a late roll's moves is read
+// What earlier runs booked of a late roll's moves is read
 // from the stored rows, in both runners, above the sizing read: one read of the rows dated after the
 // stored state, late_booked_points per late symbol, the booked points added to settle_from. A
 // failed read and rows that cannot decide are each a ROLL_LEG STOP that returns 1 (above the
@@ -367,4 +367,88 @@ TEST(NoSilentDefaults, TheSettlementSizingAndHoldInputsAreRequired) {
     EXPECT_TRUE((kReadsSizing<LiveDataLoader&, DatabaseInterface&, const std::string&, const std::string&, Names,
                               const Timestamp&, double, Closes, Closes, PointValue, Symbols,
                               const LiveSizingCalendar&>));
+}
+
+// With migration 040, each runner attaches a per-contract roll's split to the legs
+// it just made, from the roll's points and the contract's multiplier (the one the P&L reads), before the
+// legs are logged and inserted, so the stored closing leg carries it; a roll with no points (the vendor's
+// series) attaches nothing.
+TEST(LiveRollWriteOrder, EachRunnerAttachesTheRollSplitToTheLegsItMakes) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "legs = roll_series::make_roll_legs(",
+                                          "roll_legs.insert(roll_legs.end(), legs.begin(), legs.end());");
+        ASSERT_FALSE(block.empty()) << runner;
+        const auto gate = block.find("if (r.roll_bar_points) {");
+        ASSERT_NE(gate, npos) << runner;
+        const auto pv = block.find("const double point_value = pnl_manager->get_point_value(r.symbol);", gate);
+        ASSERT_NE(pv, npos) << runner;
+        const auto attach = block.find("roll_series::attach_roll_split(legs, q, *r.roll_bar_points, point_value);", pv);
+        ASSERT_NE(attach, npos) << runner;
+        EXPECT_LT(attach, block.find("for (const auto& leg : legs) {")) << runner << ": before the legs are logged";
+        EXPECT_NE(block.find("INFO(\"ROLL_SPLIT \" + strategy_name", attach), npos) << runner;
+    }
+}
+
+// With the source on, each runner sets the rule's log floor to its T-1 (the bar a
+// run consumes for the first time; runs go on consecutive days) right after configuring the source.
+TEST(LiveRollWriteOrder, EachRunnerLogsTheRulesFallbacksFromItsT1) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const auto configured = src.find("contract_rolls::configure_per_contract_source(");
+        ASSERT_NE(configured, npos) << runner;
+        const auto floor = src.find("const std::string log_floor = core::format_utc_date(now - std::chrono::hours(24));",
+                                    configured);
+        ASSERT_NE(floor, npos) << runner;
+        EXPECT_NE(src.find("PerContractSource::instance().set_log_floor(contract_rolls::parse_ymd(log_floor));", floor),
+                  npos)
+            << runner;
+        EXPECT_LT(floor, src.find("auto symbols_result = db->get_symbols(")) << runner << ": before any bar is loaded";
+    }
+}
+
+// With the source on, each runner hands the report the roll footnote's symbols and the roll view,
+// asked through report_roll_query (executed by test_report_roll_query.cpp) with the run's roll status.
+// A source guard: it reads the runners' text.
+TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
+    for (const char* runner : kRunners) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        const std::string block = between(src, "report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;",
+                                          "if (has_today_row_metrics) {");
+        ASSERT_FALSE(block.empty()) << runner;
+        EXPECT_NE(block.find("if (contract_rolls::PerContractSource::instance().enabled()) {"), npos) << runner;
+        EXPECT_NE(block.find("report_context.settled_zero_kinds.per_contract_roll =\n"
+                             "                            t1_settlement.per_contract_roll_symbols;"), npos) << runner;
+        EXPECT_NE(block.find("report_context.rolls = db->report_roll_view("), npos) << runner;
+        EXPECT_NE(block.find("report_roll_query(yesterday_date_for_email, positions, strategy_positions_map,"), npos)
+            << runner;
+        EXPECT_NE(block.find("all_strategy_executions, roll_status),"), npos) << runner;
+        EXPECT_NE(block.find("report_tick_size);"), npos) << runner;
+    }
+}
+
+// Both live runners book no ROLL legs and owe none for a micro's change of price
+// source (ConfirmedRoll::price_source_change): the leg loop and the owed-roll stop both skip it, and the run
+// logs it as a PRICE_SOURCE_CHANGE line with its gap instead of ROLL_CONFIRMED.
+TEST(LiveRollWriteOrder, AChangeOfPriceSourceIsNeitherLeggedNorOwed) {
+    for (const char* runner : {"apps/strategies/live_portfolio.cpp", "apps/strategies/live_portfolio_conservative.cpp"}) {
+        const std::string src = read_source(runner);
+        ASSERT_FALSE(src.empty()) << runner;
+        EXPECT_NE(src.find("                    for (const auto& r : confirmed_rolls) {\n"
+                           "                        if (r.price_source_change) continue;  // no legs, no cost\n"
+                           "                        const auto held = prev_positions_map.find(r.symbol);"),
+                  std::string::npos)
+            << runner << ": the leg loop skips it";
+        EXPECT_NE(src.find("                for (const auto& r : confirmed_rolls) {\n"
+                           "                    if (r.price_source_change) continue;  // nothing to leg"),
+                  std::string::npos)
+            << runner << ": the price-source-change stop does not wait for its legs";
+        const size_t logged = src.find("INFO(\"PRICE_SOURCE_CHANGE \" + r.symbol");
+        const size_t confirmed = src.find("INFO(\"ROLL_CONFIRMED \" + r.symbol");
+        ASSERT_NE(logged, std::string::npos) << runner;
+        EXPECT_LT(logged, confirmed) << runner << ": logged in the same loop, before the rolls' line";
+    }
 }

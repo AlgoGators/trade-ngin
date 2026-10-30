@@ -21,7 +21,7 @@ inline std::string backtest_position_row_mark_value(bool no_bar) {
 /**
  * @brief Whether PostgresDatabase::store_backtest_positions writes a position's row: a row with
  *        a quantity always; a row closed to zero only on a book that keeps closed rows (a cash
- *        book, E2-F54) and only when it carries a realised flow (the live is_dead_row rule).
+ *        book) and only when it carries a realised flow (the live is_dead_row rule).
  *
  * The writer's own predicate, shared with the reader of the same rows in memory: the per-symbol
  * P&L of the statistics of migration 037 is taken on the rows the run stores, no others.

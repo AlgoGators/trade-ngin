@@ -1,7 +1,7 @@
-// positions.instrument_id (migration 016; LOOP_SPEC v6.1 section 7; T-ROLLX commit 2): a stored
+// positions.instrument_id (migration 016): a stored
 // futures position round-trips the contract it is held in, an empty id is stored NULL, and the
 // backtest's final_positions writer names the column. Through TRADE_NGIN_TEST_DSN only, on a
-// throwaway strategy id, every row deleted at the end.
+// test-only strategy id, every row deleted at the end.
 #include <gtest/gtest.h>
 #include <pqxx/pqxx>
 #include <chrono>

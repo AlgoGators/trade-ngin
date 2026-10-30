@@ -71,7 +71,9 @@ std::string python_mail_command(const PythonMailRequest& r, const PythonMailSett
                       shell_quote(r.portfolio_id) + " --date " + shell_quote(r.date);
     if (!r.strategy_id.empty()) cmd += " --strategy-id " + shell_quote(r.strategy_id);
     if (r.no_session) cmd += " --no-session";
+    if (r.equities) cmd += " --equities";
     if (!r.alert.empty()) cmd += " --alert " + shell_quote(r.alert);
+    if (!r.rolls_json.empty()) cmd += " --rolls " + shell_quote(r.rolls_json);
     for (const auto& path : r.attachments) {
         if (!path.empty()) cmd += " --attach " + shell_quote(path);
     }

@@ -4,12 +4,12 @@
 // account's book, and the runners sum the sleeves' rows per symbol (|q| x per-contract figure).
 // On a symbol the sleeves hold on the same side that sum is the account's: |a| + |b| = |a + b|.
 // On a symbol they hold on OPPOSITE sides it is not: TF +1 / FAST -1 posts margin on two
-// contracts the broker never holds (stored BASE rows: ZT.v.0 2025-11-08/09, MBT.v.0 2025-01-29).
-// HD 2026-09-19 and 2026-09-25 item 23 (T-7b-2 8b): opposite sleeves are kept gross per sleeve
+// contracts the broker never holds (stored rows: ZT.v.0 2025-11-08/09, MBT.v.0 2025-01-29).
+// Opposite sleeves are kept gross per sleeve
 // for attribution while the ACCOUNT holds the net (no dollars tied up at the broker). So an
 // opposed symbol's notional and margin are taken once, on the sleeves' net; every other symbol
 // keeps the per-sleeve accumulation in the same order, so a book with no opposed symbol reads
-// exactly as before. active_positions keeps counting the sleeves' rows.
+// as the plain per-sleeve sum. active_positions keeps counting the sleeves' rows.
 
 #pragma once
 

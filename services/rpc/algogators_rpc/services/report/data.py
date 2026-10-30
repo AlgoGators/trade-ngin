@@ -65,7 +65,7 @@ SELECT timestamp, equity FROM trading.equity_curve
 """
 
 # The book of one date, one row per sleeve and symbol (the latest written); a flatten (quantity 0)
-# hides the row. Migration 040's columns are read through to_jsonb, so a database without them
+# hides the row. Migration 041's columns are read through to_jsonb, so a database without them
 # still answers (NULL).
 _POSITIONS_OF = """
 SELECT * FROM (

@@ -314,8 +314,8 @@ TEST_F(DynamicOptimizerExtendedTest, ResultTrackingErrorEqualsPureTrackingErrorP
     EXPECT_NEAR(r.value().cost_penalty, 0.05, 1e-9);
 }
 
-// T-7b-2 9d (OPT-N1): this test used to pin the truncation (a cap of 3 stopped a 100-contract
-// book after 3 contracts). The configured max_iterations is now a floor: the greedy's pass cap is
+// The configured max_iterations is a floor, not a truncation (a cap of 3 does not stop a
+// 100-contract book after 3 contracts): the greedy's pass cap is
 // at least 2 x (the target book in contracts) + 1, so the book is reached: 100 adopted steps of
 // half a unit (20 contracts on each of 5 symbols) plus the empty pass that finds nothing.
 TEST_F(DynamicOptimizerExtendedTest, ConfiguredCapBelowTheBookIsAFloorNotATruncation) {
@@ -347,14 +347,14 @@ TEST_F(DynamicOptimizerExtendedTest, SerializeRoundTripPreservesValues) {
 
 }  // namespace dynamic_optimizer_extended_detail
 
-// ===== T-7b-2 9d (OPT-N1): the greedy's pass cap scales with the book =====
+// ===== The greedy's pass cap scales with the book =====
 // The greedy starts at zero and adopts one contract of one symbol per pass, so a target of L
 // contracts (shorts included: the long-only write-back discards short asks only after the
-// optimizer) needs at least L passes. A constant cap of 100 truncated every book above 100
-// contracts (T-VOL: 333 of 368 lap-1 greedy calls at 5x capital). These tests pin that the book is
-// no longer truncated AND that nothing else about the greedy moved: the answer equals a verbatim
-// copy of the parent's greedy (e9994839) run with its cap lifted, and, on a book the parent never
-// capped, equals the parent's greedy at the configured cap in positions and pass count.
+// optimizer) needs at least L passes; a constant cap of 100 would truncate every book above 100
+// contracts. These tests pin that the book is not truncated AND that nothing else about the greedy
+// differs: the answer equals a reference greedy with a constant cap (parent_greedy) run with its cap
+// lifted, and, on a book the constant cap never reaches, equals the reference at the configured cap
+// in positions and pass count.
 namespace opt_n1_detail {
 
 using namespace trade_ngin;
@@ -367,8 +367,8 @@ struct RefResult {
     bool converged;
 };
 
-// Verbatim copy of DynamicOptimizer::optimize_single_period's greedy at e9994839 with the cap as a
-// parameter (the parent read config_.max_iterations).
+// DynamicOptimizer::optimize_single_period's greedy with a constant pass cap, the cap as a parameter
+// (the constant-cap greedy reads config_.max_iterations).
 RefResult parent_greedy(const DynamicOptConfig& cfg, int cap, const std::vector<double>& actual,
                         const std::vector<double>& target_positions,
                         const std::vector<double>& costs,
@@ -538,9 +538,9 @@ double book_contracts(const std::vector<double>& pos, const std::vector<double>&
     return s;
 }
 
-// T-VOL's 2025-10-07 target at 5x capital: 284 contracts, 244 long + 40 short. With unit weights,
+// A 2025-10-07 target at 5x capital: 284 contracts, 244 long + 40 short. With unit weights,
 // identity covariance and no cost the greedy's answer is the target itself after 284 adopted steps
-// and one empty pass. The parent stops at 100 contracts (iterations 101, not converged).
+// and one empty pass. A constant cap of 100 stops at 100 contracts (iterations 101, not converged).
 TEST(OptN1GreedyCap, TargetOf284ContractsIsReachedNotTruncatedAt100) {
     DynamicOptConfig cfg = production_config();
     DynamicOptimizer opt(cfg);
@@ -571,8 +571,8 @@ TEST(OptN1GreedyCap, TargetOf284ContractsIsReachedNotTruncatedAt100) {
 }
 
 // A correlated, costed 36-symbol book of about 284 contracts (40 short), production config: the
-// answer is exactly the parent's greedy with its cap lifted (same picks, same order, same passes),
-// and the parent at cap 100 is truncated on the same inputs (so this book exercises the defect).
+// answer is exactly the reference greedy with its cap lifted (same picks, same order, same passes),
+// and the reference at cap 100 is truncated on the same inputs (so this book exercises the cap).
 TEST(OptN1GreedyCap, LargeCorrelatedBookEqualsTheUncappedParentGreedy) {
     DynamicOptConfig cfg = production_config();
     DynamicOptimizer opt(cfg);
@@ -581,7 +581,7 @@ TEST(OptN1GreedyCap, LargeCorrelatedBookEqualsTheUncappedParentGreedy) {
         RefResult capped = parent_greedy(cfg, 100, b.current, b.target, b.costs, b.w, b.cov);
         RefResult uncapped = parent_greedy(cfg, std::numeric_limits<int>::max() - 1, b.current,
                                            b.target, b.costs, b.w, b.cov);
-        ASSERT_EQ(capped.iterations, 101) << "seed " << seed;  // the parent stops at the cap
+        ASSERT_EQ(capped.iterations, 101) << "seed " << seed;  // the constant cap stops it
         ASSERT_FALSE(capped.converged) << "seed " << seed;
         ASSERT_TRUE(uncapped.converged) << "seed " << seed;
         ASSERT_GT(uncapped.iterations, 101) << "seed " << seed;
@@ -597,9 +597,9 @@ TEST(OptN1GreedyCap, LargeCorrelatedBookEqualsTheUncappedParentGreedy) {
     }
 }
 
-// Today's size (T-VOL 1x: at most 52 target contracts, at most 51 passes): on books the parent
-// never capped, the answer AND the pass count are the parent's at the configured cap of 100.
-// Passes on the parent and on the fix (a pin, not a red test).
+// The book's size at 1x capital (at most 52 target contracts, at most 51 passes): on books the
+// constant cap never reaches, the answer AND the pass count are the reference's at the configured
+// cap of 100 (a pin, not a red test).
 TEST(OptN1GreedyCap, SmallBookGivesTheParentsAnswerAndPassCount) {
     DynamicOptConfig cfg = production_config();
     DynamicOptimizer opt(cfg);
@@ -609,7 +609,7 @@ TEST(OptN1GreedyCap, SmallBookGivesTheParentsAnswerAndPassCount) {
         Book b = make_book(seed, l1, (seed % 4) * 0.05, /*whole_contracts=*/seed % 2 == 0);
         RefResult ref =
             parent_greedy(cfg, cfg.max_iterations, b.current, b.target, b.costs, b.w, b.cov);
-        ASSERT_TRUE(ref.converged) << "seed " << seed;  // the parent was not capped here
+        ASSERT_TRUE(ref.converged) << "seed " << seed;  // the constant cap is not reached here
         ASSERT_LE(ref.iterations, 100) << "seed " << seed;
         auto r = opt.optimize_single_period(b.current, b.target, b.costs, b.w, b.cov);
         ASSERT_TRUE(r.is_ok());

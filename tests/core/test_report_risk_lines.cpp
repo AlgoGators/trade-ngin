@@ -1,9 +1,9 @@
 // tests/core/test_report_risk_lines.cpp
 //
-// HD 2026-10-10: the report and the console print the overlay's expected risk of the stored book
+// The report and the console print the overlay's expected risk of the stored book
 // as a percent of the sizing capital beside the risk target, and the one-day 95 percent VaR in
-// dollars, in place of "Portfolio VaR" (trading.live_results.portfolio_var, a price-weighted
-// figure with no contract multiplier, still stored unchanged).
+// dollars, rather than "Portfolio VaR" (trading.live_results.portfolio_var, a price-weighted
+// figure with no contract multiplier, which is still stored).
 
 #include <gtest/gtest.h>
 

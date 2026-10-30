@@ -75,20 +75,20 @@ inline VolAnnualisation vol_annualisation(const std::deque<Timestamp>& timestamp
 }
 
 /**
- * @brief The count window of the strategies' annualisation (HD ruling 11, T-7b-3, review R-4).
+ * @brief The count window of the strategies' annualisation.
  *
  * The bars a year are counted over the trailing 256 bars the estimator has for the symbol as of
  * the signal bar, never over the whole loaded history. The whole history differs by engine (live
  * loads 730 calendar days, about 600 bars; the backtest's history grows from its 256-bar warm-up to
  * the 756-bar cap; a 5-year and a 2-year backtest hold different histories on the same date), so a
- * count over it gave each engine its own factor on the same bars. Over the trailing 256 bars every
- * engine holding the same bars counts the same bars and gets the same factor.
+ * count over it would give each engine its own factor on the same bars. Over the trailing 256
+ * bars every engine holding the same bars counts the same bars and gets the same factor.
  *
  * A series with fewer than 256 bars counts over what it has (all its bars; the VOL_ANNUALISATION
- * line then shows bars < 256), and fewer than two bars fall back to 16 as before.
+ * line then shows bars < 256), and fewer than two bars fall back to 16.
  *
- * 256 is a literal, not read from a strategy parameter: it is the bar count HD ruled, the year of
- * daily bars behind Carver's 16 = sqrt(256), and it must be the same for every trend class (Fast's
+ * 256 is a literal, not read from a strategy parameter: it is the year of daily bars behind
+ * Carver's 16 = sqrt(256), and it must be the same for every trend class (Fast's
  * longest EMA is 64, Slow's 512; vol_lookback_long is 252), which no per-strategy parameter is.
  */
 inline constexpr size_t kVolAnnualisationWindowBars = 256;

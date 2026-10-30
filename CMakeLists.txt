@@ -179,6 +179,15 @@ set(TRADE_NGIN_SOURCES
     src/data/listing_dates.cpp
     src/data/market_data_source.cpp
     src/data/roll_series.cpp
+    src/data/roll_calendar.cpp
+    src/data/contract_bars.cpp
+    src/data/roll_cycle.cpp
+    src/data/carry_quote.cpp
+    src/data/contract_roll_rule.cpp
+    src/data/contract_rolls.cpp
+    src/data/per_contract_source.cpp
+    src/data/report_roll_view.cpp
+    src/live/report_roll_query.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
@@ -215,6 +224,7 @@ set(TRADE_NGIN_SOURCES
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
     src/strategy/trend_estimator.cpp
+    src/strategy/carry_estimator.cpp
     src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp

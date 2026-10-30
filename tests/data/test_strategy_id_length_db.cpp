@@ -1,4 +1,4 @@
-// E2-F36 / REG-F9: the joined futures strategy id and the 50-character cap.
+// The joined futures strategy id and the identifier length cap.
 //
 // The futures runners store a JOINED strategy id -- "LIVE_" followed by every
 // enabled trend strategy's name (live_portfolio_conservative.cpp, around the
@@ -7,22 +7,17 @@
 //
 //   LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST_TREND_FOLLOWING_SLOW
 //
-// validate_strategy_id rejected anything over 50, so enabling a third strategy
-// would have made store_positions fail on a value the operator never typed.
+// A validator capped at 50 would make store_positions fail on a value the
+// operator never typed once a third strategy is enabled.
 //
-// These tests cover BOTH halves of what was done, including the half that is NOT
-// finished, because a test that only showed the cap raised would imply a third
-// strategy now works. It does not.
+// These tests cover every layer the id passes through:
 //
-//   1. the validator accepts the 62-character id (the cap raise);
-//   2. store_executions now runs the same identifier checks store_positions has
-//      always run (the asymmetry half);
-//   3. the 62-character id is now STORED, because migration 012 widened
+//   1. the validator accepts the 62-character id;
+//   2. store_executions runs the same identifier checks store_positions runs;
+//   3. the 62-character id is STORED, because migration 012 widens
 //      trading.positions / live_results / signals .strategy_id from varchar(50)
-//      to varchar(100). This half was outstanding when the file was written and
-//      the test asserted the failure; it now asserts the success, and it fails
-//      on any database where 012 has not been applied, which is the tripwire that
-//      matters from here on.
+//      to varchar(100). The test fails on any database where 012 has not been
+//      applied.
 //
 // Reachability gate matches tests/data/test_delete_stale_executions_scope_db.cpp.
 
@@ -105,7 +100,7 @@ protected:
         if (conn_.empty()) {
             if (require_db) {
                 FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not set, so the "
-                          "E2-F36 identifier length behaviour goes unverified";
+                          "identifier length behaviour goes unverified";
             }
             GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
@@ -146,15 +141,14 @@ protected:
     std::shared_ptr<PostgresDatabase> db_;
 };
 
-// 1. The cap raise: a 62-character joined id is no longer refused by the validator.
+// 1. The validator accepts a 62-character joined id.
 //
-// The store_executions half of this cannot carry the claim on its own. Before
-// the fix store_executions ran NO identifier validation, so a 62-character id
-// went through it either way and the assertion would have passed vacuously. The
-// load-bearing assertion is the second one: store_positions DOES validate, so
-// the error code it returns says which layer refused the id --
-// INVALID_ARGUMENT is the validator (the old 50 cap), DATABASE_ERROR is the
-// server (the varchar(50) column, which is the half still outstanding).
+// The store_executions half of this cannot carry the claim on its own: without
+// identifier validation in store_executions a 62-character id would go through
+// it either way and the assertion would pass vacuously. The load-bearing
+// assertion is the second one: store_positions DOES validate, so the error code
+// it returns says which layer refused the id -- INVALID_ARGUMENT is the
+// validator (a 50 cap), DATABASE_ERROR is the server (a varchar(50) column).
 TEST_F(StrategyIdLengthTest, TheJoinedThreeStrategyIdPassesTheValidator) {
     ASSERT_EQ(std::string(kJoinedId).size(), 62u);
 
@@ -189,7 +183,7 @@ TEST_F(StrategyIdLengthTest, TheJoinedThreeStrategyIdPassesTheValidator) {
     EXPECT_EQ(rows[0][0].as<std::string>(), kJoinedId);
 }
 
-// 2. The asymmetry: store_executions now validates identifiers as store_positions does.
+// 2. store_executions validates identifiers as store_positions does.
 TEST_F(StrategyIdLengthTest, StoreExecutionsRejectsTheSameIdentifiersStorePositionsRejects) {
     const char* hostile[] = {
         "",
@@ -212,13 +206,12 @@ TEST_F(StrategyIdLengthTest, StoreExecutionsRejectsTheSameIdentifiersStorePositi
     }
 }
 
-// 3. The half that WAS outstanding, now done. Migration 012 widened the three
-// narrow columns to the width trading.executions already had, so the joined id a
-// third enabled trend strategy produces can be stored everywhere it has to be.
+// 3. Migration 012 widens the three narrow columns to the width
+// trading.executions has, so the joined id a third enabled trend strategy
+// produces can be stored everywhere it has to be.
 //
-// This test fails on a database where 012 has not been applied. That is the
-// point: from here on the tripwire is the missing migration, not the missing
-// width.
+// This test fails on a database where 012 has not been applied: the tripwire is
+// the missing migration.
 TEST_F(StrategyIdLengthTest, TheThreeColumnsAreWideEnoughForTheJoinedId) {
     for (const char* t : {"positions", "live_results", "signals", "executions"}) {
         EXPECT_EQ(column_width(t), 100)

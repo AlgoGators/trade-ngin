@@ -1,10 +1,10 @@
-// K3, the netting adjustment (T-7b-2 8b; HD 2026-09-25 item 23: two credited fills).
+// The netting adjustment.
 //
-// Every number below is a real stored row: 6C.v.0 on 2026-04-24 and 2026-04-29 from the BASE
-// ten-day chain at 64db63f9 (runs/C9h/snap_base), and 6L.v.0 on 2025-11-13 from the BASE history
-// in the stage-3 clone (a partial cross: TF BUY 2, FAST SELL 1 at one price). The 04-29 account
-// cost C(2) is priced by the real TransactionCostManager on that fill's feed (own-day volume
-// 57,392, vol_mult 0.8, T-7b-2 C9h log), which also reproduces the stored C(1) to the digit.
+// Every number below is a real stored row: 6C.v.0 on 2026-04-24 and 2026-04-29 from a ten-day
+// BASE live chain, and 6L.v.0 on 2025-11-13 from the BASE history (a partial cross: TF BUY 2,
+// FAST SELL 1 at one price). The 04-29 account cost C(2) is priced by the real
+// TransactionCostManager on that fill's feed (own-day volume 57,392, vol_mult 0.8), which also
+// reproduces the stored C(1) to the digit.
 
 #include <gtest/gtest.h>
 
@@ -83,7 +83,7 @@ TEST(Netting, AThreeSleeveFullCrossOfUnequalSizesIsStillExact) {
 }
 
 // 6C.v.0 2026-04-29: both sleeves SELL 1, the account sells 2. One order of 2 costs more than
-// two orders of 1 (impact ~ |q|^1.5), so the adjustment is NEGATIVE (T-4b sign option (i)).
+// two orders of 1 (impact ~ |q|^1.5), so the adjustment is NEGATIVE.
 TEST(Netting, SameDirectionIsADebitPricedByTheRealCostModel) {
     trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     TransactionCostManager tcm;
@@ -166,7 +166,7 @@ TEST(Netting, ZeroCostLegsAreNotSplit) {
 
 // The identity on a sweep of sizes, both directions and crosses, priced by the real cost model:
 // the adjustments sum to credit_total exactly, the net costs sum to C(Q) exactly, and no
-// sleeve's net cost is negative (the C(q_i) weight; T-4b adversary).
+// sleeve's net cost is negative (the C(q_i) weight).
 TEST(Netting, TheIdentityHoldsExactlyAndNoNetCostIsNegative) {
     TransactionCostManager tcm;
     const double px = 0.7324;
@@ -194,7 +194,7 @@ TEST(Netting, TheIdentityHoldsExactlyAndNoNetCostIsNegative) {
 // The grouping writes the column on every row: 0 on a one-row symbol, the netted value on a
 // multi-row symbol, and one NETTING line per netted symbol-day.
 TEST(Netting, ApplyGroupsBySymbolAndWritesEveryRow) {
-    // C9h basechain 2026-04-25: the 6C lot moves back (TF SELL 1, FAST BUY 1) and FAST buys MBT.
+    // The BASE chain's 2026-04-25: the 6C lot moves back (TF SELL 1, FAST BUY 1) and FAST buys MBT.
     ExecutionReport tf_6c = exec("6C.v.0", Side::SELL, 1, 0.73325, "4.75835981");
     ExecutionReport ff_6c = exec("6C.v.0", Side::BUY, 1, 0.73325, "4.75835981");
     ExecutionReport ff_mbt = exec("MBT.v.0", Side::BUY, 1, 77960, "2.87279481");
@@ -234,7 +234,7 @@ TEST(Netting, ApplyPricesTheAccountOrderWithItsSymbolAndSignedQuantity) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The cost after netting (HD 2026-10-09): every total charges net_cost(fill), the fill's own cost
+// The cost after netting: every total charges net_cost(fill), the fill's own cost
 // MINUS the signed adjustment already on it. The three symbol-days below are real rows of the BASE
 // lookback-3 backtest (IBKR fees), priced here by a table of the cost model's own prices for them.
 // ---------------------------------------------------------------------------------------------
@@ -371,7 +371,7 @@ TEST(NetCost, AddNetCostsStartsFromTheGivenFillAndKeepsTheRunningTotal) {
     EXPECT_DOUBLE_EQ(add_net_costs(5.0, fills, fills.size()), 5.0);
 }
 
-// T-NETTING fix round: a ROLL leg and a BORROW row are never netted, so each must carry an
+// A ROLL leg and a BORROW row are never netted, so each must carry an
 // adjustment of exactly 0. One that does not is REFUSED wherever fills are summed (and by the
 // executions writer: test_executions_netting_column_db.cpp), never silently charged own cost in
 // one total and net cost in another, and never corrected.
@@ -409,7 +409,7 @@ TEST(UnnettedRows, ARollOrBorrowRowWithAnAdjustmentIsRefusedWhereFillsAreSummed)
     EXPECT_NEAR(add_net_costs(0.0, {strategy}), 5.415, 1e-12);
 }
 
-// T-NETTING fix round 2: the run's cost totals (backtest.results) through one function. Its ROLL
+// The run's cost totals (backtest.results) through one function. Its ROLL
 // AND its BORROW rows pass the refusal: a BORROW row is appended after its cycle's sum, so the
 // end-of-run totals are where one carrying an adjustment is first met.
 //

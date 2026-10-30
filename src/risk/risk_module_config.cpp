@@ -66,8 +66,8 @@ const char* const kCarverKeys[] = {"id",
                                    "min_gate_dates",
                                    "missing_symbol_policy"};
 
-// The old gate's three limits, retired on a module that carries the overlay's limits and on the
-// risk_reporting block of its book (LOOP_SPEC section 7.7).
+// The gate's own three limits, retired on a module that carries the overlay's limits and on the
+// risk_reporting block of its book.
 const char* const kRetiredGateKeys[] = {"var_limit", "jump_risk_limit", "max_correlation"};
 
 const char* const kReportingKeys[] = {"type",
@@ -118,7 +118,7 @@ public:
         // S6 first, so an `enabled` key gets its own words instead of S5's generic one.
         if (m.contains("enabled")) {
             return err(path_ +
-                       ".enabled was removed in schema 2 (HD Q8): a module the book does not run "
+                       ".enabled was removed in schema 2: a module the book does not run "
                        "is a module the book does not list");
         }
         // S4
@@ -166,8 +166,8 @@ public:
             }
             out.params = none;
         } else if (type == "carver") {
-            // C-2: make_risk_module hands every module the PORTFOLIO's capital, and the Carver
-            // module ignores RiskContext::capital by design (risk_module.hpp:72) and keeps the
+            // make_risk_module hands every module the PORTFOLIO's capital, and the Carver
+            // module ignores RiskContext::capital by design (RiskModule) and keeps the
             // RiskConfig::capital its gate divides by. A carver on a 30 % sleeve would therefore
             // measure that sleeve's leverage against 100 % of the book's money, so
             // max_gross_leverage 4.0 would be 13.3x of the sleeve's own. Portfolio scope only
@@ -178,8 +178,8 @@ public:
                            "Carver gate divides by the portfolio's capital, so at sleeve scope "
                            "its leverage limits would be read against the whole book's money");
             }
-            // LOOP_SPEC section 7.7: a module that carries the overlay's limits is the overlay.
-            // It requires the per-name cap and the trim cap, and the old gate's three limits are
+            // A module that carries the overlay's limits is the overlay.
+            // It requires the per-name cap and the trim cap, and the gate's own three limits are
             // retired on it: a file that still names one is refused, never read.
             const bool some_limit = m.contains("R_max") || m.contains("R_jump_max") ||
                                     m.contains("R_shock_max");
@@ -202,6 +202,7 @@ public:
                 }
                 required.push_back("per_name_cap");
                 required.push_back("trim_max");
+                required.push_back("overlay_covariance");
             }
             auto r = require_keys(m, required, type, {"R_max", "R_jump_max", "R_shock_max"});
             if (r.is_error()) return forward(r);
@@ -219,8 +220,15 @@ public:
                                        "got " + val(trim));
                 }
                 c.trim_max = trim.get<int>();
+                const auto& cov = m.at("overlay_covariance");
+                if (!cov.is_string() ||
+                    (cov.get<std::string>() != "sample" && cov.get<std::string>() != "carver")) {
+                    return err(path_ + ".overlay_covariance must be \"sample\" or \"carver\" (how "
+                                       "the overlay's covariance is built), got " + val(cov));
+                }
+                c.overlay_covariance = cov.get<std::string>();
             }
-            // LOOP_SPEC sections 4 and 12: the overlay's three risk limits, ratios to tau. All
+            // The overlay's three risk limits, ratios to tau. All
             // three or none; each a positive number.
             {
                 const bool any = m.contains("R_max") || m.contains("R_jump_max") ||
@@ -278,11 +286,9 @@ public:
             }
 
             // R7. The window is keyed on the bar timestamp and capped at `lookback_period`
-            // distinct DATES (CarverRiskModule::on_bars, since T-6b commit 9); nothing reads this
-            // key to choose anything else. "bars" used to be the unit and still sits in every
-            // production risk.json migrated before that commit, where it now says one thing
-            // while the code does another -- so it is a load error that names the fix, not a
-            // synonym (T-6b INTERIM ADVERSARIAL B-2).
+            // distinct DATES (CarverRiskModule::on_bars); nothing reads this key to choose
+            // anything else. A file that says "bars" says one thing while the code does
+            // another -- so it is a load error that names the fix, not a synonym.
             const auto& unit = m.at("lookback_unit");
             if (unit.is_string() && unit.get<std::string>() == "bars") {
                 return err(path_ +
@@ -308,7 +314,7 @@ public:
                            " dates) is shorter than min_gate_dates (" +
                            std::to_string(c.min_gate_dates) + " dates)");
             }
-            // R12 (T-6b INTERIM ADVERSARIAL B-5). F5 engages only when the window holds at least
+            // R12. F5 engages only when the window holds at least
             // kF5MinGateDates COMPLETE dates; below that the gate reads the unfiltered,
             // zero-filled window. `lookback_period` counts DISTINCT dates, of which F5 keeps only
             // the complete ones -- on the shipped futures books 252 distinct dates leave about
@@ -349,8 +355,8 @@ public:
                     m.at("_missing_symbol_policy_reason").get<std::string>();
             }
 
-            // A1 is implemented as of T-6b commit 9 (the date-keyed window; R7 above refuses the
-            // old "bars"). A2 is still refused, with the commit that will delete the refusal.
+            // A1 is implemented (the date-keyed window; R7 above refuses "bars"). A2 is refused
+            // until it is implemented.
             if (c.missing_symbol_policy != "ignore") {
                 return err(path_ + ".missing_symbol_policy \"" + c.missing_symbol_policy +
                            "\" is not implemented yet; only \"ignore\" (with its reason) is "
@@ -516,7 +522,7 @@ Result<void> parse_gating_fields(const std::string& prefix, const nlohmann::json
         const auto& corr = m.at("max_correlation");
         if (!corr.is_number() || !(corr.get<double>() > 0.0 && corr.get<double>() < 1.0)) {
             return fail(p + "max_correlation must be in (0, 1), got " + val(corr) +
-                        "; at 1.0 the correlation term can never bind (risk_manager.cpp:551 "
+                        "; at 1.0 the correlation term can never bind (the risk manager "
                         "clamps rho)");
         }
         *max_correlation = corr.get<double>();
@@ -536,7 +542,7 @@ Result<void> parse_gating_fields(const std::string& prefix, const nlohmann::json
         *jump_risk_limit = jump.get<double>();
     }
 
-    // R4: the ceiling HD asked for, and the ordering the gate assumes.
+    // R4: the ceiling, and the ordering the gate assumes.
     const auto& net = m.at("max_net_leverage");
     const auto& gross = m.at("max_gross_leverage");
     const bool numbers = net.is_number() && gross.is_number();
@@ -660,6 +666,7 @@ nlohmann::json RiskModuleConfig::to_json() const {
             j["R_shock_max"] = c->r_shock_max;
             j["per_name_cap"] = c->per_name_cap;
             j["trim_max"] = c->trim_max;
+            j["overlay_covariance"] = c->overlay_covariance;
         }
         j["missing_symbol_policy"] = c->missing_symbol_policy;
         if (!c->missing_symbol_policy_reason.empty()) {
@@ -819,22 +826,22 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
     RiskSchema out;
     out.schema = 2;
 
-    // R9: required, so the 0.4 / 4.0 struct fallback can no longer size a book nobody
-    // configured (max_leverage is what trend_following.cpp:1216 sizes with).
+    // R9: required, so the 0.4 / 4.0 struct fallback cannot size a book nobody
+    // configured (max_leverage is what TrendFollowingStrategy sizes with).
     if (!risk.contains("max_drawdown") || !risk.at("max_drawdown").is_number() ||
         !(risk.at("max_drawdown").get<double>() > 0.0 &&
           risk.at("max_drawdown").get<double>() <= 1.0)) {
         return err("risk.max_drawdown is required and must be in (0, 1]");
     }
     out.max_drawdown = risk.at("max_drawdown").get<double>();
-    // max_leverage: required on every book but the overlay's, where it is retired (LOOP_SPEC
-    // section 7.7; decided below, once the modules are known). A value that is present is a
+    // max_leverage: required on every book but the overlay's, where it is retired (decided
+    // below, once the modules are known). A value that is present is a
     // positive number on either.
     if (risk.contains("max_leverage")) {
         if (!risk.at("max_leverage").is_number() ||
             !(risk.at("max_leverage").get<double>() > 0.0)) {
-            return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                       "trend_following.cpp:1216)");
+            return err("risk.max_leverage is required and must be > 0 (it sizes the book"
+                       ")");
         }
         out.max_leverage = risk.at("max_leverage").get<double>();
     }
@@ -957,8 +964,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
         }
     }
 
-    // S9: a REFUSE pins every sleeve to a stored T-1, and nothing seeds those before
-    // T-BASE, so on a book with more than one sleeve the refusal cannot be honoured.
+    // S9: a REFUSE pins every sleeve to a stored T-1, which a book with more than one
+    // sleeve does not seed, so on such a book the refusal cannot be honoured.
     {
         int sleeve_count = 0;
         if (strategies.is_object()) {
@@ -969,8 +976,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
         if (sleeve_count > 1) {
             auto refuse_error = [&](const std::string& path) {
                 return err(path + " can REFUSE, and a book with " + std::to_string(sleeve_count) +
-                           " sleeves cannot pin every sleeve to a stored T-1 until T-BASE "
-                           "(T-RISK-ARCH_ADVERSARIAL B1)");
+                           " sleeves cannot pin every sleeve to a "
+                           "stored T-1");
             };
             for (size_t i = 0; i < out.portfolio.size(); ++i) {
                 if (out.portfolio[i].can_refuse()) {
@@ -988,7 +995,7 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
         }
     }
 
-    // R10 (T-6a ADVERSARIAL C-1), the `none` attribution generalised. S3 ties attribution to
+    // R10, the `none` attribution generalised. S3 ties attribution to
     // the literal type "none", so a book whose only module is a `warn`, or a `constant_scale`
     // of 1.0, is just as ungated and carries nobody's name -- and the constructor still prints
     // "Risk manager initialized successfully". A book with no `carver` anywhere in its
@@ -1082,8 +1089,8 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                    "overlay's limits (R_max, R_jump_max, R_shock_max): remove the key");
     }
     if (!overlay_book && !risk.contains("max_leverage")) {
-        return err("risk.max_leverage is required and must be > 0 (it sizes the book: "
-                   "trend_following.cpp:1216)");
+        return err("risk.max_leverage is required and must be > 0 (it sizes the book"
+                   ")");
     }
     for (const char* key : kReportingKeys) {
         const bool retired = overlay_book &&
@@ -1106,7 +1113,7 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
     if (!rep.at("type").is_string() || rep.at("type").get<std::string>() != "carver" ||
         !rep.at("window").is_string() || rep.at("window").get<std::string>() != "all_bars") {
         return err("risk.risk_reporting.type must be \"carver\" and window \"all_bars\" on day "
-                   "one (HD Q5)");
+                   "one");
     }
     {
         auto r = parse_gating_fields(
@@ -1142,7 +1149,7 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                 return err("risk.risk_reporting." + std::string(name) + " = " +
                            nlohmann::json(values.first).dump() + " differs from " + path + "." +
                            name + " = " + nlohmann::json(values.second).dump() +
-                           "; on day one the reporter mirrors the gate (HD Q5)");
+                           "; on day one the reporter mirrors the gate");
             }
         }
     }

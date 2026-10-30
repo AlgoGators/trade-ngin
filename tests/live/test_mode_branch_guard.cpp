@@ -1,11 +1,11 @@
 // tests/live/test_mode_branch_guard.cpp
 //
-// T-DATED safeguard S2 (HD 2026-10-10). THIS TEST READS SOURCE, on purpose: it is a guard, not a
+// THIS TEST READS SOURCE, on purpose: it is a guard, not a
 // behaviour test.
 //
 // A live runner has three ways of being run: with no date, with a date equal to the host's date
-// (production), and with a past date (every test run). Stage 3 found protections that existed in
-// only one of them. This guard fails when a code line of the apps, or of the library they call,
+// (production), and with a past date (every test run). A protection that exists in only one of
+// them is a gap. This guard fails when a code line of the apps, or of the library they call,
 // reads one of the things a run's mode can be told from, outside the lists below:
 //
 //   the date flag            use_override_date, dated_run
@@ -237,6 +237,8 @@ const std::map<std::string, std::vector<std::string>> kOtherAppSites = {
     {"apps/backtest/bt_portfolio.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/backtest/bt_portfolio_conservative.cpp", {"auto now = std::chrono::system_clock::now();"}},
     {"apps/test_database_extensions.cpp", {"auto now = std::chrono::system_clock::now();", "std::chrono::system_clock::now().time_since_epoch())"}},
+    // The read-only dump tool takes its database from the environment.
+    {"apps/tools/contract_rolls_dump.cpp", {"const char* dsn = std::getenv(\"CONTRACT_ROLLS_DSN\");"}},
 };
 
 // --- the library: the lines of each file, and what they are ------------------------------------
@@ -295,6 +297,9 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
      {"TRADE_NGIN_SERIES_DUMP_DIR: a diagnostic dump, no decision",
       {"const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\");",
        "const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\");"}}},
+    {"include/trade_ngin/strategy/carry_estimator_record.hpp",
+     {"TRADE_NGIN_SERIES_DUMP_DIR: a diagnostic dump, no decision",
+      {"const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\");"}}},
     {"include/trade_ngin/strategy/trend_estimator_record.hpp",
      {"TRADE_NGIN_SERIES_DUMP_DIR: a diagnostic dump, no decision",
       {"const char* dir = std::getenv(\"TRADE_NGIN_SERIES_DUMP_DIR\");"}}},
@@ -336,6 +341,9 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
       {"std::chrono::system_clock::now(),",
        "last_update = std::chrono::system_clock::now();",
        "last_update = std::chrono::system_clock::now();"}}},
+    {"src/data/roll_calendar.cpp",
+     {"where the futures calendar file is (rolls step 2); the same in every mode",
+      {"if (const char* env = std::getenv(\"TRADE_NGIN_FUTURES_HOLIDAYS_JSON\")) return env;"}}},
     {"src/execution/execution_engine.cpp",
      {"the execution engine; no live runner uses it",
       {"std::chrono::system_clock::now(),",

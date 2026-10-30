@@ -1,4 +1,4 @@
-// F-5: `to_json()` returns by value, and `nlohmann::json::items()` on the
+// `to_json()` returns by value, and `nlohmann::json::items()` on the
 // returned temporary reads freed memory.
 //
 // Every config struct in config_loader.hpp exposes `nlohmann::json to_json()
@@ -121,7 +121,7 @@ TEST(ToJsonTemporaryHazard, NoCallSiteIteratesItemsOnATemporary) {
     EXPECT_TRUE(hits.empty())
         << "items() is being called directly on the result of a call. nlohmann's items() "
            "holds a reference into that object, and a by-value return dies at the end of "
-           "the full-expression, so the loop iterates freed memory (F-5). Bind the result "
+           "the full-expression, so the loop iterates freed memory. Bind the result "
            "to a named local and iterate that instead."
         << report.str();
 }
@@ -168,9 +168,9 @@ TEST(ToJsonTemporaryHazard, TheScannerRecognisesTheHazardousShape) {
                                "the first time someone hit a false positive";
 }
 
-// ===== DEAD-email-ag-filter / DEAD-logger-lock-member: deleted, and staying deleted =====
+// ===== Two dead declarations: deleted, and staying deleted =====
 //
-// Two dead declarations removed in this batch:
+// The two declarations:
 //
 //   the C++ email sender (since deleted)   filter_non_agricultural_positions() -- [[maybe_unused]],
 //     no caller anywhere -- together with is_agricultural_future(), whose only
@@ -183,10 +183,9 @@ TEST(ToJsonTemporaryHazard, TheScannerRecognisesTheHazardousShape) {
 //     declared with a comment promising it would "prevent re-initialization
 //     after first call", never read and never written. The re-initialization
 //     guard that does exist is the explicit log_file_.close() in
-//     Logger::initialize(). (Removed alongside the E2-F61 change to the
-//     neighbouring thread_local, which is why it appears in that commit.)
+//     Logger::initialize().
 //
-// Source-scanned for the same reason as the F-5 tripwire above: what is being
+// Source-scanned for the same reason as the to_json() tripwire above: what is being
 // asserted is the ABSENCE of a name across the tree, which no runtime test can
 // see. The scanner is the one already proved to work by
 // TheScannerRecognisesTheHazardousShape.

@@ -1,16 +1,13 @@
 // tests/portfolio/test_sizing_capital.cpp
 //
-// T-7b-2 9c (HD 2026-09-25): compounding. The futures book is sized on the account's current
-// equity, not on the constant initial capital (Carver sizes on current trading capital).
+// Compounding. The futures book is sized on the account's current equity, not on the constant
+// initial capital (Carver sizes on current trading capital). A capital_allocation set once to
+// initial_capital x allocation would be read by calculate_position every day while the equity the
+// book is measured against moves.
 //
-// Before: both futures runners and the futures backtest set every strategy's capital_allocation
-// = initial_capital x allocation once, and calculate_position read that constant every day, while
-// the equity the book is measured against moved (T-VOL waterfall stage 9: -1.00 point of ex-ante
-// vol on the frozen window, equity 496,066 .. 598,970 against a constant 500,000).
-//
-// After: before every rebalance the caller hands the PortfolioManager the account's equity at
-// the close of the newest bar the sizing reads (portfolio/sizing_capital.hpp), and every sizing
-// input moves with it (T-4c's W-B rule): each strategy's capital (x its allocation), which the
+// Before every rebalance the caller hands the PortfolioManager the account's equity at the close
+// of the newest bar the sizing reads (portfolio/sizing_capital.hpp), and every sizing input moves
+// with it: each strategy's capital (x its allocation), which the
 // position line, the notional concentration cap and the buffer width's Carver term read; the
 // optimizer's weight per contract; the Carver gate's leverage denominator. The equity curve, P&L
 // and returns (valuation) do not move.
@@ -244,7 +241,7 @@ protected:
     std::shared_ptr<CapitalProbe> a_, b_;
 };
 
-// Control (holds on the parent's numbers too): never called, the book sizes on total_capital.
+// Control: never called, the book sizes on total_capital.
 TEST_F(PortfolioSizingCapital, NeverCalledTheBookSizesOnTheConfiguredCapital) {
     EXPECT_DOUBLE_EQ(pm_->sizing_capital(), 1'000'000.0);
     EXPECT_DOUBLE_EQ(static_cast<double>(carver().manager().get_config().capital), 1'000'000.0);
@@ -436,8 +433,8 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
     bool below_start = false;
     for (int d = 1; d < 5; ++d) {
         // The capital the cycle must size on: the half compounding of the curve as it stands, whose
-        // last row is the previous cycle's (LOOP_SPEC section 3.1).
-        const double before = backtest_sizing_equity(equity_, 1'000'000.0);
+        // last row is the previous cycle's.
+        const double before = backtest_half_compounding(equity_, 1'000'000.0).capital;
         const double before_row = equity_.back().second;
         const size_t seen_before = probe_->seen.size();
         cycle(d, closes[d]);
@@ -448,7 +445,7 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
         EXPECT_LE(probe_->seen.back(), 1'000'000.0 * 0.5) << "never above the starting capital";
         if (d >= 2) {
             ASSERT_NE(written, before_row) << "cycle " << d << " holds XX through a price move";
-            const double with_own_row = backtest_sizing_equity(equity_, 1'000'000.0);
+            const double with_own_row = backtest_half_compounding(equity_, 1'000'000.0).capital;
             if (with_own_row != before) {
                 EXPECT_NE(probe_->seen.back(), with_own_row * 0.5)
                     << "cycle " << d << " must not size on the row it writes (look-ahead)";
@@ -461,7 +458,7 @@ TEST_F(BacktestSizingCapital, EachCycleSizesOnThePreviousRowNeverOnTheRowItWrite
     EXPECT_TRUE(below_start);
 }
 
-// Control (passes on the parent too): the equity backtest keeps the constant capital.
+// Control: the equity backtest keeps the constant capital.
 TEST_F(BacktestSizingCapital, WithoutTheFuturesSwitchTheCapitalStaysConstant) {
     make(false);
     const double closes[] = {100.0, 110.0, 104.0, 121.0};
@@ -529,15 +526,15 @@ TEST_F(LiveSizingCapital, TheRowBeforeDayT1PlusTheSettlementMoveLessDayT1Costs) 
     EXPECT_EQ(r.unpriced, 0);
 }
 
-// D-B (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 sections 2.1, 3.1, 6.6): the book is sized on the settlement PHASE 5
-// finalises Day T-1 with, the one on the CONSUMED bars. T-1 = 2026-05-01. MES is held 2 and its T-1 bar is a change
-// bar (the vendor switched contract: 7,230.00 on A, 7,252.50 on B); ZN is held 1 and its T-2 print (111.500000) is a
-// corrupt print the K-01 feed withheld, so its previous consumed close is T-3's 110.906250:
+// The book is sized on the settlement PHASE 5 finalises Day T-1 with, the one on the CONSUMED bars.
+// T-1 = 2026-05-01. MES is held 2 and its T-1 bar is a change bar (the vendor switched contract: 7,230.00 on A,
+// 7,252.50 on B); ZN is held 1 and its T-2 print (111.500000) is a corrupt print the consumed feed withheld, so its
+// previous consumed close is T-3's 110.906250:
 //   MES  change bar                                 =     0.000   (raw: 2 x (7,252.50 - 7,230.00) x 5 = 225.00)
 //   ZN   1 x (110.703125 - 110.906250) x 1,000      =  -203.125   (raw: 1 x (110.703125 - 111.500000) x 1,000 = -796.875)
 // The runner passes the settlement's maps and zero set to the sizing read and to finalize_previous_day: both book
-// -203.125, and the sizing equity is the value STEP 4 writes. Reading the price manager's raw maps (the runner before
-// this commit) sized on -571.875, an equity 368.75 away from its own stored row.
+// -203.125, and the sizing equity is the value STEP 4 writes. Reading the price manager's raw maps would size on
+// -571.875, an equity 368.75 away from its own stored row.
 TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) {
     LivePnLManager pnl(500'000.0, InstrumentRegistry::instance());
     auto consumed_bar = [](const std::string& symbol, int day, double close, const std::string& id) {
@@ -579,6 +576,98 @@ TEST_F(LiveSizingCapital, TheBookIsSizedOnTheConsumedSettlementPhase5Finalises) 
     EXPECT_NEAR(sized.t1_settlement, finalised, 1e-9) << "sized on the move PHASE 5 finalises";
     EXPECT_NEAR(sized.equity, 500'000.0 - 203.125 - 10.0, 1e-9) << "the value STEP 4 writes on Day T-1's row";
     EXPECT_EQ(sized.priced, 2);
+}
+
+// The live account-value rebuild: with per_contract_rolls on, a stored roll
+// day is not 0. Day T-1's net, which the sizing read rebuilds and PHASE 5 finalises, books the old contract's own move
+// on a roll bar, from the target's close on the bar that confirms a vendor switch, the old contract's move up to the
+// first consumed bar after a withheld roll bar, and the held contract's own move on a switch bar and on a switch the
+// next bar reverts. T-1 = Fri 2026-05-01 (day 4); each case is one symbol's consumed bars:
+//   KNOWN roll bar on T-1        MES 2 x (7,231.25 old - 7,230.00) x 5          =  12.50  (raw: 2 x 22.50 x 5 = 225)
+//   vendor switch confirmed T-1  ZN  1 x (111.25 - 111.00 target's close) x 1,000 = 250.00 (raw: 343.75)
+//   roll bar withheld (T-2)      ZN  1 x (110.10 old - 110.00) x 1,000           = 100.00 (raw: 1,250)
+//   switch bar on T-1            MES 2 x (7,240 - 7,230) x 5 (the held contract) = 100.00
+//   switch reverted on T-1       MES 2 x (7,240 - 7,230) x 5                     = 100.00
+TEST_F(LiveSizingCapital, APerContractRollDayIsSizedAndFinalisedOnTheRealMove) {
+    LivePnLManager pnl(500'000.0, InstrumentRegistry::instance());
+    const auto point = [&](const std::string& s) { return pnl.get_point_value(s); };
+    auto bar = [](const std::string& symbol, int day, double close, const std::string& id,
+                  std::optional<RollFrom> from = std::nullopt) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = std::chrono::sys_days{std::chrono::year{2026} / std::chrono::month{4} / std::chrono::day{27}} +
+                      std::chrono::hours(24 * day);
+        b.open = b.high = b.low = b.close = Decimal(close);
+        b.volume = 100000.0;
+        b.instrument_id = id;
+        b.roll_from = std::move(from);
+        return b;
+    };
+    struct Case {
+        const char* name;
+        std::vector<Bar> consumed;
+        double quantity;
+        double expected;
+    };
+    const std::vector<Case> cases = {
+        {"KNOWN roll bar on T-1",
+         {bar("MES.v.0", 2, 7215.00, "A"), bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7252.50, "B", RollFrom{7231.25, "A", RollFromKind::KNOWN, ""})},
+         2.0, 12.5},
+        {"vendor switch confirmed by T-1",
+         {bar("ZN.v.0", 2, 110.80, "Z1"),
+          bar("ZN.v.0", 3, 110.90625, "Z1", RollFrom{111.00, "Z2", RollFromKind::AWAITS_NEXT, ""}),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.95, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 250.0},
+        {"roll bar withheld, T-1 the first consumed bar after it",
+         {bar("ZN.v.0", 2, 110.00, "Z1"),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.10, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 100.0},
+        {"switch bar on T-1",
+         {bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7240.00, "A", RollFrom{7300.00, "B", RollFromKind::AWAITS_NEXT, ""})},
+         2.0, 100.0},
+        {"switch on T-2 the T-1 bar reverts",
+         {bar("MES.v.0", 2, 7215.00, "A"),
+          bar("MES.v.0", 3, 7230.00, "A", RollFrom{7290.00, "B", RollFromKind::AWAITS_NEXT, ""}),
+          bar("MES.v.0", 4, 7240.00, "A")},
+         2.0, 100.0},
+        // The "vendor" setting: the switch bar is the target's own bar; the same moves are booked.
+        {"vendor setting: switch bar on T-1",
+         {bar("MES.v.0", 3, 7230.00, "A"),
+          bar("MES.v.0", 4, 7300.00, "B", RollFrom{7240.00, "A", RollFromKind::AWAITS_NEXT_VENDOR, ""})},
+         2.0, 100.0},
+        {"vendor setting: switch confirmed by T-1",
+         {bar("ZN.v.0", 2, 110.80, "Z1"),
+          bar("ZN.v.0", 3, 111.00, "Z2", RollFrom{110.90625, "Z1", RollFromKind::AWAITS_NEXT_VENDOR, ""}),
+          bar("ZN.v.0", 4, 111.25, "Z2", RollFrom{110.95, "Z1", RollFromKind::AFTER_ROLL, ""})},
+         1.0, 250.0},
+        {"vendor setting: switch on T-2 the T-1 bar reverts",
+         {bar("MES.v.0", 2, 7215.00, "A"),
+          bar("MES.v.0", 3, 7290.00, "B", RollFrom{7230.00, "A", RollFromKind::AWAITS_NEXT_VENDOR, ""}),
+          bar("MES.v.0", 4, 7240.00, "A")},
+         2.0, 100.0},
+    };
+    for (const auto& c : cases) {
+        const std::string symbol = c.consumed.front().symbol;
+        const std::unordered_map<std::string, double> raw_t1{
+            {symbol, static_cast<double>(c.consumed.back().close)}};
+        const std::unordered_map<std::string, double> raw_t2{
+            {symbol, static_cast<double>(c.consumed[c.consumed.size() - 2].close)}};
+        const auto status = roll_series::roll_status_of(c.consumed);
+        const auto settlement = consumed_t1_settlement(c.consumed, "2026-05-01", status, {}, raw_t2, raw_t1, {});
+        EXPECT_FALSE(settlement.zero_pnl_symbols.count(symbol)) << c.name << ": not a zero day";
+        const std::vector<std::unordered_map<std::string, Position>> books = {{{symbol, held(symbol, c.quantity)}}};
+        const auto sized = live_sizing_equity(true, 500'000.0, 0.0, books, settlement.t1_close_prices,
+                                              settlement.t2_close_prices, point, settlement.zero_pnl_symbols);
+        auto f = pnl.finalize_previous_day({held(symbol, c.quantity)}, settlement.t1_close_prices,
+                                           settlement.t2_close_prices, 500'000.0, 0.0,
+                                           LivePnLManager::UnrealizedPolicy::SETTLED, settlement.zero_pnl_symbols);
+        ASSERT_TRUE(f.is_ok()) << f.error()->what();
+        EXPECT_NEAR(f.value().finalized_daily_pnl, c.expected, 1e-9) << c.name;
+        EXPECT_NEAR(sized.t1_settlement, c.expected, 1e-9) << c.name << ": the sizing rebuild reads the real move";
+        EXPECT_NEAR(sized.equity, 500'000.0 + c.expected, 1e-9) << c.name;
+    }
 }
 
 // Without a Day T-1 row STEP 4 updates nothing and STEP 5 reads the latest stored row before the run date: the
@@ -631,12 +720,12 @@ TEST_F(LiveSizingCapital, APositionMissingEitherCloseSettlesNothingAsPhase5Books
     EXPECT_EQ(r.unpriced, 1);
 }
 
-// LOOP_SPEC section 3.1 (D19): the backtest sizes on the half-compounded capital of its own curve.
+// The backtest sizes on the half-compounded capital of its own curve.
 // A profit is never sized on (the capital stays at the starting capital); a loss comes off at
 // once; row by row the capital follows min(S_0, capital + net).
 TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
     const double s0 = 500'000.0;
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({}, s0), s0);
+    EXPECT_DOUBLE_EQ(backtest_half_compounding({}, s0).capital, s0);
     // the start, a profit, a larger profit, a loss, a loss below the start, a recovery, a new high
     const std::vector<double> rows = {500'000.0, 503'125.5, 507'900.0, 504'000.0,
                                       498'250.25, 501'000.0, 509'100.0};
@@ -645,13 +734,16 @@ TEST(BacktestSizingEquity, AProfitThenALossFollowsTheHalfCompoundingRowByRow) {
     for (size_t k = 0; k < rows.size(); ++k) {
         if (k > 0) capital = std::min(s0, capital + (rows[k] - rows[k - 1]));
         curve.emplace_back(wday(static_cast<int>(k)), rows[k]);
-        EXPECT_NEAR(backtest_sizing_equity(curve, s0), capital, 1e-6) << "row " << k;
+        EXPECT_NEAR(backtest_half_compounding(curve, s0).capital, capital, 1e-6) << "row " << k;
     }
     // A profit is not sized on: after the first two rows the capital is still the starting capital.
-    EXPECT_DOUBLE_EQ(backtest_sizing_equity({{wday(0), s0}, {wday(1), 503'125.5}}, s0), s0);
+    EXPECT_DOUBLE_EQ(
+        backtest_half_compounding({{wday(0), s0}, {wday(1), 503'125.5}}, s0).capital, s0);
     // A loss from a high comes off the starting capital, not off the high.
-    EXPECT_NEAR(backtest_sizing_equity({{wday(0), s0}, {wday(1), 507'900.0}, {wday(2), 504'000.0}}, s0),
-                s0 - 3'900.0, 1e-6);
+    EXPECT_NEAR(
+        backtest_half_compounding({{wday(0), s0}, {wday(1), 507'900.0}, {wday(2), 504'000.0}}, s0)
+            .capital,
+        s0 - 3'900.0, 1e-6);
     const auto h = backtest_half_compounding(curve, s0);
     EXPECT_NEAR(h.account, 509'100.0, 1e-6);
     EXPECT_NEAR(h.peak, 9'100.0, 1e-6);
@@ -687,9 +779,9 @@ TEST(HalfCompounding, TheClosedFormIsTheRecursionInDateOrder) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// (4b) T-7b-3 R-3: the sizing reads. "Nothing stored" sizes as before. A database error holds the
+// (4b) the sizing reads. "Nothing stored" sizes as in (4). A database error holds the
 // book (the books loaded, the equity or previous-row read failed: exit 3, mark, email flag) or
-// refuses the run (a sleeve book failed to load: exit 1, no row); HD 2026-09-27 ruling 5.
+// refuses the run (a sleeve book failed to load: exit 1, no row).
 // The runner helper is fed the REAL LiveDataLoader over a mock database, so load_live_results
 // answers exactly as it does in production (its "No live results found" for an empty result, its
 // "Failed to load live results" for a failed query).
@@ -874,9 +966,9 @@ TEST_F(LiveSizingReads, EveryReadAnsweredSizesOnStep4sArithmetic) {
     EXPECT_EQ(db_->book_loads, 2);
 }
 
-// The brief's case: the database drops for the run (every read fails). On f2932054 every failure
-// read as "nothing stored" and the whole book sized on 500,000 and traded on it. The positions did
-// not load, so there is no book to hold: the run refuses (exit 1, no row).
+// The database drops for the run (every read fails). Read as "nothing stored", every failure would
+// size the whole book on 500,000 and trade on it. The positions did not load, so there is no book
+// to hold: the run refuses (exit 1, no row).
 TEST_F(LiveSizingReads, TheDatabaseDownRefusesTheRunInsteadOfSizingOnTheInitialCapital) {
     db_->t1 = SizingReadDatabase::T1::kError;
     db_->previous_error = true;
@@ -888,9 +980,8 @@ TEST_F(LiveSizingReads, TheDatabaseDownRefusesTheRunInsteadOfSizingOnTheInitialC
     EXPECT_NE(r.failure.find("server closed the connection unexpectedly"), npos) << r.failure;
 }
 
-// The exit-1 path alone: one sleeve's Day T-1 book fails to load, the other reads answer. On
-// f2932054 the sleeve was dropped and the book sized without its move (497,483.1701 instead of
-// 497,280.0451).
+// The exit-1 path alone: one sleeve's Day T-1 book fails to load, the other reads answer. Dropping
+// the sleeve would size the book without its move (497,483.1701 instead of 497,280.0451).
 TEST_F(LiveSizingReads, AFailedSleeveBookLoadRefusesTheRun) {
     db_->failing_sleeves = {"B"};
     const auto r = read();
@@ -902,8 +993,8 @@ TEST_F(LiveSizingReads, AFailedSleeveBookLoadRefusesTheRun) {
 }
 
 // The hold path, the equity read: load_live_results fails (a failed query, not an empty result)
-// and every book loaded, so the book is held. On f2932054 it read as "no Day T-1 row" and sized on
-// the row before the run date, dropping Day T-1's move and costs (497,274.5217).
+// and every book loaded, so the book is held. Read as "no Day T-1 row" it would size on the row
+// before the run date, dropping Day T-1's move and costs (497,274.5217).
 TEST_F(LiveSizingReads, ADatabaseErrorOnTheDayT1RowHoldsTheBook) {
     db_->t1 = SizingReadDatabase::T1::kError;
     const auto r = read();
@@ -915,8 +1006,8 @@ TEST_F(LiveSizingReads, ADatabaseErrorOnTheDayT1RowHoldsTheBook) {
 }
 
 // The hold path, the aggregates read: get_previous_live_aggregates fails with a Day T-1 row stored
-// and every book loaded. On f2932054 it read as "none stored" and sized on 500,000 plus Day T-1's
-// move less its costs (500,005.5234).
+// and every book loaded. Read as "none stored" it would size on 500,000 plus Day T-1's move less
+// its costs (500,005.5234).
 TEST_F(LiveSizingReads, ADatabaseErrorOnThePreviousRowHoldsTheBook) {
     db_->previous_error = true;
     const auto r = read();
@@ -962,7 +1053,7 @@ TEST_F(LiveSizingReads, AHoldIsMarkedFlaggedAndExitsThreeLikeARiskModuleFailure)
 }
 
 // "No live results found" (the loader's answer to an empty result) is still "no Day T-1 row":
-// the figure is the latest stored row before the run date, as on f2932054.
+// the figure is the latest stored row before the run date.
 TEST_F(LiveSizingReads, NoLiveResultsFoundIsStillNoDayT1Row) {
     db_->t1 = SizingReadDatabase::T1::kNoRow;
     const auto r = read();
@@ -975,7 +1066,7 @@ TEST_F(LiveSizingReads, NoLiveResultsFoundIsStillNoDayT1Row) {
 }
 
 // A first day (nothing stored at all) and sleeves with no stored book (OK and empty) size on the
-// initial capital, as on f2932054.
+// initial capital.
 TEST_F(LiveSizingReads, NothingStoredAnywhereSizesOnTheInitialCapital) {
     db_->t1 = SizingReadDatabase::T1::kNoRow;
     db_->previous_value.reset();
@@ -1071,18 +1162,18 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     for (int i = 0; i < 2; ++i) {
         const std::string src = read_source(runners[i]);
         ASSERT_FALSE(src.empty()) << runners[i];
-        blocks[i] = between(src, "// SIZING CAPITAL (T-7b-2 9c", "// STORE LIVE RUN METADATA");
+        blocks[i] = between(src, "// SIZING CAPITAL (half compounding)", "// STORE LIVE RUN METADATA");
         ASSERT_FALSE(blocks[i].empty()) << runners[i] << ": no sizing block before the metadata row";
-        const auto block_at = src.find("// SIZING CAPITAL (T-7b-2 9c");
+        const auto block_at = src.find("// SIZING CAPITAL (half compounding)");
         EXPECT_LT(block_at, src.find("portfolio->process_market_data(")) << runners[i];
-        // LOOP_SPEC section 3.1: the book is sized on the half-compounded capital the read returns,
+        // The book is sized on the half-compounded capital the read returns,
         // never on the account's rebuilt value.
         EXPECT_NE(blocks[i].find("portfolio->set_sizing_capital(sizing_read.capital.capital)"), npos);
         EXPECT_EQ(blocks[i].find("set_sizing_capital(sizing_equity.equity)"), npos);
         EXPECT_NE(blocks[i].find("INFO(sizing_capital_log_line("), npos);
         EXPECT_NE(blocks[i].find("WARN(sizing_capital_unsettled_log_line("), npos);
-        // Day T-1 and Day T-2 closes only: the day being sized has no mark yet. Since T-ROLLX-FIX
-        // commit 4 (D-B) they are the T-1 settlement on the consumed bars, built from the price
+        // Day T-1 and Day T-2 closes only: the day being sized has no mark yet. They are the T-1
+        // settlement on the consumed bars, built from the price
         // manager's two maps above the block, the settlement PHASE 5 finalises with.
         EXPECT_NE(blocks[i].find("t1_settlement.t1_close_prices"), npos);
         EXPECT_NE(blocks[i].find("t1_settlement.t2_close_prices"), npos);
@@ -1094,7 +1185,7 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
         EXPECT_NE(settlement.find("price_manager->get_all_previous_day_prices()"), npos);
         EXPECT_NE(settlement.find("price_manager->get_all_two_days_ago_prices()"), npos);
         EXPECT_EQ(blocks[i].find("current_price"), npos);
-        // STEP 4's parts are read by the runner helper (T-7b-3 R-3, pinned below); the decision
+        // STEP 4's parts are read by the runner helper (pinned below); the decision
         // is routed by SizingCapitalWiring.BothFuturesRunnersRouteTheSizingDecisionTheSameWay.
         const auto read_at = blocks[i].find("auto sizing_read = read_live_sizing_equity(");
         ASSERT_NE(read_at, npos) << runners[i];
@@ -1133,11 +1224,11 @@ TEST(SizingCapitalWiring, BothFuturesRunnersSizeOnTheEquityBeforeTheRebalance) {
     }
 }
 
-// T-ROLLX-FIX commit 5 (finding 12; D-B): the other half of the wiring. PHASE 5 finalises Day T-1 on
+// The other half of the wiring. PHASE 5 finalises Day T-1 on
 // the SAME settlement the sizing read was given: its T-1 map (a late roll's symbol books to its last
-// consumed close), its T-2 map and its zero set. The sizing block's pin above did not cover the
-// finalize call, so a call put back on the price manager's raw T-1 map would size the book on one
-// settlement and store another with every test green.
+// consumed close), its T-2 map and its zero set. The sizing block's pin above does not cover the
+// finalize call, so a call on the price manager's raw T-1 map would size the book on one
+// settlement and store another with every other test green.
 TEST(SizingCapitalWiring, Phase5FinalisesOnTheSettlementTheBookWasSizedOn) {
     const char* const runners[] = {"apps/strategies/live_portfolio_conservative.cpp",
                                    "apps/strategies/live_portfolio.cpp"};
@@ -1174,7 +1265,7 @@ TEST(SizingCapitalWiring, Phase5FinalisesOnTheSettlementTheBookWasSizedOn) {
     EXPECT_EQ(calls[0], calls[1]) << "the twins' finalize calls are byte-identical";
 }
 
-// T-7b-3 R-3 (HD 2026-09-27 ruling 5): both runners route the sizing decision the same way. A
+// Both runners route the sizing decision the same way. A
 // failed sleeve book refuses to start (exit 1, above the metadata row, so no row); a hold marks
 // the row as it is first written, runs no rebalance (the PortfolioManager keeps the seeded book),
 // and drives the held-book exit code and email flag through risk_module_failure.
@@ -1250,7 +1341,7 @@ TEST(SizingCapitalWiring, TheBacktestCompoundsForFuturesOnly) {
 }  // namespace
 
 // ------------------------------------------------------------------------------------------------
-// LOOP_SPEC section 3.1 (D19): the live runner's sizing capital. The half compounding of the book's
+// The live runner's sizing capital. The half compounding of the book's
 // settled daily P&L, recomputed on every run from the stored rows before Day T-1 plus Day T-1's
 // rebuilt net; on a failure path the last settled capital is kept and nothing is added for the
 // unsettled day; the run after it catches up from the stored history alone.
@@ -1479,7 +1570,7 @@ TEST_F(LiveHalfCompounding, TheCapitalDoesNotStepWhenANoBarDayLeavesTheLoadedWin
 }
 
 // The three failure paths of Day T-1 still keep the last settled capital for their one run, and
-// that capital now holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
+// that capital holds an earlier no-bar day's costs: only Day T-1 itself is withheld.
 TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
     // 2026-04-18 is a Saturday: held, 40.00 of costs, no bar; the week after it printed.
     const std::vector<std::tuple<std::string, double, int>> history = {
@@ -1509,7 +1600,7 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Migration 035 (T-8a commit (12)): a stored day counts in the sizing capital when its settled_at
+// Migration 035: a stored day counts in the sizing capital when its settled_at
 // is set OR the no-bar-day rule calls it settled. The stamp is written after STEP 4, so the run
 // after a no-prices day sizes before its own stamp exists.
 // ------------------------------------------------------------------------------------------------
@@ -1518,7 +1609,7 @@ TEST_F(LiveHalfCompounding, TheFailurePathsWithholdOnlyDayT1) {
 // (2025-10-05 .. 2026-04-25). Saturday's run stamped everything through Friday 04-24; Sunday's run
 // had no closes for the held Saturday (the no-prices skip) and stamped nothing, so the Saturday
 // row is still NULL. Monday loads Sunday's bar: the Saturday row counts, settled_rows is 204 and
-// earlier_unsettled 0, the figures of the run before the column existed.
+// earlier_unsettled 0, the figures of the calendar rule alone.
 TEST_F(LiveHalfCompounding, TheMondayAfterAHeldSaturdayCountsTheSaturdayRowBeforeItsStamp) {
     LiveSizingCalendar calendar;
     db_->history.clear();
@@ -1563,11 +1654,11 @@ TEST_F(LiveHalfCompounding, TheMondayAfterAHeldSaturdayCountsTheSaturdayRowBefor
     EXPECT_NE(line.find(" settled_rows=204 earlier_unsettled=0 "), std::string::npos) << line;
 }
 
-// The Monday case both ways (the lead and HD, 2026-10-10). The Monday run reads the held Saturday
+// The Monday case both ways. The Monday run reads the held Saturday
 // row with settled_at NULL (Sunday's no-prices run stamped nothing and Monday's own stamp is
 // written after this read); when the Monday run ends the row is stamped, which is what Tuesday's
 // run reads. The predicate counts the row either way, and the Monday capital is the same on both
-// and equal to the capital of the rule before the column existed (the calendar rule alone).
+// and equal to the capital of the calendar rule alone.
 TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAndSet) {
     // The predicate, on the Saturday row itself.
     LiveSizingCalendar week;
@@ -1610,7 +1701,7 @@ TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAnd
     calendar.first_bar_date = *calendar.bar_dates.begin();
     ASSERT_EQ(db_->history.size(), 203u);
 
-    // The capital of the rule before the column existed: the half compounding of every row the
+    // The capital of the calendar rule alone: the half compounding of every row the
     // calendar rule alone calls settled, then Day T-1's rebuilt net.
     double calendar_rule_capital = 500'000.0;
     int calendar_rule_rows = 0;
@@ -1672,7 +1763,7 @@ TEST_F(LiveHalfCompounding, TheMondayCapitalIsTheSameWithTheSaturdayStampNullAnd
     EXPECT_EQ(stamp_alone_rows, 203);
 }
 
-// LOOP_SPEC section 15 erratum 1: a row that carries a stamp counts whatever the calendar says.
+// A row that carries a stamp counts whatever the calendar says.
 // 2026-04-25 is a held Saturday with no later bar loaded, the day the no-bar-day rule alone calls
 // unsettled; with the migration's backfill on it (the row had a later row at migration) it counts.
 TEST_F(LiveHalfCompounding, AStampedRowCountsWhereTheCalendarAloneWouldNot) {

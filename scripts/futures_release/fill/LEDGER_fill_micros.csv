@@ -1,0 +1,17 @@
+symbol,date,table,instrument_id,raw_instrument_id_written,raw_symbol,rule_branch,class,junk_verdict,bar_sha256,rtype,publisher_id
+MGC.v.0,2010-11-28,futures_data.ohlcv_1d,83333,,MGCG1,V_fallback_same_day_busiest,sunday,JUNK,1d66d53f07e31bb3a722fef700a8a00f8208a37a9b86222b571286d4c8c17eab,,
+MGC.v.0,2010-11-28,futures_data.ohlcv_1d_raw,83333,,MGCG1,V_fallback_same_day_busiest,sunday,JUNK,1d66d53f07e31bb3a722fef700a8a00f8208a37a9b86222b571286d4c8c17eab,35,1
+MGC.v.0,2011-01-09,futures_data.ohlcv_1d,62013,,MGCJ1,V_fallback_same_day_busiest,sunday,JUNK,2ca3748c042fdf74a7e58a6761e1c8b446b27392a4b3c11cbec0c50d9ef8b535,,
+MGC.v.0,2011-01-09,futures_data.ohlcv_1d_raw,62013,,MGCJ1,V_fallback_same_day_busiest,sunday,JUNK,2ca3748c042fdf74a7e58a6761e1c8b446b27392a4b3c11cbec0c50d9ef8b535,35,1
+MGC.v.0,2011-05-29,futures_data.ohlcv_1d,42973,,MGCQ1,V_fallback_same_day_busiest,sunday,JUNK,0e11389f82b58fd7a5d54121f4615163a8db455392cbb6832f5c3a7c5a6e8d93,,
+MGC.v.0,2011-05-29,futures_data.ohlcv_1d_raw,42973,,MGCQ1,V_fallback_same_day_busiest,sunday,JUNK,0e11389f82b58fd7a5d54121f4615163a8db455392cbb6832f5c3a7c5a6e8d93,35,1
+MGC.v.0,2013-11-28,futures_data.ohlcv_1d,1087,,MGCG4,V_prev_weekday_busiest,on_holiday,JUNK,29f521b48a0e8537db5d8cb7a5153f32191f3d4f74f6da9ddd4b80e8bdefb7db,,
+MGC.v.0,2013-11-28,futures_data.ohlcv_1d_raw,1087,,MGCG4,V_prev_weekday_busiest,on_holiday,JUNK,29f521b48a0e8537db5d8cb7a5153f32191f3d4f74f6da9ddd4b80e8bdefb7db,35,1
+SIL.v.0,2017-02-26,futures_data.ohlcv_1d,6160,,SILK7,V_fallback_same_day_busiest,sunday,JUNK,1d4d36fa973aba6c044fa64c03174eaf6ed220a5c4515b3cce82b867be6f4b74,,
+SIL.v.0,2017-02-26,futures_data.ohlcv_1d_raw,6160,,SILK7,V_fallback_same_day_busiest,sunday,JUNK,1d4d36fa973aba6c044fa64c03174eaf6ed220a5c4515b3cce82b867be6f4b74,35,1
+SIL.v.0,2018-08-31,futures_data.ohlcv_1d,221152,,SILZ8,V_prev_weekday_busiest,other,SESSION,84fa70977f3bb890a64897c0d51cc9cba768cf08ee7946fdfc355fa58f6c8c37,,
+SIL.v.0,2018-08-31,futures_data.ohlcv_1d_raw,221152,,SILZ8,V_prev_weekday_busiest,other,SESSION,84fa70977f3bb890a64897c0d51cc9cba768cf08ee7946fdfc355fa58f6c8c37,35,1
+SIL.v.0,2019-11-28,futures_data.ohlcv_1d,92543,,SILH0,V_prev_weekday_busiest,on_holiday,SESSION,1838e8e86e6bbb2bbd0294dc576e3fd3a4f32aedba5f07690ae99724c6e2bfd9,,
+SIL.v.0,2019-11-28,futures_data.ohlcv_1d_raw,92543,,SILH0,V_prev_weekday_busiest,on_holiday,SESSION,1838e8e86e6bbb2bbd0294dc576e3fd3a4f32aedba5f07690ae99724c6e2bfd9,35,1
+SIL.v.0,2020-06-30,futures_data.ohlcv_1d,273,,SILU0,V_prev_weekday_busiest,other,SESSION,80f0d914e364e030bc99b620a1750851b9d8ce131b9b69d3d61a0c26b2ce9f88,,
+SIL.v.0,2020-06-30,futures_data.ohlcv_1d_raw,273,,SILU0,V_prev_weekday_busiest,other,SESSION,80f0d914e364e030bc99b620a1750851b9d8ce131b9b69d3d61a0c26b2ce9f88,35,1

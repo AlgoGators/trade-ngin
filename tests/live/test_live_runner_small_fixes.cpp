@@ -1,23 +1,22 @@
 // tests/live/test_live_runner_small_fixes.cpp
 //
-// T-7b-1 C7b: the T-7a review's small fixes on the live runners' side (T-7a_CODE_REVIEW R2 R3 R4
-// R9 R10, T-7a_S1_S3_CODE_REVIEW S1-3; R11 is held out, HD 2026-09-24). Each case is the review's
-// failure scenario, run through the helper the runners call where one exists, and through the
-// runner source (the runners are main()s and cannot be linked here, as
-// tests/live/test_day_t_write_ordering.cpp established) where the defect is in the wiring:
+// Small rules on the live runners' side. Each case is a failure scenario, run through the
+// helper the runners call where one exists, and through the runner source (the runners are
+// main()s and cannot be linked here, as tests/live/test_day_t_write_ordering.cpp established)
+// where the rule is in the wiring:
 //
-//   R2   a carried day's CSV note and the email banner derive their reason from the T-1
-//        classification: a feed-hole carry names the FEED HOLE and its count (the parent wrote
-//        "no session on D ()" and showed no banner), a closure names the first verdict's reason;
-//   R3   the held-symbol refusal keys on ANY no-bar verdict older than the tolerance (a feed dead
-//        for more than eight weeks is reclassified as a closure and stopped refusing), and a
-//        closure older than the tolerance is logged as an ERROR;
-//   R4   the STRICT assertion marks today's live_run_metadata row before it returns 1, merged into
-//        the row's JSON so a same-day risk refusal mark stays;
-//   R9   a held row for a symbol outside the classified universe is logged as such;
-//   R10  the execution manager's cost feed is the strategy feed (the JUNK T-1 bar withheld);
-//   S1-3 a whole-book carry sums the sleeves into the combined map, and the email's yesterday
-//        table is keyed by (sleeve, symbol).
+//   * a carried day's CSV note and the email banner derive their reason from the T-1
+//     classification: a feed-hole carry names the FEED HOLE and its count (not "no session on
+//     D ()" with no banner), a closure names the first verdict's reason;
+//   * the held-symbol refusal keys on ANY no-bar verdict older than the tolerance (a feed dead
+//     for more than eight weeks is reclassified as a closure and must still refuse), and a
+//     closure older than the tolerance is logged as an ERROR;
+//   * the STRICT assertion marks today's live_run_metadata row before it returns 1, merged into
+//     the row's JSON so a same-day risk refusal mark stays;
+//   * a held row for a symbol outside the classified universe is logged as such;
+//   * the execution manager's cost feed is the strategy feed (the JUNK T-1 bar withheld);
+//   * a whole-book carry sums the sleeves into the combined map, and the email's yesterday
+//     table is keyed by (sleeve, symbol).
 
 #include <gtest/gtest.h>
 
@@ -165,7 +164,7 @@ std::string between(const std::string& s, const std::string& from, const std::st
 }  // namespace
 
 // =============================================================================================
-// R2: the carried day's reason
+// The carried day's reason
 // =============================================================================================
 
 TEST(C7bCarriedDay, AFeedHoleCarryNamesTheFeedHoleAndItsCount) {
@@ -202,7 +201,7 @@ TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFla
 }
 
 // =============================================================================================
-// R3: the held-symbol refusal keys on any no-bar verdict past the tolerance
+// The held-symbol refusal keys on any no-bar verdict past the tolerance
 // =============================================================================================
 
 TEST(C7bBookGate, AFeedDeadForNineWeeksIsAClosureAndIsStillRefusedWhenHeld) {
@@ -260,7 +259,7 @@ TEST(C7bRunnerSource, BothTwinsTestEveryNoBarAgeAndGiveTheClassifierLogTheTolera
         if (src.empty()) GTEST_SKIP() << "runner source not found";
         EXPECT_EQ(src.find("if (t1_classification.max_hole_age_days > hole_tolerance_days)"), npos)
             << "the refusal only reads the held book when a FEED HOLE is old";
-        // T-DATED R2a: the test is "any no-bar verdict past the tolerance", which also counts a
+        // The test is "any no-bar verdict past the tolerance", which also counts a
         // symbol with no bar anywhere in the loaded history (no age to measure).
         EXPECT_NE(src.find("if (any_no_bar_past_tolerance(t1_classification, hole_tolerance_days))"),
                   npos);
@@ -271,7 +270,7 @@ TEST(C7bRunnerSource, BothTwinsTestEveryNoBarAgeAndGiveTheClassifierLogTheTolera
 }
 
 // =============================================================================================
-// R4: the STRICT assertion marks the metadata row before it returns
+// The STRICT assertion marks the metadata row before it returns
 // =============================================================================================
 
 TEST(C7bRunMetadataMark, TheStrictAssertionMarkNamesTheUnpricedChangesAndKeepsEveryKey) {
@@ -299,7 +298,7 @@ TEST(C7bRunnerSource, BothTwinsMarkTheMetadataRowBeforeTheStrictAssertionReturns
         const auto ret = block.find("return 1;");
         ASSERT_NE(ret, npos);
         ASSERT_NE(mark, npos) << "the assertion returns leaving an unmarked metadata row";
-        // The mark is merged into the JSON the row carries so far: the Q2 block keeps its marked
+        // The mark is merged into the JSON the row carries so far: the risk-refusal block keeps its marked
         // JSON, so a same-day risk_refusal mark is not replaced by the STRICT one.
         const std::string q2 = between(src, "if (auto risk_refusal = portfolio_risk_refusal(",
                                        "if (mark_result.is_error())");
@@ -317,7 +316,7 @@ TEST(C7bRunnerSource, BothTwinsMarkTheMetadataRowBeforeTheStrictAssertionReturns
 }
 
 // =============================================================================================
-// R9: a held row outside the classified universe
+// A held row outside the classified universe
 // =============================================================================================
 
 TEST(C7bBookGate, AHeldRowOutsideTheClassifiedUniverseIsLoggedAsSuch) {
@@ -354,7 +353,7 @@ TEST(C7bBookGate, AClassifiedClosureHoldKeepsItsLine) {
 }
 
 // =============================================================================================
-// R10: the cost feed is the strategy feed
+// The cost feed is the strategy feed
 // =============================================================================================
 
 TEST(C7bRunnerSource, BothTwinsFeedTheCostManagerTheStrategyFeedWithTheJunkBarWithheld) {
@@ -419,7 +418,7 @@ TEST(C7bBookGate, TheCombinedMapOfTwoSleevesIsTheirSum) {
 }
 
 // =============================================================================================
-// The late-bar warning (T-FIX; HD 2026-10-07: a warning, no catch-up, no refusal). A held symbol's
+// The late-bar warning (a warning, no catch-up, no refusal). A held symbol's
 // bar that arrives after the run that settles its date is on no stored row; both runners name it,
 // identically, once the stored T-1 books are loaded and before the finalize.
 // (The rule itself: tests/live/test_late_bar_warning.cpp.)
@@ -442,7 +441,7 @@ TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
         EXPECT_NE(src.find("WARN(late_bar_warning_line(bar, pnl_manager->get_point_value(bar.symbol)));"),
                   npos)
             << "the line is not printed at WARNING with the symbol's point value";
-        blocks.push_back(between(src, "// A LATE BAR (HD 2026-10-07", "// BOOK GATE (T-7a C4"));
+        blocks.push_back(between(src, "// A LATE BAR (a warning", "// BOOK GATE"));
     }
     ASSERT_EQ(blocks.size(), 2u);
     ASSERT_FALSE(blocks[0].empty());
@@ -450,7 +449,7 @@ TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
 }
 
 // =============================================================================================
-// The stored exposure cells value a held symbol at the Day T mark (T-FIX). A held symbol whose T-1
+// The stored exposure cells value a held symbol at the Day T mark. A held symbol whose T-1
 // print is withheld was valued at the withheld print in gross and net notional and in leverage:
 // the runner built day_t_mark_prices (the last consumed close of such a symbol) and four call
 // sites still passed the raw T-1 closes.
@@ -480,7 +479,7 @@ TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheThreeExposureSit
 }
 
 // =============================================================================================
-// A day none of whose T-1 bars is consumed is carried (T-FIX; LOOP_SPEC sections 7.2, 7.7). A T-1
+// A day none of whose T-1 bars is consumed is carried. A T-1
 // whose every bar was withheld ran the rebalance on the window's earlier bars with every symbol
 // held: it printed OVERLAY, OPTIMISER and BOOK and stored risk_detail, where the backtest feeds
 // nothing on such a cycle and stores NULL. One condition, the carry's, in both runners.

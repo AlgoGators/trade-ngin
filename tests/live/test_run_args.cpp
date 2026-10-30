@@ -1,9 +1,8 @@
 // tests/live/test_run_args.cpp
 //
-// T-EMAIL P2-5 (HD ruling Q5): a live run with no date is refused with the usage and exit code 2.
+// A live run with no date is refused with the usage and exit code 2.
 // The runners print dateless_run_message and return kDatelessRunExitCode before they read the
-// clock, open the logger or touch the database; the real binaries were run without a date in the
-// T-EMAIL report (they print this text and exit 2).
+// clock, open the logger or touch the database.
 
 #include <gtest/gtest.h>
 
@@ -31,9 +30,8 @@ TEST(RunArgs, TheMessageSaysNothingWasRunOrSentAndShowsTheUsage) {
               std::string::npos);
 }
 
-// The rejoin (2026-10-22): main's --date and the positional date name the same run; two different
-// dates are refused (exit 1) with this message, never the later one taken. The real binaries were
-// run both ways in the rejoin audit (evidence/REJOIN/run_args/).
+// main's --date and the positional date name the same run; two different dates are refused
+// (exit 1) with this message, never the later one taken.
 TEST(RunArgs, TwoDifferentRunDatesNameBoth) {
     const std::string text = two_run_dates_message("2026-10-21", "2026-10-22");
     EXPECT_NE(text.find("Two run dates were given (2026-10-21 and 2026-10-22)"),

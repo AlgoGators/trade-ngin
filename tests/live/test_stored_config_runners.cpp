@@ -1,6 +1,6 @@
 // tests/live/test_stored_config_runners.cpp
 //
-// T-8D R24 and R25, T-8D-2 R53 and R73, LOOP_SPEC sections 7.5 and 7.5.1 -- what the runners
+// What the runners
 // record about their own configuration: trading.live_results.config and the portfolio_config of
 // the two run-metadata tables.
 //
@@ -51,9 +51,9 @@ const char* const kEquityBacktest = "apps/backtest/bt_equity_mean_reversion.cpp"
 
 }  // namespace
 
-// R25: a sleeve whose risk_target resolves to 0.25 (BASE's FAST sleeve) is stored as 0.25. Each
+// A sleeve whose risk_target resolves to 0.25 (BASE's FAST sleeve) is stored as 0.25. Each
 // futures runner collects the idm and risk_target it hands to each strategy it builds, on both
-// branches of its factory, and stores that list; it no longer writes the string from literals.
+// branches of its factory, and stores that list, never a string written from literals.
 TEST(StoredConfigRunners, TheFuturesRunnersStoreEachSleevesResolvedValues) {
     for (const auto& runner : kFuturesLive) {
         const std::string src = read_source(runner);
@@ -73,7 +73,7 @@ TEST(StoredConfigRunners, TheFuturesRunnersStoreEachSleevesResolvedValues) {
     }
 }
 
-// R24: capital_allocation and gross_leverage are on the day's sizing capital: risk_detail's on a
+// capital_allocation and gross_leverage are on the day's sizing capital: risk_detail's on a
 // row that stores it, else the capital the run read, and none on a sizing hold.
 TEST(StoredConfigRunners, TheFuturesRunnersStateTheDaysSizingCapital) {
     for (const auto& runner : kFuturesLive) {
@@ -95,7 +95,7 @@ TEST(StoredConfigRunners, TheFuturesRunnersStateTheDaysSizingCapital) {
     }
 }
 
-// R73: config["strategy_type"] is the id the row is keyed on, on all three runners.
+// config["strategy_type"] is the id the row is keyed on, on all three runners.
 TEST(StoredConfigRunners, StrategyTypeIsTheRowsStrategyIdOnEveryRunner) {
     for (const auto& runner : kFuturesLive) {
         const std::string src = read_source(runner);
@@ -124,7 +124,7 @@ TEST(StoredConfigRunners, StrategyTypeIsTheRowsStrategyIdOnEveryRunner) {
               std::string::npos);
 }
 
-// LOOP_SPEC 7.5.1: portfolio_config.statistics_K in both run-metadata tables, from the config
+// portfolio_config.statistics_K in both run-metadata tables, from the config
 // value the statistics are annualised with; total_capital stays and no sizing_capital key joins it.
 TEST(StoredConfigRunners, BothRunMetadataTablesRecordTheSessionsAYearOfTheRunsSeries) {
     std::vector<std::pair<std::string, std::string>> writers;
@@ -160,7 +160,7 @@ TEST(StoredConfigRunners, BothRunMetadataTablesRecordTheSessionsAYearOfTheRunsSe
     }
 }
 
-// R53: the futures backtests record each sleeve's resolved idm and risk_target beside the
+// The futures backtests record each sleeve's resolved idm and risk_target beside the
 // strategy_allocations they already record, and the window rule and the warm-up.
 TEST(StoredConfigRunners, TheFuturesBacktestsRecordTheResolvedSleevesAndTheWindow) {
     for (const auto& runner : kFuturesBacktests) {

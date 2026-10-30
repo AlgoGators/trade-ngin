@@ -52,8 +52,8 @@ public:
     /**
      * @brief Resolve the holidays.json path with a fallback chain.
      *
-     * Phase 6 §6a -- cron-triggered apps used to fail silently when their
-     * CWD didn't match the dev-time `include/trade_ngin/core/` layout,
+     * A cron-triggered app whose CWD does not match the dev-time
+     * `include/trade_ngin/core/` layout would otherwise fail silently,
      * leaving HolidayChecker with an empty map and every `is_holiday`
      * returning false. This helper tries (in order):
      *
@@ -107,8 +107,8 @@ public:
      * False means the file was missing, unreadable, or threw part way through.
      * A caller whose correctness depends on the calendar must refuse to run on
      * false rather than proceed: `is_holiday` cannot distinguish "open" from
-     * "never loaded", and a half-loaded file used to advertise coverage it did
-     * not have (BA-1).
+     * "never loaded", and a half-loaded file must not advertise coverage it does
+     * not have.
      */
     bool loaded() const {
         return loaded_;
@@ -158,7 +158,7 @@ public:
      * `coverage_description()` prints the FIRST and LAST year, which reads as a range and is
      * not one: a file that lost its middle years advertises "2020-2030" while covering two.
      * The count is the only figure that distinguishes them, and callers that refuse to run on
-     * a partial load (the three live runners, BA-1) need it in their own log line rather than
+     * a partial load (the three live runners) need it in their own log line rather than
      * in a string a human has to read.
      */
     size_t coverage_years() const { return covered_years_.size(); }
@@ -221,28 +221,17 @@ public:
      * weekends, or 9/11-style multi-day exchange closures).
      *
      * **The candidate is tested in UTC, because that is the frame it is
-     * returned in.** This used to test with `safe_localtime` and return the raw
-     * `candidate`, which every caller then formats with `gmtime` -- the two
-     * frames agree only while a candidate's local and UTC calendar dates are the
-     * same day. Since `95679ea2` the equity runner's run date is UTC MIDNIGHT
-     * (`parse_utc_date`; `now_tm` is `gmtime_r` at every consumer), so on a
-     * negative-offset host the candidate's local date is the day BEFORE its UTC
-     * date: the walk validated day D-1 and handed back day D. Measured on the
-     * 2026-06-15 replay in America/New_York -- Monday resolved to Saturday
-     * 2026-06-13, no T-1 close existed, the Day T-1 finalization was refused for
-     * the whole window, and every day-T row was marked from the widened fallback
-     * (E2-F45).
+     * returned in.** Every caller formats the result with `gmtime`, and the
+     * equity runner's run date is UTC MIDNIGHT (`parse_utc_date`; `now_tm` is
+     * `gmtime_r` at every consumer). Testing in local time would, on a
+     * negative-offset host, validate the day before the UTC date it hands back:
+     * a Monday would resolve to a Saturday with no T-1 close.
      *
-     * Testing in the returned frame makes the function self-consistent for any
-     * caller. The two futures runners still parse their CLI date with
-     * `std::mktime` (local midnight, E2-F42); on a negative-offset host that
-     * lands at 04:00/05:00Z on the SAME calendar day, so the walk sees the same
-     * days and their answer does not move -- pinned by
+     * The two futures runners parse their CLI date with `std::mktime` (local
+     * midnight); on a negative-offset host that lands at 04:00/05:00Z on the
+     * SAME calendar day, so the walk sees the same days and their answer does
+     * not move -- pinned by
      * `PreviousTradingDayFrameTest.LocalMidnightRunDateResolvesTheSameCalendarDate`.
-     *
-     * The previous comment justified local time as consistency with
-     * `EquityInstrument::is_market_open`. That function has no production
-     * callers (only tests), so it was never a constraint on this one.
      *
      * @param start Reference timestamp; the search begins at `start - 24h`.
      * @param max_lookback_days Maximum days to walk back before giving up.
@@ -305,17 +294,14 @@ private:
      * @return true if successful, false otherwise
      */
     bool load_holidays() {
-        // BA-1: stage into locals and swap only on FULL success.
+        // Stage into locals and swap only on FULL success.
         //
-        // This used to clear the live maps up front and fill them in place, and
-        // it inserted each year key BEFORE parsing that year's entries. A file
-        // that threw part way through therefore left the object advertising
-        // coverage for years whose closures were missing -- and the outer catch
-        // returned false without undoing any of it. `covers_date` then answered
-        // true, every fail-closed caller passed, `is_holiday` returned false
-        // with no warning because the year WAS covered, and
-        // `find_previous_trading_day` walked onto a closed day. The guard only
-        // fired when the load failed TOTALLY, which is the easy case.
+        // Filling the live maps in place, with each year key inserted BEFORE that
+        // year's entries are parsed, would leave a file that threw part way through
+        // advertising coverage for years whose closures are missing. `covers_date`
+        // would then answer true, every fail-closed caller would pass, `is_holiday`
+        // would return false with no warning because the year WAS covered, and
+        // `find_previous_trading_day` would walk onto a closed day.
         //
         // Staging also makes a failed reload() non-destructive: the calendar
         // already in force survives.

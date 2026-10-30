@@ -39,6 +39,7 @@
 #include "one_pass_test_fixture.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/listing_dates.hpp"
+#include "trade_ngin/live/futures_cost_feed.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -188,6 +189,45 @@ TEST_F(ListingSwitchPassTest, AHeldPredecessorIsExitedAndTheListedContractEntere
     // once per pair: the next day is an ordinary day
     ASSERT_TRUE(rebalance(kListed + 1).is_ok());
     EXPECT_EQ(switch_fills().size(), 2u);
+}
+
+// The switch's legs read the manager's cost model, which the cost
+// feed sets from each symbol's own-day bar. The predecessor's bar on the switch day carries the
+// full-size contract's own volume (Bar::cost_volume, 400 lots here) while its bar's own volume is
+// the listed contract's (20 lots): the LC- leg pays impact on the 400, the LO- leg on the listed
+// contract's own 20 (at the model's 100-lot floor). Without cost_volume both would pay on the 20.
+TEST_F(ListingSwitchPassTest, TheSwitchsLegsArePricedOnEachContractsOwnFedVolume) {
+    ListingDates::instance().set(the_pair());
+    make_pm();
+    before(3.0);
+    ASSERT_TRUE(rebalance(kBefore).is_ok());
+    ASSERT_EQ(quantity(kBig), 2.0);
+
+    listed(24.4);
+    Bar big = one_pass_bar(kBig, kListed, 100.0, 20.0);
+    big.cost_volume = 400.0;
+    const Bar micro = one_pass_bar(kMicro, kListed, 100.0, 20.0);
+    auto& tcm = pm_->get_transaction_cost_manager();
+    FuturesCostFeedCarry carry;
+    feed_futures_cost_model_step(tcm, {big, micro}, one_pass_day(kListed + 1), carry);
+    ASSERT_EQ(tcm.get_adv(kBig), 400.0);
+    ASSERT_EQ(tcm.get_adv(kMicro), 20.0);
+    ASSERT_TRUE(pm_->process_market_data({big, micro}, false, one_pass_day(kListed + 1), nullptr).is_ok());
+    ASSERT_EQ(switch_fills(), (std::vector<std::string>{"LC-A-0 TBIG.v.0 -2", "LO-A-0 TMIC.v.0 24"}));
+    for (const auto& e : executions()) {
+        if (e.exec_id.rfind("L", 0) != 0) continue;
+        const bool exit = e.exec_id.rfind("LC-", 0) == 0;
+        const double q = static_cast<double>(e.filled_quantity) * (e.side == Side::BUY ? 1.0 : -1.0);
+        const double adv = exit ? 400.0 : 20.0;
+        const auto want = tcm.calculate_costs(e.symbol, q, 100.0, adv, tcm.get_volatility_multiplier(e.symbol));
+        EXPECT_NEAR(static_cast<double>(e.slippage_market_impact), want.slippage_market_impact, 1e-6)
+            << e.exec_id << " (the stored Decimal's rounding)";
+        const auto on_bar = tcm.calculate_costs(e.symbol, q, 100.0, 20.0, tcm.get_volatility_multiplier(e.symbol));
+        if (exit) {
+            EXPECT_LT(static_cast<double>(e.slippage_market_impact), on_bar.slippage_market_impact)
+                << "not on the listed contract's 20 lots";
+        }
+    }
 }
 
 // A pair that traded before the listing date and holds nothing on it is opened at its rounded
@@ -588,14 +628,13 @@ TEST_F(ListingSwitchPassTest, OnACutDayTheEntryIsTheScaledTarget) {
     for (const auto& line : fills("EX-")) EXPECT_EQ(line.find("TMIC"), std::string::npos) << line;
 }
 
-// ---- a book of two sleeves: the switch follows the book's own rule (LOOP_SPEC section 5.4) ----
+// ---- a book of two sleeves: the switch follows the book's own rule ----
 //
 // The book's net predecessor holding is exited and the listed contract entered at the BOOK's summed
 // scaled target; the book's whole number is split to the sleeves by the function the pass's own
 // split uses; the rows are stored one per sleeve and netted as every bar's rows are, so the account
 // sends ONE order per symbol and the net costs of a symbol's rows sum to the cost of that order.
 // Sleeve A is the first sleeve (the overlay's, whose forecast the deferral band reads), B the other.
-// The worked tables are in lead2/evidence/T-LISTING/fix_round/ITEM5_WORKED_CASES.md.
 class ListingSwitchTwoSleeveTest : public ListingSwitchPassTest {
 protected:
     void make_book(int sleeves) {

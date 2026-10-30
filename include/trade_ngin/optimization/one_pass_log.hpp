@@ -1,8 +1,8 @@
 #pragma once
 
-// LOOP_SPEC section 7.7: the log lines of one rebalance of the one pass, as text. One OVERLAY and
+// The log lines of one rebalance of the one pass, as text. One OVERLAY and
 // one OPTIMISER line a rebalance (a refused rebalance: the OVERLAY line only), one BOOK line, and
-// the RISK_TRIM and RISK_OVER_LIMIT_BY_HOLD warnings of section 6.4. Pure functions of the pass's
+// the RISK_TRIM and RISK_OVER_LIMIT_BY_HOLD warnings of the trim. Pure functions of the pass's
 // inputs and result, so a test can pin every field.
 
 #include <cmath>
@@ -140,7 +140,7 @@ inline std::string book_line(const std::vector<std::string>& symbols, const DayI
 }
 
 /// The RISK_TRIM warning of a trading day whose stored book is still above a limit after the trim:
-/// the terms in section 6.4's order with each excess, the largest excess in units of the largest
+/// the terms in over_limit's order with each excess, the largest excess in units of the largest
 /// non-zero stored u_i, the contracts the trim removed and whether it ran to its cap.
 inline std::string risk_trim_line(const std::vector<std::string>& symbols, const DayResult& r) {
     using log_detail::num;
@@ -170,7 +170,7 @@ inline std::string over_limit_by_hold_line(const std::vector<std::string>& symbo
            "]: the held rows keep the book over; they are held, not cut";
 }
 
-/// The families the lap loop's optimiser and gate wrote and section 7.7 keeps, from the pass's own
+/// The kept log families, from the pass's own
 /// window and covariance: T4_RISK_WINDOW (the overlay's window), OPTIMIZER_NOT_SIGNALLING (the
 /// listed symbols no sleeve signals yet), COVARIANCE_DATE_ALIGNED (the free rows the optimiser's
 /// covariance estimates, of all the free rows), COVARIANCE_MAX_RHO (the largest |rho| among the

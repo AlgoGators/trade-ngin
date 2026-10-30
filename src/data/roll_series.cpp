@@ -7,8 +7,13 @@
 
 namespace trade_ngin::roll_series {
 
-ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids) {
+ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids,
+                                        const RollFields& roll_from) {
     const size_t n = ids.size();
+    if (!roll_from.empty() && roll_from.size() != n) {
+        throw std::invalid_argument(
+            "roll_series::classify_instrument_changes: ids and roll fields differ in length");
+    }
     ChangeFlags f;
     f.change.assign(n, false);
     f.confirm.assign(n, false);
@@ -18,11 +23,31 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids) {
     f.leg_from.assign(n, -1);
     f.leg_to.assign(n, -1);
     f.held_id.assign(n, std::string());
+    f.old_close.assign(n, std::nullopt);
+    f.base_close.assign(n, std::nullopt);
+    f.leg_opening_price.assign(n, std::nullopt);
     if (n == 0) return f;
+    // A change of price source reads as the roll kind it stands for (series_kind).
+    std::vector<std::optional<RollFrom>> as_read;
+    if (!roll_from.empty()) {
+        as_read = roll_from;
+        for (auto& rf : as_read) {
+            if (rf) rf->kind = series_kind(rf->kind);
+        }
+    }
+    auto field = [&](size_t t) -> const std::optional<RollFrom>& {
+        static const std::optional<RollFrom> none;
+        return as_read.empty() ? none : as_read[t];
+    };
 
     std::string held;            // the confirmed id the position is held in
     std::string last_known;      // the last known id seen (the previous consumed bar's, skipping unknowns)
     std::vector<size_t> pending;  // the change bars of the unresolved sequence, oldest first
+    // A vendor switch (AWAITS_NEXT) the next bar decides: its bar, the target's id.
+    int awaiting = -1;
+    std::string awaiting_target;
+    std::string awaiting_date;  // the switch bar's date (RollFrom::date)
+    bool awaiting_on_target = false;  // SwitchBar VENDOR: the switch bar is the target's
     for (size_t t = 0; t < n; ++t) {
         const std::string& id = ids[t];
         if (id.empty()) {
@@ -34,6 +59,87 @@ ChangeFlags classify_instrument_changes(const std::vector<std::string>& ids) {
         if (last_known.empty()) {
             held = id;
             last_known = id;
+            f.held_id[t] = held;
+            continue;
+        }
+        const std::optional<RollFrom>& rf = field(t);
+        if (awaiting >= 0) {
+            // The contract held going into this bar decides the switch: the bar's own id, or the
+            // contract a roll known on this bar leaves.
+            const std::string& before = rf && rf->kind == RollFromKind::KNOWN ? rf->instrument_id : id;
+            const size_t a = static_cast<size_t>(awaiting);
+            pending.clear();
+            awaiting = -1;
+            const bool on_target = awaiting_on_target;
+            awaiting_on_target = false;
+            // A field following a later roll into the target does not confirm it.
+            const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL &&
+                                    !rf->date.empty() && !awaiting_date.empty() &&
+                                    rf->date != awaiting_date;
+            if (before == awaiting_target && !later_roll) {
+                // The roll happened on the switch bar: both legs at its two closes (the old
+                // contract's own close, the target's in the field), this bar's move from the target.
+                f.confirm[t] = true;
+                f.leg_to[t] = static_cast<int>(a);
+                if (!on_target) {
+                    f.leg_from[t] = static_cast<int>(a);
+                    f.leg_opening_price[t] = roll_from[a]->close;
+                    f.base_close[a] = roll_from[a]->close;
+                }
+                // (SwitchBar VENDOR: the switch bar is the target's, so the closing leg is its
+                // old_close, the opening leg and the start of the next move its own close)
+                f.rolled[a] = true;
+                // ("vendor": the switch bar already carries the target's id, so this is no change)
+                f.change[t] = on_target ? id != awaiting_target : id != last_known;
+                held = awaiting_target;
+                last_known = id;
+                if (!rf || rf->kind == RollFromKind::AFTER_ROLL) {
+                    f.held_id[t] = held;
+                    continue;
+                }
+            } else if (on_target) {
+                // SwitchBar VENDOR: nothing rolled; this bar moves from the held contract's close
+                // on the switch bar, not from the target's the bar carried.
+                f.base_close[a] = roll_from[a]->close;
+            }
+        }
+        const bool after_roll_acts = rf && rf->kind == RollFromKind::AFTER_ROLL &&
+                                     rf->instrument_id == last_known && id != last_known;
+        if (rf && rf->kind == RollFromKind::AWAITS_NEXT) {
+            // The bar is the held contract's own; the field names the target.
+            f.pending[t] = true;
+            pending.assign(1, t);
+            awaiting = static_cast<int>(t);
+            awaiting_target = rf->instrument_id;
+            awaiting_date = rf->date;
+            last_known = id;
+            f.held_id[t] = held;
+            continue;
+        }
+        if (rf && rf->kind == RollFromKind::AWAITS_NEXT_VENDOR) {
+            // SwitchBar VENDOR: the bar is the target's own; the field names the held contract,
+            // whose close the bar's move ends at.
+            f.pending[t] = true;
+            f.old_close[t] = rf->close;
+            pending.assign(1, t);
+            awaiting = static_cast<int>(t);
+            awaiting_target = id;
+            awaiting_date = rf->date;
+            awaiting_on_target = true;
+            last_known = rf->instrument_id;
+            f.held_id[t] = held;
+            continue;
+        }
+        if (rf && (rf->kind == RollFromKind::KNOWN || after_roll_acts)) {
+            // Known on its bar: confirmed here, both legs at this bar's two closes.
+            f.change[t] = true;
+            f.old_close[t] = rf->close;
+            f.confirm[t] = true;
+            f.leg_to[t] = static_cast<int>(t);
+            f.rolled[t] = true;
+            held = id;
+            last_known = id;
+            pending.clear();
             f.held_id[t] = held;
             continue;
         }
@@ -106,21 +212,85 @@ std::vector<double> adjusted_returns(const std::vector<double>& raw, const std::
     return r;
 }
 
-Series build_series(const std::vector<double>& raw, const std::vector<std::string>& ids) {
+std::vector<double> return_bases(const std::vector<double>& raw, const ChangeFlags& flags) {
+    if (flags.base_close.size() != raw.size()) {
+        throw std::invalid_argument("roll_series::return_bases: closes and flags differ in length");
+    }
+    std::vector<double> out = raw;
+    for (size_t t = 0; t < out.size(); ++t) {
+        if (flags.base_close[t]) out[t] = *flags.base_close[t];
+    }
+    return out;
+}
+
+std::vector<double> adjusted_levels(const std::vector<double>& raw, const ChangeFlags& flags) {
+    const size_t n = raw.size();
+    if (flags.change.size() != n || flags.old_close.size() != n || flags.base_close.size() != n) {
+        throw std::invalid_argument("roll_series::adjusted_levels: closes and flags differ in length");
+    }
+    std::vector<double> adjusted(n, 0.0);
+    double later_steps = 0.0;  // the sum of the steps on change bars after t
+    for (size_t k = n; k-- > 0;) {
+        adjusted[k] = raw[k] + later_steps;
+        if (k == 0) continue;
+        if (flags.old_close[k] || flags.base_close[k - 1]) {
+            // a per-contract roll: the bar's close less the close its move ends at (the old
+            // contract's on a roll bar), plus the close its move starts from (the target's after a
+            // confirmed vendor switch) less the previous close
+            const double to = flags.old_close[k] ? *flags.old_close[k] : raw[k];
+            const double from = flags.base_close[k - 1] ? *flags.base_close[k - 1] : raw[k - 1];
+            later_steps += (raw[k] - to) + (from - raw[k - 1]);
+        } else if (flags.change[k]) {
+            later_steps += raw[k] - raw[k - 1];
+        }
+    }
+    return adjusted;
+}
+
+std::vector<double> adjusted_returns(const std::vector<double>& raw, const ChangeFlags& flags) {
+    const size_t n = raw.size();
+    if (flags.change.size() != n || flags.old_close.size() != n || flags.base_close.size() != n) {
+        throw std::invalid_argument("roll_series::adjusted_returns: closes and flags differ in length");
+    }
+    std::vector<double> r;
+    if (n < 2) return r;
+    r.assign(n - 1, 0.0);
+    for (size_t t = 1; t < n; ++t) {
+        // a per-contract roll bar moves to the old contract's close; the bar after a confirmed
+        // vendor switch moves from the target's close
+        const double from = flags.base_close[t - 1] ? *flags.base_close[t - 1] : raw[t - 1];
+        if ((flags.change[t] && !flags.old_close[t] && !flags.base_close[t - 1]) || !(from > 0.0)) {
+            r[t - 1] = 0.0;
+        } else {
+            const double to = flags.old_close[t] ? *flags.old_close[t] : raw[t];
+            r[t - 1] = (to - from) / from;
+        }
+    }
+    return r;
+}
+
+Series build_series(const std::vector<double>& raw, const std::vector<std::string>& ids,
+                    const RollFields& roll_from) {
     if (ids.size() != raw.size()) {
         throw std::invalid_argument("roll_series::build_series: closes and ids differ in length");
     }
     Series s;
+    s.flags = classify_instrument_changes(ids, roll_from);
     s.raw = raw;
-    s.flags = classify_instrument_changes(ids);
-    s.adjusted = adjusted_levels(raw, s.flags.change);
-    s.returns = adjusted_returns(raw, s.flags.change);
+    s.adjusted = adjusted_levels(raw, s.flags);
+    s.returns = adjusted_returns(raw, s.flags);
     return s;
 }
 
-RollTracker::Status RollTracker::add(const std::string& id, double close) {
+RollTracker::Status RollTracker::add(const std::string& id, double close,
+                                     const std::optional<RollFrom>& field) {
     Status st;
     ++n_;
+    // A change of price source reads as the roll kind it stands for; the confirm it makes is
+    // flagged (Status::price_source_change) so no caller legs it.
+    std::optional<RollFrom> rf = field;
+    const bool source_change = rf && is_price_source_change(rf->kind);
+    if (rf) rf->kind = series_kind(rf->kind);
     if (id.empty()) {
         st.held_id = held_;
         st.pending = !pending_.empty();
@@ -130,6 +300,106 @@ RollTracker::Status RollTracker::add(const std::string& id, double close) {
     if (last_known_.empty()) {
         held_ = id;
         last_known_ = id;
+        st.held_id = held_;
+        last_close_ = close;
+        return st;
+    }
+    if (awaiting_) {
+        // The contract held going into this bar decides the vendor switch (its own
+        // id, or the contract a roll known on this bar leaves).
+        const std::string& before = rf && rf->kind == RollFromKind::KNOWN ? rf->instrument_id : id;
+        pending_.clear();
+        awaiting_ = false;
+        const bool on_target = awaiting_on_target_;
+        awaiting_on_target_ = false;
+        // A field following a later roll into the target does not confirm it.
+        const bool later_roll = rf && rf->kind == RollFromKind::AFTER_ROLL && !rf->date.empty() &&
+                                !awaiting_date_.empty() && rf->date != awaiting_date_;
+        const bool confirmed = before == awaiting_id_ && !later_roll;
+        if (!confirmed && on_target) {
+            // SwitchBar VENDOR: nothing rolled; this bar moves from the held contract's close on
+            // the switch bar, not from the target's the bar carried.
+            st.previous_close = awaiting_old_close_;
+        }
+        if (confirmed) {
+            // The roll happened on the switch bar: both legs at its two closes; this bar moves from
+            // the target's close (SwitchBar VENDOR: the switch bar's own, the previous close).
+            st.confirm = true;
+            st.previous_held_id = awaiting_old_id_;
+            st.last_close_before_change = awaiting_old_close_;
+            st.change_bar_close = awaiting_close_;
+            st.bars_pending = 1;
+            st.roll_bar_points = awaiting_bar_points_;  // the switch bar's booked move
+            if (!on_target)
+                st.previous_close = awaiting_close_;
+            // ("vendor": the switch bar already carries the target's id, so this is no change)
+            st.change = on_target ? id != awaiting_id_ : id != last_known_;
+            held_ = awaiting_id_;
+            last_known_ = id;
+            if (rf && rf->kind == RollFromKind::KNOWN) {
+                throw std::runtime_error(
+                    "roll_series::RollTracker: a vendor switch confirmed by a bar that is itself a "
+                    "roll (" + awaiting_old_id_ + " to " + held_ + " to " + id + "): two rolls on one bar");
+            }
+            if (!rf || rf->kind == RollFromKind::AFTER_ROLL) {
+                st.held_id = held_;
+                last_close_ = close;
+                return st;
+            }
+        }
+    }
+    if (rf && rf->kind == RollFromKind::AWAITS_NEXT_VENDOR) {
+        // SwitchBar VENDOR: the bar is the target's own; the field names the held contract, whose
+        // close the bar's move ends at.
+        st.pending = true;
+        st.mark_close = rf->close;
+        pending_.assign(1, Pending{id, close});
+        awaiting_ = true;
+        awaiting_on_target_ = true;
+        awaiting_id_ = id;
+        awaiting_close_ = close;
+        awaiting_old_close_ = rf->close;
+        awaiting_old_id_ = rf->instrument_id;
+        awaiting_date_ = rf->date;
+        awaiting_bar_points_ = st.move(close, last_close_);
+        last_known_ = rf->instrument_id;
+        st.held_id = held_;
+        last_close_ = close;
+        return st;
+    }
+    if (rf && rf->kind == RollFromKind::AWAITS_NEXT) {
+        // The bar is the held contract's own; the field names the target.
+        st.pending = true;
+        pending_.assign(1, Pending{id, close});
+        awaiting_ = true;
+        awaiting_id_ = rf->instrument_id;
+        awaiting_close_ = rf->close;
+        awaiting_old_close_ = close;
+        awaiting_old_id_ = id;
+        awaiting_date_ = rf->date;
+        awaiting_bar_points_ = st.move(close, last_close_);
+        last_known_ = id;
+        st.held_id = held_;
+        last_close_ = close;
+        return st;
+    }
+    const bool after_roll_acts = rf && rf->kind == RollFromKind::AFTER_ROLL &&
+                                 rf->instrument_id == last_known_ && id != last_known_;
+    if (rf && (rf->kind == RollFromKind::KNOWN || after_roll_acts)) {
+        // (a switch confirmed on this bar never reaches here: a KNOWN field threw above, an
+        // AFTER_ROLL field or none returned)
+        st.change = true;
+        st.mark_close = rf->close;
+        st.confirm = true;
+        st.previous_held_id = rf->instrument_id;
+        st.last_close_before_change = rf->close;
+        st.change_bar_close = close;
+        st.bars_pending = 1;
+        st.roll_bar_points = st.move(close, last_close_);  // the old contract's own move
+        st.price_source_change = source_change;
+        held_ = id;
+        last_known_ = id;
+        pending_.clear();
         st.held_id = held_;
         last_close_ = close;
         return st;
@@ -208,6 +478,27 @@ std::vector<ExecutionReport> make_roll_legs(
     return legs;
 }
 
+void attach_roll_split(std::vector<ExecutionReport>& legs, double q_held, double roll_bar_points,
+                       double point_value) {
+    if (legs.empty()) return;
+    ExecutionReport& closing = legs.front();
+    const double gap = static_cast<double>(legs.back().fill_price) - static_cast<double>(closing.fill_price);
+    closing.roll_bar_move = q_held * roll_bar_points * point_value;
+    closing.roll_gap_points = gap;
+    closing.roll_gap_value = gap * q_held * point_value;
+}
+
+RollSplitTotals roll_split_totals(const std::vector<ExecutionReport>& executions) {
+    RollSplitTotals out;
+    for (const auto& e : executions) {
+        if (!e.roll_bar_move) continue;
+        out.roll_bar_moves += *e.roll_bar_move;
+        out.roll_gap_values += e.roll_gap_value.value_or(0.0);
+        ++out.rolls;
+    }
+    return out;
+}
+
 std::unordered_map<std::string, RollTracker::Status> roll_status_of(const std::vector<Bar>& bars) {
     std::map<std::string, std::map<Timestamp, const Bar*>> by_symbol;
     for (const auto& bar : bars) by_symbol[bar.symbol][bar.timestamp] = &bar;
@@ -216,7 +507,7 @@ std::unordered_map<std::string, RollTracker::Status> roll_status_of(const std::v
         RollTracker tracker;
         RollTracker::Status last;
         for (const auto& [ts, bar] : series) {
-            last = tracker.add(bar->instrument_id, static_cast<double>(bar->close));
+            last = tracker.add(bar->instrument_id, static_cast<double>(bar->close), bar->roll_from);
         }
         out[symbol] = last;
     }

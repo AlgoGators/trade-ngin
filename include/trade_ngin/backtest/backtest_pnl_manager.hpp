@@ -4,7 +4,7 @@
 
 #include "trade_ngin/live/pnl_manager_base.hpp"
 #include "trade_ngin/core/types.hpp"
-#include "trade_ngin/strategy/types.hpp"  // PnLAccountingMethod (E2-F2)
+#include "trade_ngin/strategy/types.hpp"  // PnLAccountingMethod
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <memory>
@@ -112,33 +112,20 @@ public:
     
     /**
      * @brief The unrealized P&L to record on a backtest position row, per the
-     *        strategy's own settlement model. E2-F2.
+     *        strategy's own settlement model.
      *
      * REALIZED_ONLY (futures) returns 0.0 -- an identity of the model, not a
      * convention. Under daily settlement the position is never carried at an
      * unsettled price, and on a futures row `average_price` IS the prior
      * settlement close: TrendFollowingStrategy resets it to current_price after
-     * settling (trend_following.cpp:550-556) and get_target_positions() stamps
-     * price_history.back() (:610-624), while the coordinator feeds on_data the
-     * T-1 bars (backtest_coordinator.cpp:547). So
+     * settling (TrendFollowingStrategy::on_data) and get_target_positions() stamps
+     * price_history.back(), while the coordinator feeds on_data the T-1 bars. So
      * `quantity * (mark - average_price) * point_value` reduces ALGEBRAICALLY to
      * the realized formula, and writing it into unrealized records the same
      * settled move in two columns.
      *
-     * That is exactly what this codebase did until E2-F2: the coordinator gated
-     * realized on the accounting method but left unrealized ungated, and its
-     * inline expression also omitted point_value -- so a futures row carried the
-     * settled move DIVIDED by the contract multiplier. Measured at 2,769 of 3,064
-     * rows on TREND_FOLLOWING (gross magnitude $693,172.27, net -$28,315.21), and
-     * it read as an exact 1/point_value ratio against realized on every symbol:
-     * MYM 2.0 (pv 0.5), MES 0.2 (pv 5), ZN 0.001 (pv 1000), 6A 0.00001 (pv 1e5).
-     * `main` had `unrealized_pnl = Decimal(0.0)` unconditionally; the regression
-     * entered with 76b4ea5d.
-     *
      * This is the backtest counterpart of LivePnLManager::UnrealizedPolicy
-     * (SETTLED / MARK_TO_MARKET), which fixed the identical defect on the live
-     * side in 5b589ac2 (E2-F3). Live and backtest MUST agree; before this they
-     * did not.
+     * (SETTLED / MARK_TO_MARKET). Live and backtest MUST agree.
      *
      * DO NOT "restore" an ungated unrealized here, and do not drop point_value
      * from the MIXED branch. If futures ever legitimately needs a non-zero
@@ -189,9 +176,9 @@ public:
     /**
      * @brief The stored row's per-bar realized FLOW, and whether the row survives.
      *
-     * E2-F54. `backtest.final_positions.realized_pnl` is a FLOW -- what this position
+     * `backtest.final_positions.realized_pnl` is a FLOW -- what this position
      * realized on THIS bar's date -- exactly as `trading.positions.daily_realized_pnl` is
-     * live (E2-F19, docs/AVERAGE_PRICE_LIFECYCLE.md). The strategy's own record is a
+     * live (docs/AVERAGE_PRICE_LIFECYCLE.md). The strategy's own record is a
      * running total over the whole backtest, so the row is the increment since the
      * previous bar.
      *
@@ -233,7 +220,7 @@ public:
     /**
      * @brief The bar's flow WITHOUT advancing the ledger.
      *
-     * E2-F59. `last_cumulative` means "the cumulative as of the last row actually WRITTEN",
+     * `last_cumulative` means "the cumulative as of the last row actually WRITTEN",
      * not "as of the last bar seen". Three paths in the coordinator's bar loop return without
      * writing anything -- the symbol has no close on this bar, it has no previous close, or
      * the P&L result is not valid -- and on those the ledger must be left alone so the next
@@ -253,7 +240,7 @@ public:
         return row;
     }
 
-    /** @brief Advance the ledger. Call ONLY after the row has been written. E2-F59. */
+    /** @brief Advance the ledger. Call ONLY after the row has been written. */
     static void commit_realized_row(double cumulative_from_fills, double& last_cumulative) {
         last_cumulative = cumulative_from_fills;
     }

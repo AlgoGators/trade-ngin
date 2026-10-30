@@ -1,6 +1,6 @@
 // include/trade_ngin/data/postgres_database.hpp
 //
-// Timezone contract (Phase 5 §5c):
+// Timezone contract:
 //   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
 //   module are UTC. Provider date columns are interpreted as calendar dates
 //   with no timezone shift -- their semantics are determined by the ingest
@@ -11,7 +11,7 @@
 //   (a wrapper around `safe_gmtime + strftime`); direct `std::gmtime` use
 //   is forbidden in this file (non-thread-safe and locale-dependent).
 //
-// SQL contract (Phase 5 §5b):
+// SQL contract:
 //   Value interpolation MUST go through `pqxx::params` / `exec_params`.
 //   Identifier interpolation (table/column names) MUST go through
 //   `validate_identifier` (private helper in postgres_database.cpp) before
@@ -35,6 +35,8 @@
 #include "trade_ngin/data/backtest_curve_cells.hpp"
 #include "trade_ngin/data/live_results_cell.hpp"
 #include "trade_ngin/data/market_data_utils.hpp"
+#include "trade_ngin/data/per_contract_source.hpp"
+#include "trade_ngin/data/report_roll_view.hpp"
 #include "trade_ngin/data/strategy_config_row.hpp"
 
 namespace trade_ngin {
@@ -85,7 +87,7 @@ private:
     friend class PostgresDatabase;
 
     // `owner` is the PostgresDatabase whose connection this transaction holds.
-    // C4-DbTransaction: the scope marks that database as busy for as long as it
+    // The scope marks that database as busy for as long as it
     // lives, so a self-opening method called in between refuses instead of
     // throwing pqxx::usage_error. May be null in tests that build a scope
     // straight from a connection.
@@ -164,7 +166,7 @@ public:
         DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") override;
 
     /**
-     * @brief The vendor instrument id of each futures bar the loader keeps (T-7b-2 C10a)
+     * @brief The vendor instrument id of each futures bar the loader keeps
      *
      * For the session classifier's instrument-id continuity limb. The window and the symbol
      * filter are get_market_data's (FUTURES, daily); a bar whose futures_data.ohlcv_1d_raw row
@@ -292,8 +294,8 @@ public:
      * @param query SQL query to execute
      * @return The number of rows the statement affected (pqxx::result::affected_rows(): an
      *         UPDATE or DELETE that matched nothing returns 0, which is NOT an error), or an
-     *         error. S-4 (T-5): it used to return Result<void>, so a Day T-1 UPDATE that
-     *         matched no row was indistinguishable from one that finalized the row.
+     *         error. The count tells a Day T-1 UPDATE that matched no row from one that
+     *         finalized the row.
      */
     Result<size_t> execute_direct_query(const std::string& query);
 
@@ -393,7 +395,7 @@ public:
         const std::string& portfolio_type = kDefaultEquityCurveStream) override;
 
     // ============================================================================
-    // NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)
+    // TYPED QUERY METHODS
     // ============================================================================
 
     /**
@@ -406,21 +408,15 @@ public:
     /**
      * @brief Delete this book's executions for a date so a re-run can re-insert them.
      *
-     * E2-F4: portfolio_id is REQUIRED and deliberately has no default.
+     * portfolio_id is REQUIRED and deliberately has no default.
      *
-     * The predicate used to be (date, strategy_name, order_id) with no portfolio at all,
-     * while trading.executions is keyed (portfolio_id, strategy_id, strategy_name, date,
-     * exec_id). order_id is portfolio-independent -- ExecutionManager builds it as
-     * "DAILY_<symbol>_<date>" (execution_manager.cpp:147) -- and TREND_FOLLOWING is
-     * enabled-live in BOTH the base and conservative books. So a conservative run could
-     * delete BASE_PORTFOLIO's rows for the same symbol and date, and vice versa; the
-     * survivor was whichever book ran last, and the delete leaves no trace of what it took.
-     *
-     * It never fired only because of a SECOND bug that happened to mask it: two call sites
-     * passed table_name into the strategy_name slot, so the predicate matched nothing.
-     * Fixing that alone would have ARMED this one -- the two must move together, which is
-     * why portfolio_id is required rather than defaulted. A default would let a caller be
-     * silently re-armed by omission.
+     * trading.executions is keyed (portfolio_id, strategy_id, strategy_name, date, exec_id).
+     * order_id is portfolio-independent -- ExecutionManager builds it as
+     * "DAILY_<symbol>_<date>" -- and TREND_FOLLOWING is enabled-live in BOTH the base and
+     * conservative books. Without the portfolio in the predicate a conservative run would
+     * delete BASE_PORTFOLIO's rows for the same symbol and date, and vice versa, and the
+     * delete leaves no trace of what it took. A default would let a caller drop the portfolio
+     * from the predicate silently, by omission.
      */
     virtual Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
                                                   const Timestamp& date,
@@ -430,7 +426,7 @@ public:
                                                   const std::string& book = kDefaultBook);
 
     /**
-     * @brief T-ROLLX (LOOP_SPEC v6.1 section 6.5): the re-run sweep of a day's ROLL legs by type.
+     * @brief The re-run sweep of a day's ROLL legs by type.
      *        Deletes every execution_type = 'ROLL' row of the sleeve and portfolio dated `date`
      *        (the row's UTC run date), so a re-run that no longer rolls leaves no orphan leg.
      */
@@ -440,8 +436,7 @@ public:
                                                 const std::string& book = kDefaultBook);
 
     /**
-     * @brief The executions of a day replaced in ONE transaction (T-ROLLX-FIX commits 5 and 6,
-     *        LOOP_SPEC v6.2 section 6.5; T-DATED R3, HD 2026-10-10): per sleeve, the sweep of its
+     * @brief The executions of a day replaced in ONE transaction: per sleeve, the sweep of its
      *        rows dated `date` of every type, the delete of the rows carrying this run's order ids
      *        (delete_stale_executions' predicate) and the insert (store_executions' columns); the
      *        steps and their order are data/day_execution_replace.hpp. The live runners call it
@@ -457,7 +452,15 @@ public:
         const std::string& table_name, const std::string& book = kDefaultBook);
 
     /**
-     * @brief T-ROLLX-FIX commit 6 (section 6.5, a late roll's settlement): the stored positions
+     * @brief The daily report's roll view (contract_rolls::report_roll_view), on
+     *        its own read transaction, with the per-contract source's calendar. An empty view (the
+     *        switch off: nothing new printed) when the source is off or the database cannot be read.
+     */
+    ReportRolls report_roll_view(const contract_rolls::ReportRollQuery& query,
+                                 const std::function<double(const std::string&)>& tick_of);
+
+    /**
+     * @brief For a late roll's settlement: the stored positions
      *        rows of the book dated strictly after `after_date` and strictly before `before_date`
      *        (YYYY-MM-DD), every sleeve: symbol, sleeve, date, quantity, daily realised P&L, ordered
      *        by date, symbol, sleeve. One parameterised SELECT; the table name is validated.
@@ -469,12 +472,12 @@ public:
         const std::string& table_name, const std::string& book = kDefaultBook);
 
     /**
-     * @brief T-ROLLX (migration 017): the cumulative ROLL cost of the book before `date`: the latest
+     * @brief The cumulative ROLL cost of the book before `date` (migration 017): the latest
      *        total_roll_costs stored before `date` (the same row get_previous_live_aggregates reads; 0
      *        when no row exists) PLUS the cost of every ROLL execution stored after that row's date
      *        and before `date`. A run stores its executions before its live_results row, so a day
      *        whose results write failed left its legs and no row: the total continues across it
-     *        instead of dropping that day's part (T-ROLLX-FIX commit 4, B4). With a row on every day
+     *        instead of dropping that day's part. With a row on every day
      *        the second term is 0.
      */
     virtual Result<double> get_previous_total_roll_costs(
@@ -484,7 +487,7 @@ public:
         const std::string& book = kDefaultBook);
 
     /**
-     * @brief T-ROLLX-FIX (LOOP_SPEC v6.2 section 6.5, legs by STATE): per symbol, the contract the
+     * @brief Legs by STATE: per symbol, the contract the
      *        ROLL closing legs already stored for `date` rolled out of (the instrument_id of the
      *        symbol's earliest EXEC_<symbol>_<confirm date>_RC row of that date); empty when the
      *        date has no ROLL row. A re-run of a date reads it: the first run re-wrote the T-1
@@ -494,6 +497,19 @@ public:
     virtual Result<std::unordered_map<std::string, std::string>> get_stored_roll_contracts(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.executions",
+        const std::string& book = kDefaultBook);
+
+    /**
+     * @brief Per symbol, the rolls stored for the dates from `from` (inclusive) to
+     *        `date` (exclusive), oldest first (by date, then by the confirming date the exec id
+     *        carries): the contract each roll's EXEC_<symbol>_<date>_RC closing leg rolled out of
+     *        and the one its _RO opening leg of the same date rolled into ("" when that leg is
+     *        not stored). One roll stored for several sleeves is one entry. A re-run reads it to
+     *        tell whether its own legs are stale (contract_held_coming_into).
+     */
+    virtual Result<std::unordered_map<std::string, std::vector<StoredRoll>>> get_previous_rolls(
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& from,
+        const Timestamp& date, const std::string& table_name = "trading.executions",
         const std::string& book = kDefaultBook);
 
     /**
@@ -541,11 +557,10 @@ public:
      * @return Result indicating success or failure
      */
     /**
-     * @param keep_closed_rows E2-F54. Default false preserves the historical filter:
-     *        every zero-quantity row is dropped. Cash books (MIXED / UNREALIZED_ONLY)
-     *        pass true so a position closed to zero keeps the row carrying that bar's
-     *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
-     *        and store exactly the rows they always did.
+     * @param keep_closed_rows Default false: every zero-quantity row is dropped.
+     *        Cash books (MIXED / UNREALIZED_ONLY) pass true so a position closed to zero
+     *        keeps the row carrying that bar's realized flow -- the live is_dead_row rule.
+     *        Futures backtests leave it false.
      * @param no_bar_symbols Migration 038. The symbols of `positions` that printed no bar on
      *        the rows' date (a futures book's; the coordinator names them): their stored rows
      *        carry row_mark = 'NO_BAR', every other row NULL. The statement names the column
@@ -708,8 +723,8 @@ public:
      * Reads from equities_data.corporate_action (existing schema; no DDL).
      * That feed stopped receiving events on 2025-08-29, so this returns
      * nothing for recent windows. It remains the only source of TERMINATION
-     * deal terms; PRICE_RESTATING events are now sourced from the live
-     * per-bar columns via get_per_bar_corporate_actions() instead.
+     * deal terms; PRICE_RESTATING events come from the live per-bar
+     * columns via get_per_bar_corporate_actions().
      *
      * @param actions      Vendor labels to filter on. Defaults to the
      *                     price-restating set for backward compatibility;
@@ -731,12 +746,12 @@ public:
     /**
      * @brief Last date present in equities_data.corporate_action.
      *
-     * E4 item 3. The deal-terms feed's stop date used to be a compiled-in
-     * constant (`kCorpActionTableFrozenAfter`) quoted in every termination WARN.
-     * A constant cannot notice a revived subscription: after a backfill the
-     * message keeps naming the old date until someone rebuilds, and the operator
-     * gets no signal that the dormant rollover path just went live. Measuring it
-     * makes the log line true by construction.
+     * The deal-terms feed's stop date, quoted in every termination WARN, is
+     * measured rather than compiled in: a constant cannot notice a revived
+     * subscription (after a backfill the message would keep naming the old date
+     * until someone rebuilds, and the operator would get no signal that the
+     * dormant rollover path went live). Measuring it makes the log line true by
+     * construction.
      *
      * Future-dated placeholder rows are excluded: the table carries tickerchange
      * rows dated 2027-07-18, and a bare max() would report a feed running two
@@ -796,9 +811,9 @@ public:
      *
      * @param tickers   Symbols to look up.
      * @param from_date Inclusive YYYY-MM-DD floor; a delisting older than this
-     *        is not returned. Empty means no floor (the pre-BA-8 behaviour).
+     *        is not returned. Empty means no floor.
      *
-     * BA-8 / C-1 D12: delisting_date is keyed on the TICKER, and this reads
+     * delisting_date is keyed on the TICKER, and this reads
      * `max(delisting_date)` over the symbol's whole history, so a reused ticker
      * inherits the dead company's row -- HPC carries 2008-11-24, MER 2008-12-31.
      * Acting on one exits a live position at a stale price. The runner has a
@@ -848,25 +863,24 @@ public:
      * satisfies `inception <= effective_until` for our own META -> METV backfill
      * (effective_until 2022-01-31) and re-keys a live 100-share position onto a symbol
      * with no bars at all. Class 2 must ask a narrower question: when did the holding we
-     * hold RIGHT NOW start? (BA-2 / C-3 D1.)
+     * hold RIGHT NOW start?
      *
      * A holding starts after the most recent flat row. A closed position keeps exactly one
-     * row -- quantity 0 on the day it closed (E2-F19, `LiveDailyCycle::is_dead_row`) -- so
+     * row -- quantity 0 on the day it closed (`LiveDailyCycle::is_dead_row`) -- so
      * that row is the break. Absent such a row the position was never closed and this
      * equals the lifetime inception.
      *
      * Direction of error: too LATE is safe (the rename is skipped and retried next run);
      * too EARLY re-keys a live holding, which is silent and permanent. This errs late.
      *
-     * BA-19: `on_or_before` bounds BOTH halves of the question to rows the run can
+     * `on_or_before` bounds BOTH halves of the question to rows the run can
      * legitimately see -- normally the run's own `previous_date`. `trading.positions` is not
      * append-only in practice: an interrupted windowed reset, or a replay abandoned partway,
      * leaves rows dated AFTER the date being replayed. Unbounded, such a row moves the answer
      * twice over -- a future non-zero row can become the `min(date)` of "the current
      * holding", and a future FLAT row raises the break date past every real row and makes the
      * symbol vanish from the map entirely, silently skipping its rename. Neither failure is
-     * visible in the run's output. Empty (the default) means unbounded, which is the previous
-     * behaviour exactly.
+     * visible in the run's output. Empty (the default) means unbounded.
      *
      * @param on_or_before inclusive YYYY-MM-DD ceiling on the rows considered; empty = none.
      * @return symbol -> YYYY-MM-DD the current holding began. Symbols with no non-zero
@@ -883,7 +897,7 @@ public:
     /**
      * @brief Latest date this strategy BOUGHT each symbol, on or after `on_or_after`.
      *
-     * E2-F17 basis provenance. A class-1 corporate action may only restate a cost basis that
+     * Basis provenance. A class-1 corporate action may only restate a cost basis that
      * was formed BEFORE the ex-date. A fill on run D is priced at close(D-1), so a BUY dated
      * strictly AFTER the ex-date was struck at a price the market had already adjusted and is
      * positive evidence that the basis is contaminated.
@@ -897,9 +911,9 @@ public:
      *
      * `on_or_before` is MANDATORY and must be the date of the book being examined (T-1), not
      * today and never unbounded. On a replay the executions table also holds rows for dates
-     * AFTER the run being processed, so an unbounded query reads the future: it reported
-     * `BUY 2026-07-30` as evidence against a 2026-06-08 ex-date while replaying June, and
-     * skipped a dividend that had to apply.
+     * AFTER the run being processed, so an unbounded query reads the future: replaying June,
+     * it would take `BUY 2026-07-30` as evidence against a 2026-06-08 ex-date and skip a
+     * dividend that has to apply.
      *
      * @return symbol -> YYYY-MM-DD of the most recent qualifying BUY.
      */
@@ -922,7 +936,7 @@ public:
      * adjusted-series window function.
      *
      * Returns RAW closes, matching close_by_symbol_date's frame -- the
-     * denominator is raw-dollar over the ex-date close (05-22 doc §B6).
+     * denominator is raw-dollar over the ex-date close.
      *
      * @return symbol -> (YYYY-MM-DD -> close).
      */
@@ -946,19 +960,19 @@ public:
         double dividend_per_share{0.0};
         double total_cash{0.0};
         /**
-         * Run date of the pass that wrote the row (E2-F23, migration 005).
+         * Run date of the pass that wrote the row (migration 005).
          * YYYY-MM-DD, or "" for a legacy row written before the column existed.
          *
          * NOT part of the natural key. It exists so a run can tell whether the
          * dedup rows it is about to trust came from an EARLIER pass or a LATER
-         * one -- the ex-date cannot, because the measured failure (BKNG, ex-date
-         * 2026-04-06, re-run of 04-07 over an un-reset dedup table) has an
-         * ex-date safely in the past, and `applied_at` cannot, because an earlier
+         * one -- the ex-date cannot, because a re-run over an un-reset dedup
+         * table (BKNG: ex-date 2026-04-06, re-run of 04-07) has an ex-date
+         * safely in the past, and `applied_at` cannot, because an earlier
          * chain always carries an earlier wall clock.
          */
         std::string run_date;
         /**
-         * The factor this event divided the cost basis by (F-8, migration 006):
+         * The factor this event divided the cost basis by (migration 006):
          * F for a SPLIT/ADR_SPLIT, 1 + d/c for a DIVIDEND, i.e.
          * PositionAdjustment.ratio_change. Multiplying
          * trading.positions.average_price by the product of these over a holding
@@ -1051,8 +1065,8 @@ public:
     /**
      * @brief Validate strategy ID for SQL injection prevention.
      *        Allowlist: alphanumeric + `_-`, 1-50 chars. Public for
-     *        testability (Phase 5 §5b -- the SQL-injection chokepoint
-     *        deserves a regression test).
+     *        testability (the SQL-injection chokepoint deserves a
+     *        regression test).
      */
     Result<void> validate_strategy_id(const std::string& strategy_id) const;
 
@@ -1065,7 +1079,7 @@ public:
     /**
      * @brief Validate a generic SQL identifier (table name fragment, column
      *        name) against a strict allowlist: `[A-Za-z_][A-Za-z0-9_.]*`.
-     *        Phase 5 §5b -- use this when an identifier MUST be string-
+     *        Use this when an identifier MUST be string-
      *        concatenated into a query (Postgres does not allow $-binding
      *        identifiers). For values, prefer `pqxx::params` / `exec_params`.
      */
@@ -1080,7 +1094,7 @@ private:
     std::string component_id_;
 
     /**
-     * @brief Is a DbTransaction currently open on this connection? (C4-DbTransaction)
+     * @brief Is a DbTransaction currently open on this connection?
      *
      * pqxx allows ONE transaction per connection. Every self-opening method here
      * constructs its own `pqxx::work` on `connection_`, so calling any of them
@@ -1119,7 +1133,7 @@ private:
                                       const std::string& strategy_id, const std::string& strategy_name,
                                       const std::string& portfolio_id, const std::string& table_name,
                                       const std::string& book);
-    /// Whether `table_name` has migration 040's columns (mark_price, settle_from_price,
+    /// Whether `table_name` has migration 041's columns (mark_price, settle_from_price,
     /// settle_to_price, settle_mark); asked once per table and process.
     static bool positions_have_report_columns(pqxx::work& txn, const std::string& table_name);
     Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
@@ -1232,6 +1246,16 @@ private:
      * @return Result containing the Arrow table
      */
     Result<std::shared_ptr<arrow::Table>> convert_to_arrow_table(const pqxx::result& result) const;
+
+    /**
+     * @brief The futures bars with portfolio.json's per_contract_rolls on
+     *        (contract_rolls/per_contract_source.hpp): the held contract's own bar on each grid
+     *        date, a roll bar carrying the old contract's close; every root, the micros
+     *        included. Sorted as the futures query sorts (time, then symbol).
+     */
+    Result<std::vector<contract_rolls::SourceBar>> per_contract_source_bars(
+        pqxx::transaction_base& txn, const std::vector<std::string>& symbols,
+        const std::string& start_ts, const std::string& end_ts) const;
 
     /**
      * @brief Convert contract metadata result to Arrow table

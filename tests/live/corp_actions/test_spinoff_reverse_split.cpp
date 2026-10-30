@@ -1,25 +1,24 @@
 // tests/live/corp_actions/test_spinoff_reverse_split.cpp
 //
-// E2-F48 / BA-21 -- a reverse split on a spinoff's ex-date is a reverse split.
+// A reverse split on a spinoff's ex-date is a reverse split.
 //
-// `apply_spinoffs` guarded `F > 0` where its own comment said `> 1`. A spinoff's factor is
-// the step the price series takes because value LEFT the parent, so it is strictly greater
-// than 1 and `1 - 1/F` -- the fraction of the cost basis that leaves with the child -- is
-// strictly positive. Three real bars carry a split_factor BELOW 1 on a spinoff ex-date:
+// A spinoff's factor is the step the price series takes because value LEFT the parent, so it
+// is strictly greater than 1 and `1 - 1/F` -- the fraction of the cost basis that leaves with
+// the child -- is strictly positive; a guard of `F > 0` is too weak. Three real bars carry a
+// split_factor BELOW 1 on a spinoff ex-date:
 //
 //   HLT  2017-01-04  0.3333333333  (1-for-3, alongside PK and HGV)
 //   LDOS 2013-09-30  0.25          (1-for-4, alongside SAIC)
 //   DD   2019-06-03  0.33333333    (1-for-3, alongside CTVA)
 //
-// Passed in as F those made `1 - 1/F` negative -- HLT's is -2.0 -- so the child was
-// allocated a negative cost basis, and under the default liquidate_at_first_close policy the
-// child's whole first close PLUS that negative basis was booked as realized gain on the
-// parent's row. It also SUPPRESSED a real split that applied correctly before the spinoff
-// path existed, so the fix was a regression against pre-B-4 behaviour on those bars.
+// Passed in as F those make `1 - 1/F` negative -- HLT's is -2.0 -- so the child would get a
+// negative cost basis, and under the default liquidate_at_first_close policy the child's
+// whole first close PLUS that negative basis would be booked as realized gain on the parent's
+// row. The real split on those bars would be SUPPRESSED as well.
 //
-// THE RULE, chosen from the two the brief offered and applied here: (a) the reverse split is
-// applied as an ordinary class-1 split, and only the rest of the bar's step is routed as the
-// distribution. Option (b) -- refuse the whole bar -- survives as the DEGENERATE case, where
+// THE RULE: the reverse split is applied as an ordinary class-1 split, and only the rest of
+// the bar's step is routed as the distribution. Refusing the whole bar survives as the
+// DEGENERATE case, where
 // taking the reverse split out leaves no distribution factor at all (DD): there is then
 // nothing to allocate to the child, and delivering it would fabricate the allocation.
 
@@ -111,7 +110,7 @@ TEST(SpinoffReverseSplit, DDIsRefusedBecauseNoDistributionWasPricedIntoTheSeries
     EXPECT_FALSE(dd.routes_a_spinoff())
         << "with no distribution factor left, delivering CTVA gives it a zero cost basis and "
            "books its entire first close as realized gain";
-    // And the split itself is unchanged: exactly what the class-1 path applied before B-4.
+    // And the split itself is unchanged: exactly what the class-1 path applies to a plain split.
     EXPECT_DOUBLE_EQ(dd.total_factor(), 0.33333333);
 }
 
@@ -139,7 +138,7 @@ TEST(SpinoffReverseSplit, ApplySpinoffsRefusesAFactorAtOrBelowOneRatherThanGoing
     EXPECT_DOUBLE_EQ(positions["DD"].realized_pnl.as_double(), 0.0);
     EXPECT_EQ(positions.count("CTVA"), 0u);
 
-    // What the old `F > 0` guard would have produced instead: 1 - 1/0.33333333 = -2.0, a
+    // What an `F > 0` guard would produce instead: 1 - 1/0.33333333 = -2.0, a
     // child basis of 30.52 * -2 / 0.33333 = -183.12 per share, and 33 shares sold at 26.00
     // against it -- 33 * (26.00 + 183.12) = +6,901 of realized gain out of thin air.
     const double negative_child_basis = 30.52 * (1.0 - 1.0 / 0.33333333) / 0.33333;
@@ -189,7 +188,7 @@ TEST(SpinoffReverseSplit, ExactlyOneIsRefusedBecauseNothingLeftTheParent) {
 }
 
 TEST(SpinoffReverseSplit, TheDecomposedHLTBarConservesBasisAcrossBothLegs) {
-    // The full HLT arithmetic, single-child form (the multi-child case is E2-F49's test).
+    // The full HLT arithmetic, single-child form (the multi-child case is test_spinoff_multi_child.cpp).
     // 100 sh at the raw 2017-01-03 close of 27.39.
     const auto columns = bar(0.3333333333, 24.48, 58.0);
     const double F_spin = columns.spinoff_factor();

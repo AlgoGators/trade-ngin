@@ -1,5 +1,5 @@
-// The backtest statistics of migration 037 (LOOP_SPEC v6.2 sections 7.4 and 10; T-8b commit
-// (1b)): on backtest.results, the worst day with its date and symbol, the three statistics on
+// The backtest statistics of migration 037: on backtest.results, the worst day with its date
+// and symbol, the three statistics on
 // the sizing capital, the monthly skew and tail ratio, the calendar-year returns with the losing
 // years, and the count of the account's STRATEGY fills.
 //
@@ -84,6 +84,18 @@ std::vector<LiveResultsCell> backtest_statistics_cells(const BacktestStatisticsC
 
 /// The columns as one log line (a NULL cell prints "null").
 std::string backtest_statistics_log_line(const BacktestStatisticsColumns& columns);
+
+/// Migration 040: the run's two roll split totals as typed cells
+/// (roll_bar_moves, roll_gap_values), only those with a value: none with per_contract_rolls off,
+/// so the results INSERT names neither column and is today's statement.
+std::vector<LiveResultsCell> roll_split_summary_cells(const std::optional<double>& roll_bar_moves,
+                                                      const std::optional<double>& roll_gap_values);
+
+/// The results row's typed cells: the statistics' (migration 037) then the roll split's totals (040),
+/// the latter only when they have a value. What the coordinator stores.
+std::vector<LiveResultsCell> backtest_summary_cells(const BacktestStatisticsColumns& columns,
+                                                    const std::optional<double>& roll_bar_moves,
+                                                    const std::optional<double>& roll_gap_values);
 
 /**
  * @brief The sizing capitals a run stores: risk_detail.sizing_capital of each equity-curve row

@@ -35,6 +35,8 @@ class ReportFlags:
 
     no_session: bool = False
     alert: str = ""
+    equities: bool = False  # an equity book: no futures notes, margin lines or symbols reference
+    rolls: Mapping[str, Any] | None = None  # the engine's roll texts (report_rolls_json.hpp)
 
 
 def long_date(iso: str) -> str:
@@ -48,11 +50,22 @@ def long_date(iso: str) -> str:
     return f"{d.strftime('%B')} {n}{suffix}, {d.year}"
 
 
-def footnotes(start_date: str | None) -> list[str]:
-    notes = [DATA_NOTE]
+EQUITY_NOTE = "This strategy is based on daily OHLCV data for equity assets."
+
+
+def footnotes(start_date: str | None, flags: "ReportFlags | None" = None) -> list[str]:
+    """The footer's notes. With per_contract_rolls on the futures sentence is the engine's
+    (kReportRollsFooter); an equity book has its own and no futures universe note."""
+    flags = flags or ReportFlags()
+    if flags.equities:
+        notes = [EQUITY_NOTE]
+    elif flags.rolls and flags.rolls.get("footer"):
+        notes = ["This strategy is based on daily OHLCV data. " + str(flags.rolls["footer"])]
+    else:
+        notes = [DATA_NOTE]
     if start_date:
         notes.append(f"All values reflect a trading start date of {long_date(start_date)}.")
-    return notes + [UNIVERSE_NOTE]
+    return notes if flags.equities else notes + [UNIVERSE_NOTE]
 
 
 def holiday_name(day: date, roots: Sequence[str] = ()) -> str | None:
@@ -178,6 +191,7 @@ NOTE_TEXT = {
     "accepted price.",
     4: "No price bar for this contract that day. Its last known price is shown.",
 }
+ROLL_BAR_NOTE = 5  # its text is the engine's (report_rolls_json: roll_bar_note)
 _MARK_NOTE = {"NO_BAR": 1, "ROLL": 2, "WITHHELD": 3}
 
 
@@ -224,7 +238,8 @@ def _executions(detail: Mapping[str, Any], roll: bool = False) -> list[dict[str,
             "sleeve": sleeve_name(e.get("sleeve", "")),
         }
         for e in detail["executions"]
-        if (e.get("type", "STRATEGY") == "ROLL") == roll
+        # a BORROW row (the backtest's overnight fee, quantity 0) is neither a trade nor a leg
+        if e.get("type", "STRATEGY") == ("ROLL" if roll else "STRATEGY")
     ]
 
 
@@ -245,8 +260,9 @@ def _realized(detail: Mapping[str, Any], report_date: date) -> dict[str, Any]:
     rows = detail["finalizedPositions"]
     if not rows:
         return {}
+    prev = detail.get("previousDay") or {}
     return {
-        "label": (report_date - timedelta(days=1)).isoformat(),
+        "label": prev.get("date") or (report_date - timedelta(days=1)).isoformat(),
         "positions": [
             {
                 "symbol": r["symbol"],
@@ -262,7 +278,16 @@ def _realized(detail: Mapping[str, Any], report_date: date) -> dict[str, Any]:
     }
 
 
-def number_notes(payload: dict[str, Any]) -> None:
+def mark_roll_bars(payload: dict[str, Any], rolls: Mapping[str, Any] | None) -> None:
+    """With per_contract_rolls on, a settled row of a symbol that rolled on the settled day's bar
+    carries the engine's roll note (it replaces note 2: the old contract's move IS booked)."""
+    symbols = {str(s).replace(".v.0", "") for s in (rolls or {}).get("roll_bar_symbols", [])}
+    for row in (payload["realized"] or {}).get("positions", []):
+        if row["symbol"] in symbols:
+            row["note"] = ROLL_BAR_NOTE
+
+
+def number_notes(payload: dict[str, Any], rolls: Mapping[str, Any] | None = None) -> None:
     """Turn the rows' note kinds into numbers in the order the notes first appear (positions,
     then the settled table), and list the notes under `notes`."""
     numbers: dict[int, int] = {}
@@ -271,7 +296,8 @@ def number_notes(payload: dict[str, Any]) -> None:
         kind = row.get("note", 0)
         if kind:
             row["note"] = numbers.setdefault(kind, len(numbers) + 1)
-    payload["notes"] = [{"number": n, "text": NOTE_TEXT[k]} for k, n in numbers.items()]
+    texts = {**NOTE_TEXT, ROLL_BAR_NOTE: str((rolls or {}).get("roll_bar_note") or NOTE_TEXT[2])}
+    payload["notes"] = [{"number": n, "text": texts[k]} for k, n in numbers.items()]
 
 
 def some_settle_price_missing(detail: Mapping[str, Any]) -> bool:
@@ -327,72 +353,96 @@ def annualized_label(m: Mapping[str, Any]) -> str:
     return "Annualized return"
 
 
+def _symbols_with_rolls(symbols, rolls):
+    """The symbols reference; with per_contract_rolls on, each row's Front Month (the contract
+    held) and its cycle's months, as the engine states them."""
+    out = dict(symbols or {})
+    if not rolls:
+        return out
+    front, months = rolls.get("front_month", {}), rolls.get("contract_months", {})
+    out["rows"] = [
+        {**r, "front_month": front.get(r["db"], ""), "months": months.get(r["db"], r["months"])}
+        for r in out.get("rows", [])
+    ]
+    return out
+
+
 def _sleeve_summary(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The book under the per-sleeve tables: its rows, and the account's stored notional and margin
     (which net sleeves holding one symbol on opposite sides)."""
     m = detail["metrics"]
     rows = [
         ("Sleeve positions", f"{len(detail['positions'])}"),
-        ("Total notional", money(m["totalNotional"], 2)),
-        ("Total margin posted", money(m["marginPosted"], 2)),
+        ("Total notional", money(m["totalNotional"], 2) if m.get("totalNotional") is not None else None),
+        ("Total margin posted", money(m["marginPosted"], 2) if m.get("marginPosted") is not None else None),
     ]
+    rows = [(label, value) for label, value in rows if value is not None]
     return [{"label": label, "value": value, "group": 0, "tone": ""} for label, value in rows]
 
 
-def _metrics(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The four Performance Metrics groups, in the engine's order; every figure is the stored one."""
+def _metrics(detail: Mapping[str, Any], equities: bool = False) -> list[dict[str, Any]]:
+    """The four Performance Metrics groups, in the engine's order; every figure is the stored one.
+    A figure stored NULL has no line (the C++ e-mail named a line only when it had a value)."""
     m = detail["metrics"]
-    groups: list[list[tuple[str, str, str]]] = [
+
+    def line(label, key, kind):
+        value = m.get(key)
+        if value is None:
+            return None
+        if kind == "pnl":
+            return (label, signed_money(value, 2), _tone(value))
+        if kind == "money":
+            return (label, money(value, 2), "")
+        if kind == "ret":
+            return (label, f"{value:.2f}%", _tone(value))
+        if kind == "pct":
+            return (label, f"{value:.2f}%", "")
+        if kind == "x":
+            return (label, f"{value:.2f}x", "")
+        return (label, f"{value:.2f}", "")
+
+    sizing = (
+        "Sizing capital",
+        money(m["sizingCapital"], 2)
+        if m.get("sizingCapital") is not None
+        else "no reading (no sized rebalance this run)",
+        "",
+    )
+    groups = [
         [
-            ("Unrealized PnL", signed_money(m["unrealizedPnL"], 2), _tone(m["unrealizedPnL"])),
-            ("Realized PnL", signed_money(m["realizedPnL"], 2), _tone(m["realizedPnL"])),
-            ("Transaction costs", money(m["totalCommissions"], 2), ""),
-            *(
-                [("Roll costs", money(m["totalRollCosts"], 2), "")]
-                if m.get("totalRollCosts") is not None
-                else []
-            ),
-            ("Total PnL (net)", signed_money(m["netPnL"], 2), _tone(m["netPnL"])),
-            ("Current portfolio value", money(m["currentPortfolioValue"], 2), ""),
+            line("Unrealized PnL", "unrealizedPnL", "pnl"),
+            line("Realized PnL", "realizedPnL", "pnl"),
+            line("Transaction costs", "totalCommissions", "money"),
+            None if equities else line("Roll costs", "totalRollCosts", "money"),
+            line("Total PnL (net)", "netPnL", "pnl"),
+            line("Current portfolio value", "currentPortfolioValue", "money"),
         ],
         [
-            (
-                "Total cumulative return",
-                f"{m['cumulativeReturn']:.2f}%",
-                _tone(m["cumulativeReturn"]),
-            ),
-            (
-                annualized_label(m),
-                f"{m['annualizedReturn']:.2f}%",
-                _tone(m["annualizedReturn"]),
-            ),
-            ("Sharpe ratio", f"{m['sharpeRatio']:.2f}", ""),
-            ("Sortino ratio", f"{m['sortinoRatio']:.2f}", ""),
-            ("Volatility", f"{m['volatility']:.2f}%", ""),
-            ("Max drawdown", f"{m['maxDrawdown']:.2f}%", ""),
+            line("Total cumulative return", "cumulativeReturn", "ret"),
+            line(annualized_label(m), "annualizedReturn", "ret"),
+            line("Sharpe ratio", "sharpeRatio", "num"),
+            line("Sortino ratio", "sortinoRatio", "num"),
+            line("Volatility", "volatility", "pct"),
+            line("Max drawdown", "maxDrawdown", "pct"),
         ],
         [
-            ("Cash available", money(m["cashAvailable"], 2), ""),
-            ("Margin posted", money(m["marginPosted"], 2), ""),
-            (
-                "Sizing capital",
-                money(m["sizingCapital"], 2)
-                if m.get("sizingCapital") is not None
-                else "no reading (no sized rebalance this run)",
-                "",
-            ),
-            ("Equity-to-margin ratio", f"{m['equityToMarginRatio']:.2f}x", ""),
-            ("Margin cushion", f"{m['marginCushion']:.2f}%", ""),
+            line("Cash available", "cashAvailable", "money"),
+            line("Margin posted", "marginPosted", "money"),
+            None if equities else sizing,
+            # meaningless on a cash account (HD 2026-10-14, section 16.7)
+            None if equities else line("Equity-to-margin ratio", "equityToMarginRatio", "x"),
+            None if equities else line("Margin cushion", "marginCushion", "pct"),
         ],
         [
-            ("Gross leverage", f"{m['grossLeverage']:.2f}x", ""),
-            ("Net leverage", f"{m['netLeverage']:.2f}x", ""),
+            line("Gross leverage", "grossLeverage", "x"),
+            line("Net leverage", "netLeverage", "x"),
         ],
     ]
     return [
-        {"label": label, "value": value, "group": g, "tone": tone}
+        {"label": row[0], "value": row[1], "group": g, "tone": row[2]}
         for g, rows in enumerate(groups)
-        for label, value, tone in rows
+        for row in rows
+        if row is not None
     ]
 
 
@@ -445,7 +495,6 @@ def build_daily_payload(
     portfolio_id: str,
     portfolio_name: str,
     report_date: date,
-    rollovers: Sequence[Mapping[str, str]] = (),
     symbols: Mapping[str, Any] | None = None,
     history: Mapping[str, Any] | None = None,
     flags: ReportFlags = ReportFlags(),
@@ -465,17 +514,19 @@ def build_daily_payload(
         "roll_legs": _executions(detail, roll=True),
         # a carried day has no settled table: the run found no prices for it
         "realized": {} if flags.no_session else _realized(detail, report_date),
-        "metrics": _metrics(detail),
+        "metrics": _metrics(detail, flags.equities),
         "series": {**_series(detail), "drawdown": _drawdown(detail), **dict(history or {})},
         "summary": {"margin_posted": float(detail["metrics"]["marginPosted"])},
         "previous_day": _previous_day(detail),
-        "symbols": dict(symbols or {}),
-        "rollovers": [dict(r) for r in rollovers],
-        "footnotes": footnotes(detail.get("startDate")),
+        "symbols": {} if flags.equities else _symbols_with_rolls(symbols, flags.rolls),
+        "footnotes": footnotes(detail.get("startDate"), flags),
+        "roll_lines": list((flags.rolls or {}).get("lines", [])),
+        "rollover": [dict(r) for r in (flags.rolls or {}).get("rollover", [])],
         "netting_note": netting_note(detail),
         "sleeve_summary": _sleeve_summary(detail),
     }
-    number_notes(payload)
+    mark_roll_bars(payload, flags.rolls)
+    number_notes(payload, flags.rolls)
     return payload
 
 

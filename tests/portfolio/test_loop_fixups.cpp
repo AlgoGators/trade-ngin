@@ -1,4 +1,4 @@
-// The fix-up of the one pass (LOOP_SPEC v6.2 sections 1, 3.1, 4, 7.3 and 7.7), the parts that are
+// The one pass's surroundings, the parts that are
 // not the pass's arithmetic: a futures sleeve's required keys, the starting drawdown of a seeded
 // chain, the estimator-window and estimator-history log lines, the backtest's risk_detail column,
 // and which sleeve the manager values a contract on. The manager's own behaviour is pinned in
@@ -439,7 +439,7 @@ TEST_F(OverlaySleeveNotional, IsTheOverlaySleevesWhicheverIdItHas) {
 
 // A book that holds a trend sleeve and names no overlay sleeve cannot be rebalanced by the one
 // pass, and the generic step would optimise it on a placeholder weight and no cost: it is refused.
-// A book of another strategy with no overlay sleeve (the equity book's shape) runs as before.
+// A book of another strategy with no overlay sleeve (the equity book's shape) runs.
 TEST_F(OverlaySleeveNotional, ATrendSleeveWithoutAnOverlaySleeveIsRefused) {
     PortfolioConfig plain{500000.0, 1.0, 0.0, /*optimization=*/true};
     plain.opt_config.capital = 500000.0;

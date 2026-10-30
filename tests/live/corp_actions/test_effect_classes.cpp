@@ -13,7 +13,7 @@
 
 using namespace trade_ngin;
 
-// Phase 4.3: corporate actions organised by mechanical effect class.
+// Corporate actions organised by mechanical effect class.
 // Mock-backed / pure-logic; no database access.
 
 namespace {
@@ -373,7 +373,7 @@ TEST(CorpActionClass3, RolloverIntoAnAlreadyHeldAcquirerMergesAtWeightedCost) {
 }
 
 // ---------------------------------------------------------------------------
-// E2-F26 -- three of the nine class-3 labels are keyed on the SURVIVOR, not on
+// Three of the nine class-3 labels are keyed on the SURVIVOR, not on
 // the ticker that dies.
 // ---------------------------------------------------------------------------
 
@@ -443,8 +443,8 @@ TEST(CorpActionClass3, AcquirerKeyedRowDoesNotTerminateTheAcquirer) {
     EXPECT_DOUBLE_EQ(positions["RAL"].quantity.as_double(), 33.0);
     EXPECT_DOUBLE_EQ(positions["RAL"].average_price.as_double(), 52.2);
 
-    // And the pre-fix path, stated so the reason for the split cannot be lost: admit every
-    // class-3 label -- which is what the terms query filter used to be -- and the
+    // And the unguarded path, stated so the reason for the split cannot be lost: admit every
+    // class-3 label in the terms query filter, and the
     // still-printing child is closed out at 60 with 257.40 of realized P&L it never made.
     std::unordered_map<std::string, Position> unguarded;
     unguarded["RAL"] = make_position("RAL", 33.0, 52.2);
@@ -472,12 +472,11 @@ TEST(CorpActionClass3, EventForAnUnheldSymbolIsANoOp) {
 }
 
 // ===========================================================================
-// E2-F13: TERMINATION round-trips through the dedup record.
+// TERMINATION round-trips through the dedup record.
 //
-// Class-3 lifecycle events (delisting / acquisition) were recorded NOWHERE. audit_log.record()
-// was called only from the class-1 applier block, so a termination left no row in
-// trading.corp_action_applied -- no audit trail, and nothing to stop a replay re-applying it.
-// Class-1 events have been deduped since the dedup table landed; class 3 never was.
+// Class-3 lifecycle events (delisting / acquisition) are recorded in trading.corp_action_applied
+// like class-1 events: without a row there is no audit trail, and nothing to stop a replay
+// re-applying the termination.
 //
 // The dedup key is (symbol, event_date, type) and the type is persisted as a STRING, so the
 // enum <-> string round trip is what makes a recorded termination findable again. If
@@ -541,13 +540,12 @@ TEST(CorpActionTypeRoundTrip, ApplierSkipsTerminationRatherThanRestatingPrice) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// E4 item 3 -- the deal-terms feed's stop date is MEASURED, not compiled in.
+// The deal-terms feed's stop date is MEASURED, not compiled in.
 //
-// kCorpActionTableFrozenAfter used to be quoted verbatim in every "no deal
-// terms" WARN as though it were current fact. It is a fact about the DATABASE:
-// the day the vendor subscription restarts and the ACTIONS ingest backfills,
-// the constant is wrong and the log keeps asserting it until somebody rebuilds
-// -- and nobody is told that the dormant rollover path just went live.
+// The stop date is a fact about the DATABASE: the day the vendor subscription restarts and
+// the ACTIONS ingest backfills, a compiled-in constant (kCorpActionTableFrozenAfter) quoted
+// in every "no deal terms" WARN would be wrong, and the log would keep asserting it until
+// somebody rebuilds -- and nobody would be told that the dormant rollover path just went live.
 // ──────────────────────────────────────────────────────────────────────────
 
 #include "trade_ngin/live/corp_action_feed_status.hpp"

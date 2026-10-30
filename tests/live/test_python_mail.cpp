@@ -18,6 +18,7 @@
 #endif
 
 #include "trade_ngin/live/python_mail.hpp"
+#include "trade_ngin/live/report_rolls_json.hpp"
 
 namespace fs = std::filesystem;
 using namespace trade_ngin::live;
@@ -63,7 +64,8 @@ TEST(PythonMailPure, TheCommandNamesTheModuleThePortfolioAndTheDayAndQuotesThem)
     EXPECT_NE(cmd.find("-m algogators_rpc.services.report"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("--date '2026-10-23'"), std::string::npos) << cmd;
     // an ordinary day: no flag, no attachment, the portfolio's own recipients
-    for (const char* absent : {"--no-session", "--alert", "--attach", "--to", "--strategy-id"}) {
+    for (const char* absent :
+         {"--no-session", "--alert", "--attach", "--to", "--strategy-id", "--equities", "--rolls"}) {
         EXPECT_EQ(cmd.find(absent), std::string::npos) << absent << ": " << cmd;
     }
 #ifndef _WIN32
@@ -78,9 +80,17 @@ TEST(PythonMailPure, TheRunsFlagsFilesAndTestAddressAreHandedOver) {
     r.alert = "The portfolio risk module carver could not evaluate today's book (boom).";
     r.attachments = {"/app/results/positions.csv", "", "/app/results/finalized.csv"};
     r.test_to = "someone@example.org";
+    r.equities = true;
+    r.rolls_json = R"({"lines":["Silver, December to March: it's"]})";
     r.strategy_id = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
     const std::string cmd = python_mail_command(r, PythonMailSettings{});
     EXPECT_NE(cmd.find("--strategy-id"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find(" --equities"), std::string::npos) << cmd;
+    EXPECT_NE(cmd.find("--rolls"), std::string::npos) << cmd;
+#ifndef _WIN32
+    // the roll text's apostrophe is escaped for the shell
+    EXPECT_NE(cmd.find("it'\''s"), std::string::npos) << cmd;
+#endif
     EXPECT_NE(cmd.find("LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find(" --no-session"), std::string::npos) << cmd;
     EXPECT_NE(cmd.find("--alert"), std::string::npos) << cmd;
@@ -100,6 +110,66 @@ TEST(PythonMailPure, AHeldBookKeepsItsCodeAndAnUnsentEmailIsFour) {
     EXPECT_EQ(futures_run_exit_code(std::nullopt, true), kBookEmailFailureExitCode);
     EXPECT_EQ(futures_run_exit_code(held, true), trade_ngin::kRiskModuleFailureExitCode);
     EXPECT_EQ(futures_run_exit_code(held, false), trade_ngin::kRiskModuleFailureExitCode);
+}
+
+TEST(ReportRollsJson, TheSwitchOffSaysNothing) {
+    EXPECT_TRUE(report_rolls_json(trade_ngin::ReportRolls{}, {}, {}).empty());
+}
+
+TEST(ReportRollsJson, TheRollLinesTheRolloverAndTheReferenceColumnsAreTheEnginesTexts) {
+    using namespace trade_ngin;
+    ReportRolls rolls;
+    rolls.per_contract_rolls = true;
+    ReportRollOutlook si;
+    si.root = "SI";
+    si.label = "SI";
+    si.held = "SIZ5";
+    si.cycle = "HKNUZ";
+    si.in_window = true;
+    si.roll_by = "2025-11-20";
+    si.deadline = "2025-11-25";
+    si.first_notice = true;
+    si.target = "SIH6";
+    rolls.outlook["SI"] = si;
+    ReportRollOutlook es;  // held, outside its window: front month and months, no rollover line
+    es.root = "ES";
+    es.held = "ESZ5";
+    es.cycle = "HMUZ";
+    rolls.outlook["ES"] = es;
+    rolls.names["EXEC_SI.v.0_20251125_RC"] = ReportRollNames{"Silver", "December", "March", 3};
+
+    ExecutionReport closing;
+    closing.symbol = "SI.v.0";
+    closing.execution_type = ExecutionType::ROLL;
+    closing.exec_id = "EXEC_SI.v.0_20251125_RC";
+    closing.total_transaction_costs = Decimal(22.62);
+    closing.roll_bar_move = -1075.0;
+    closing.roll_gap_points = 0.67;
+    closing.roll_gap_value = 3350.0;
+    ExecutionReport opening = closing;
+    opening.exec_id = "EXEC_SI.v.0_20251125_RO";
+    opening.total_transaction_costs = Decimal(22.67);
+    opening.roll_bar_move.reset();
+    opening.roll_gap_points.reset();
+    opening.roll_gap_value.reset();
+    ExecutionReport fill;  // a strategy fill: no line
+    fill.symbol = "ES.v.0";
+    fill.exec_id = "EXEC_ES.v.0_20251125";
+
+    const auto j = report_rolls_json(rolls, {{"TF", {closing, opening, fill}}}, {"SI.v.0"});
+    ASSERT_EQ(j.at("lines").size(), 1u);
+    EXPECT_EQ(j.at("lines")[0],
+              "Silver, December to March: market move booked -$1,075; contract price difference "
+              "0.670 ($3,350, not profit or loss); roll cost $45.29.");
+    ASSERT_EQ(j.at("rollover").size(), 1u);
+    EXPECT_EQ(j.at("rollover")[0].at("held"), "SIZ5");
+    EXPECT_EQ(j.at("rollover")[0].at("target"), "SIH6");
+    EXPECT_EQ(j.at("rollover")[0].at("by"), "11-20");
+    EXPECT_EQ(j.at("rollover")[0].at("deadline_kind"), "first notice");
+    EXPECT_EQ(j.at("front_month").at("ES"), "ESZ5");
+    EXPECT_EQ(j.at("contract_months").at("ES"), "Mar Jun Sep Dec");
+    EXPECT_EQ(j.at("roll_bar_symbols")[0], "SI.v.0");
+    EXPECT_EQ(j.at("footer"), kReportRollsFooter);
 }
 
 // Every live runner sends the book e-mail through the module, and nothing else sends it.

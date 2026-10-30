@@ -13,11 +13,6 @@ namespace trade_ngin {
  * Goal: Reduce monolithic code by modularizing price retrieval and caching
  */
 class PriceManagerBase {
-protected:
-    // Price validation ranges
-    static constexpr double MIN_VALID_PRICE = 0.0001;
-    static constexpr double MAX_VALID_PRICE = 1000000.0;
-
 public:
     /**
      * Price data structure with metadata
@@ -47,32 +42,6 @@ public:
     virtual Result<std::unordered_map<std::string, double>> get_prices(
         const std::vector<std::string>& symbols,
         const Timestamp& timestamp) const = 0;
-
-    /**
-     * Common validation and utility methods
-     */
-
-    // Validate if a price is within reasonable bounds
-    bool is_valid_price(double price) const {
-        return price > MIN_VALID_PRICE && price < MAX_VALID_PRICE;
-    }
-
-    // Interpolate price between two points (for future use)
-    double interpolate_price(double prev_price, double next_price, double ratio) const {
-        return prev_price + (next_price - prev_price) * ratio;
-    }
-
-protected:
-    // Helper method to validate a collection of prices
-    Result<void> validate_prices(const std::unordered_map<std::string, double>& prices) const {
-        for (const auto& [symbol, price] : prices) {
-            if (!is_valid_price(price)) {
-                return make_error<void>(ErrorCode::INVALID_DATA,
-                    "Invalid price for " + symbol + ": " + std::to_string(price));
-            }
-        }
-        return Result<void>();  // Default constructor for success
-    }
 };
 
 } // namespace trade_ngin

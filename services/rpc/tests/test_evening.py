@@ -7,6 +7,7 @@ from 04:30). 2026-10-09 is a Friday."""
 
 import dataclasses
 import datetime as dt
+import html
 import json
 from pathlib import Path
 
@@ -15,12 +16,13 @@ import pytest
 from algogators_rpc.services.desk import catchup as cu
 from algogators_rpc.services.desk import review_mail
 from algogators_rpc.services.desk.catchup import (ALERT, UP_TO_DATE, WAIT_PUBLISH, WAIT_TIME,
-                                                  CatchupScheduler, DataReady)
+                                                  CatchupScheduler, DataReady, combine_ready)
 from algogators_rpc.services.desk.config import (CatchupSettings, CommandSettings, ConfigError,
                                                  catchup_settings)
 from algogators_rpc.services.desk.jobs import RunResult
 from algogators_rpc.services.desk.trading_days import (CalendarError, calendar_from_dates,
                                                        load_calendar, parse_holidays,
+                                                       per_contract_rolls,
                                                        resolve_holidays_path,
                                                        staleness_tolerance_days)
 from test_catchup import (BINARY, DESK, DESK_PID, FRI, MODEL_PID, MON, SAT, SMTP, SUN, THU, TUE,
@@ -29,6 +31,7 @@ from test_catchup import (BINARY, DESK, DESK_PID, FRI, MODEL_PID, MON, SAT, SMTP
 HOLIDAYS = Path(__file__).resolve().parents[3] / "include" / "trade_ngin" / "core" / \
     "holidays.json"
 DATASET = "futures_ohlcv_1d"
+CONTRACTS = "futures_contract_ohlcv_1d"
 WED = dt.date(2026, 10, 7)
 REVIEWER = "dominickdupuy@ufl.edu"
 
@@ -40,6 +43,7 @@ class EveningDays(Days):
         super().__init__()
         self.ready = []            # DataReady rows
         self.bars = {}             # symbol -> last bar date
+        self.contract_bars = {}    # root -> last contract bar date (contract_ohlcv_1d)
         self.desk_edits = set()    # (pid, date) with a done save
         self.positions = {}        # (pid, book, date) -> {symbol: Line}
 
@@ -50,6 +54,15 @@ class EveningDays(Days):
 
     def last_bar_dates(self, symbols, since):
         return {s: d for s, d in self.bars.items() if s in symbols and d >= since}
+
+    def every_symbol_last_bar(self, since):
+        return {s: d for s, d in self.bars.items() if d >= since}
+
+    def last_contract_bar_dates(self, roots, since):
+        return {r: d for r, d in self.contract_bars.items() if r in roots and d >= since}
+
+    def every_contract_root_last_bar(self, since):
+        return {r: d for r, d in self.contract_bars.items() if d >= since}
 
     def desk_edited(self, pid, day):
         return (pid, day) in self.desk_edits
@@ -93,9 +106,20 @@ class EveningEngine(Engine):
         return res
 
 
-def ready(bar_date, finished, status="complete", missing=(), loaded=36):
-    return DataReady(DATASET, bar_date, 36, loaded, tuple(missing), status, "run-1",
+def ready(bar_date, finished, status="complete", missing=(), loaded=36, dataset=DATASET, expected=36):
+    return DataReady(dataset, bar_date, expected, loaded, tuple(missing), status, "run-1",
                      finished.astimezone(UTC))
+
+
+def contract_ready(bar_date, finished, status="complete", missing=(), loaded=36):
+    """The per-contract pull's row (algogators PR #78): expected = the roots, missing = roots."""
+    return ready(bar_date, finished, status, missing, loaded, dataset=CONTRACTS)
+
+
+def switch_on(env, d=DESK, pid=DESK_PID, editable=True):
+    """portfolio.json of `d` turns per_contract_rolls on (rolls step 3)."""
+    (env.config / "portfolios" / d / "portfolio.json").write_text(json.dumps(
+        {"portfolio_id": pid, "qt": {"desk_editable": editable}, "per_contract_rolls": True}))
 
 
 def published_day(env, day):
@@ -325,23 +349,27 @@ def test_a_partial_pull_within_tolerance_builds(env):
 
 
 def test_a_partial_pull_past_tolerance_alerts_and_builds_nothing(env):
+    """Ruling 21: three missing symbols past the tolerance, more than N = 2: held."""
     published_day(env, FRI)
-    env.days.bars = {"ZN": dt.date(2026, 10, 2)}             # 9 days before Sunday
-    env.days.ready.append(ready(FRI, at(FRI, 20, 10), "partial", ("ZN", "GC"), loaded=34))
+    env.days.bars = {"ZN": dt.date(2026, 10, 2), "CL": dt.date(2026, 10, 6)}   # 9 and 5 days before Sunday
+    env.days.ready.append(ready(FRI, at(FRI, 20, 10), "partial", ("ZN", "GC", "CL"), loaded=33))
     out = dict(env.make(portfolios=(DESK,)).run_pass())
     assert env.engine.calls == [] and reviews(env) == []
     assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
-    assert "ZN (last bar 2026-10-02)" in out[DESK].message
-    assert "GC (last bar none)" in out[DESK].message
+    assert ("GC (last bar none), ZN (last bar 2026-10-02), CL (last bar 2026-10-06). The books of "
+            "2026-10-12 are not built") in out[DESK].message
     assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_stale"]
 
 
-def test_a_failed_pull_alerts_and_builds_nothing(env):
+def test_a_failed_pull_with_nothing_in_the_table_alerts_and_builds_nothing(env):
+    """A failed continuous pull counts every symbol missing; none of the 36 has a bar in the table, so
+    all count as stale: held (before ruling 21 every failed pull held, data_failed)."""
     published_day(env, FRI)
     env.days.ready.append(ready(FRI, at(FRI, 20, 10), "failed", loaded=0))
     out = dict(env.make().run_pass())
     assert env.engine.calls == []
-    assert out[DESK].reason == out[TWIN].reason == "data_failed"
+    assert out[DESK].reason == out[TWIN].reason == "data_stale"
+    assert "36 symbol(s) not named, with no bar in the table" in out[DESK].message
 
 
 def test_an_engine_feed_hole_refusal_is_an_alert_and_retried(env):
@@ -417,7 +445,7 @@ def test_a_saturday_ready_row_builds_monday_once_sunday_is_out(env):
     for when in (at(FRI, 20, 30), at(SAT, 10, 1)):
         env.clock.t = when
         sched.run_pass()
-    env.days.ready.append(ready(SAT, at(SAT, 20, 5), loaded=2))
+    env.days.ready.append(ready(SAT, at(SAT, 20, 5), loaded=2, expected=2))
     env.clock.t = at(SAT, 20, 30)
     env.engine.calls.clear()
     sched.run_pass()
@@ -489,7 +517,7 @@ def test_monday_0435_flow(env):
     out = dict(sched.run_pass())
     assert env.engine.calls == [] and env.sent == []
     assert out[DESK].action == WAIT_TIME and "waits for data-ngin's" in out[DESK].message
-    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26))
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
     env.clock.t = at(MON, 4, 40)
     sched.run_pass()
     assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
@@ -499,14 +527,14 @@ def test_monday_0435_flow(env):
     env.clock.t = at(MON, 4, 45)
     sched.run_pass()
     assert len(calls(env)) == 2 and len(reviews(env)) == 1          # once per build
-    env.days.ready.append(ready(SUN, at(MON, 5, 10), loaded=26))    # a re-pull
+    env.days.ready.append(ready(SUN, at(MON, 5, 10), loaded=26, expected=26))    # a re-pull
     env.engine.targets[MON] = {"ES": 3}
     env.clock.t = at(MON, 5, 15)
     sched.run_pass()
     assert calls(env)[2:] == [("model", DESK, "2026-10-12")]        # the twin is published
     assert reviews(env)[-1][0].endswith("- updated")
     env.days.published[(DESK_PID, MON)] = (at(MON, 8), "desk@x", "desk")
-    env.days.ready.append(ready(SUN, at(MON, 8, 10), loaded=26))
+    env.days.ready.append(ready(SUN, at(MON, 8, 10), loaded=26, expected=26))
     env.clock.t = at(MON, 8, 15)
     sched.run_pass()
     assert len(calls(env)) == 3 and len(reviews(env)) == 2          # frozen
@@ -558,11 +586,13 @@ def test_no_data_waits_quietly_before_0600_then_alerts(env):
     assert ("model", DESK, "2026-10-12") in calls(env)
 
 
-@pytest.mark.parametrize("status,missing,reason", [("failed", (), "data_failed"),
-                                                   ("partial", ("GC",), "data_stale")])
+@pytest.mark.parametrize("status,missing,reason", [("failed", (), "data_stale"),
+                                                   ("partial", ("GC", "ZN", "CL"), "data_stale"),
+                                                   ("held", (), "data_failed")])
 def test_a_final_bad_row_alerts_at_once_even_before_0600(env, status, missing, reason):
     weekend_done(env)
-    env.days.ready.append(ready(SUN, at(MON, 4, 35), status, missing, loaded=20))
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), status, missing, loaded=20 - len(missing),
+                                expected=20))
     env.clock.t = at(MON, 4, 40)
     out = dict(env.make(portfolios=(DESK,)).run_pass())
     assert env.engine.calls == []
@@ -719,7 +749,7 @@ def test_no_review_email_for_the_model_twin_or_after_the_cutoff(env):
 def test_evening_settings_from_the_environment():
     s = catchup_settings({})
     assert s.evening_run is True and s.review_recipients == (REVIEWER,)
-    assert s.data_alert_at == dt.time(6, 0) and s.data_ready_dataset == DATASET
+    assert s.data_alert_at == dt.time(6, 0) and s.data_ready_datasets == (DATASET,)
     assert s.today_not_before == dt.time(6, 45)       # the host .env sets 04:30
     assert s.desk_url == "https://algolens.algogators.com/"
     s = catchup_settings({"QT_EVENING_RUN": "0", "QT_REVIEW_RECIPIENTS": "a@x, b@y",
@@ -818,3 +848,634 @@ def test_every_desk_action_and_settings_change_e_mails_the_vp_and_president_once
     env.clock.t = at(SAT, 11, 35)
     sched.run_pass()
     assert log()[-1][1] == f"QT log: desk@x saved edits to {DESK_PID} 2026-10-12 (done)"
+
+
+# -- the per-contract data (rolls step 4, ROLLS_STEP1_PLAN section 5a) ------------------------------
+
+def test_the_datasets_are_a_list():
+    s = catchup_settings({"QT_DATA_READY_DATASET": f" {DATASET}, {CONTRACTS},{DATASET} "})
+    assert s.data_ready_datasets == (DATASET, CONTRACTS)
+    assert catchup_settings({"QT_DATA_READY_DATASET": " , "}).data_ready_datasets == (DATASET,)
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_DATA_READY_DATASET": "futures_ohlcv_1d;drop"})
+
+
+def test_per_contract_rolls_is_read_as_the_engine_reads_it(tmp_path):
+    (tmp_path / "portfolios" / "p").mkdir(parents=True)
+    assert per_contract_rolls(str(tmp_path), "p") is False                    # absent: off
+    (tmp_path / "defaults.json").write_text(json.dumps({"per_contract_rolls": True}))
+    assert per_contract_rolls(str(tmp_path), "p") is True
+    pj = tmp_path / "portfolios" / "p" / "portfolio.json"
+    pj.write_text(json.dumps({"per_contract_rolls": False}))                  # the portfolio's wins
+    assert per_contract_rolls(str(tmp_path), "p") is False
+    pj.write_text(json.dumps({"per_contract_rolls": "yes"}))                  # the engine refuses it
+    assert per_contract_rolls(str(tmp_path), "p") is True
+
+
+def test_combine_ready_is_the_oldest_date_every_dataset_has():
+    a = ready(SUN, at(MON, 4, 35), "partial", ("ZN",), loaded=35)
+    b = contract_ready(SAT, at(MON, 4, 50), "complete")
+    c = combine_ready([a, b])
+    assert c.bar_date == SAT and c.parts == (b,) and c.status == "complete"   # a is newer: in
+    assert c.finished_at == b.finished_at and c.missing == ()
+    d = contract_ready(SUN, at(MON, 4, 40), "partial", ("GC", "ZN"), loaded=34)
+    c = combine_ready([a, d])
+    assert c.bar_date == SUN and c.status == "partial" and c.parts == (a, d)
+    assert c.missing == ("ZN", "GC") and c.loaded == 69 and c.expected == 72
+    assert c.finished_at == d.finished_at                                     # the later of the two
+    assert combine_ready([d, contract_ready(SUN, at(MON, 4, 1), "failed")]).status == "failed"
+    assert combine_ready([a]) is a
+
+
+def test_switch_on_monday_waits_for_the_per_contract_row_with_the_same_alert(env):
+    """A late per-contract row delays the run like a late continuous row: a quiet wait before
+    06:00, then the run's alert and the daily check's, named for the per-contract dataset. The
+    switch-off twin never waits for it."""
+    weekend_done(env)
+    switch_on(env)
+    sched = env.make()
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
+    env.clock.t = at(MON, 4, 40)
+    out = dict(sched.run_pass())
+    assert calls(env) == [("model", TWIN, "2026-10-12")]
+    assert out[DESK].action == WAIT_TIME
+    assert out[DESK].message == f"today's run waits for data-ngin's {CONTRACTS} row for 2026-10-09"
+    env.clock.t = at(MON, 6, 0)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_not_ready"
+    assert f"has no {CONTRACTS} row for 2026-10-09 at 06:00 New York (no row at all)" in \
+        out[DESK].message
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_not_ready",
+                           f"QT alert: {CONTRACTS} 2026-10-09 data_not_ready"]
+    env.days.ready.append(contract_ready(THU, at(MON, 6, 3)))   # an older bar date: still late
+    env.clock.t = at(MON, 6, 5)
+    out = dict(sched.run_pass())
+    assert out[DESK].action == ALERT and "(newest 2026-10-08 (complete))" in out[DESK].message
+    assert len(calls(env)) == 1
+    env.days.ready.append(contract_ready(SUN, at(MON, 6, 7)))
+    env.clock.t = at(MON, 6, 10)
+    sched.run_pass()
+    assert calls(env)[1:] == [("model", DESK, "2026-10-12")]
+    assert len(alerts(env)) == 2                                 # once a day each
+
+
+def test_two_late_datasets_are_both_named(env):
+    weekend_done(env)
+    switch_on(env)
+    env.days.ready.append(ready(THU, at(FRI, 4, 40)))
+    env.clock.t = at(MON, 6, 0)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert out[DESK].reason == "data_not_ready"
+    assert (f"no {DATASET}, {CONTRACTS} row for 2026-10-09 at 06:00 New York ({DATASET}: newest "
+            f"2026-10-08 (complete); {CONTRACTS}: no row at all)") in out[DESK].message
+    assert sorted(alerts(env)) == sorted([f"QT alert: {DESK_PID} 2026-10-12 data_not_ready",
+                                          f"QT alert: {DATASET} 2026-10-09 data_not_ready",
+                                          f"QT alert: {CONTRACTS} 2026-10-09 data_not_ready"])
+
+
+def test_switch_off_never_reads_the_per_contract_row(env):
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "failed", loaded=0))
+    env.clock.t = at(MON, 6, 30)
+    env.make().run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12"), ("model", TWIN, "2026-10-12")]
+    assert alerts(env) == []
+
+
+def test_a_late_per_contract_row_holds_the_evening_build_and_its_rebuild(env):
+    switch_on(env)
+    published_day(env, MON)
+    env.days.ready.append(ready(MON, at(MON, 20, 5)))
+    env.clock.t = at(MON, 20, 30)
+    sched = env.make(portfolios=(DESK,))
+    sched.run_pass()
+    assert calls(env) == []                                      # Monday's contract bars not in
+    env.days.ready.append(contract_ready(MON, at(MON, 20, 40)))
+    env.clock.t = at(MON, 20, 45)
+    sched.run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-13")]
+    env.clock.t = at(MON, 21, 0)
+    sched.run_pass()
+    assert len(calls(env)) == 1                                  # the same finished_at: nothing
+    env.days.ready.append(contract_ready(MON, at(MON, 21, 10)))    # a re-pull of the contract bars
+    env.clock.t = at(MON, 21, 15)
+    sched.run_pass()
+    assert calls(env)[1:] == [("model", DESK, "2026-10-13")]
+    assert reviews(env)[-1][0].endswith("- updated")
+
+
+def test_a_partial_per_contract_row_is_judged_on_the_contract_bars(env):
+    """One root stale for many days runs, carried, with its alert (ruling 21); with N = 0 it holds."""
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "partial", ("GC",), loaded=35))
+    env.days.bars = {"GC.v.0": SUN}                              # the continuous bars are no help
+    env.days.contract_bars = {"GC": dt.date(2026, 10, 2)}        # 9 days before Sunday
+    env.clock.t = at(MON, 4, 40)
+    out = dict(env.make(portfolios=(DESK,), contract_data_ready_max_missing=0).run_pass())
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert out[DESK].message.startswith(f"{CONTRACTS} 2026-10-11 is partial (35 of 36); 1 root(s) have had no "
+                                        "contract bar for more than 4 day(s) as of 2026-10-11")
+    assert "GC (last bar 2026-10-02)" in out[DESK].message and calls(env) == []
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 50), "partial", ("GC",), loaded=35))
+    env.clock.t = at(MON, 4, 55)
+    env.make(portfolios=(DESK,)).run_pass()                      # N = 2: one stale root runs
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env)[-1] == f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"
+    (_, body), = reviews(env, MON)
+    assert "GC: last bar 2026-10-02" in body
+
+
+# -- the per-contract row's rule (HD 2026-10-24, plan 11c ruling 21: an AND condition) ----------------
+# Held only when more than N roots (QT_CONTRACT_DATA_READY_MAX_MISSING, 2) have EACH had no contract bar
+# for more than X days (QT_CONTRACT_DATA_READY_STALE_DAYS, unset: live.data_staleness_tolerance_days, 4);
+# otherwise the run goes and every missing root is alerted.
+
+ROOTS36 = ("6A", "6B", "6C", "6E", "6J", "6L", "6M", "6N", "6S", "CL", "HO", "NG", "RB", "GC", "SI", "HG",
+           "PL", "ZC", "ZS", "ZW", "KE", "ZL", "ZM", "ZR", "LE", "HE", "GF", "ZT", "ZF", "ZN", "UB", "MES",
+           "MNQ", "MYM", "M2K", "MBT")
+
+
+def _monday_contract(env, status, missing, loaded, bars=None, **catchup):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), status, missing, loaded=loaded))
+    env.days.contract_bars = bars if bars is not None else {r: SUN for r in ROOTS36}
+    for r in missing:
+        env.days.contract_bars.setdefault(r, FRI)
+        if r in env.days.contract_bars and env.days.contract_bars[r] >= SUN:
+            env.days.contract_bars[r] = FRI                    # a missing root has no bar of the row's date
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,), **catchup).run_pass())
+
+
+def test_one_or_two_missing_roots_run_with_an_alert(env):
+    out = _monday_contract(env, "partial", ("GC", "ZN"), 34)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_one_or_two_unnamed_missing_roots_raise_the_partial_alert(env):
+    """R4A audit A, Q7: a row that misses roots without naming them (34 of 36, no names) still alerts:
+    the roots are the ones whose newest contract bar is before the row's date (GC and ZN, Friday's)."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update(GC=FRI, ZN=FRI)
+    out = _monday_contract(env, "partial", (), 34, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+    (_, message), = [(t, m) for t, s, m in env.sent if t == ["pres@algogators.com"]]
+    assert "GC (last bar 2026-10-09)" in message and "ZN (last bar 2026-10-09)" in message
+    assert ("The run of 2026-10-12 goes ahead with those roots carried: it reads their vendor bar, or "
+            "carries their last close, with a WARN in its log</pre>") in message          # Q1 A S2
+
+
+def test_three_missing_roots_within_the_days_run_with_an_alert(env):
+    """More than N roots missing, each with a bar within X days: the run goes (the count alone held it
+    before ruling 21)."""
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_one_day_zero_of_36_per_contract_row_runs(env):
+    """No names, 0 of 36 loaded, every root's newest bar Friday's (two days before the run's last bar date,
+    within X = 4): the run goes, every root carried, alerted."""
+    out = _monday_contract(env, "partial", (), 0, bars={r: FRI for r in ROOTS36})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_one_day_failed_per_contract_pull_runs(env):
+    """Ruling 21: a one-day failed pull runs with everything carried; failed for longer than X days, held."""
+    out = _monday_contract(env, "failed", (), 0, bars={r: FRI for r in ROOTS36})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+
+
+def test_a_failed_per_contract_pull_past_the_days_alerts_and_builds_nothing(env):
+    out = _monday_contract(env, "failed", (), 0, bars={r: dt.date(2026, 10, 2) for r in ROOTS36})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert out[DESK].message.startswith(f"{CONTRACTS} 2026-10-11 is failed (0 of 36); 36 root(s) have had no "
+                                        "contract bar for more than 4 day(s)")
+
+
+def test_a_failed_per_contract_pull_with_no_bars_in_the_table_holds(env):
+    """No contract bar of any root in the lookback: every missing root counts as stale."""
+    out = _monday_contract(env, "failed", (), 0, bars={})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "36 root(s) not named, with no contract bar in the table" in out[DESK].message
+
+
+def test_three_roots_stale_past_the_days_hold_the_run(env):
+    """N + 1 roots each without a contract bar for more than X days: held, the alert naming them."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update(GC=dt.date(2026, 10, 2), ZN=dt.date(2026, 10, 1), CL=dt.date(2026, 10, 6))
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert ("3 root(s) have had no contract bar for more than 4 day(s) as of 2026-10-11, more than "
+            "QT_CONTRACT_DATA_READY_MAX_MISSING=2: ZN (last bar 2026-10-01), GC (last bar 2026-10-02), "
+            "CL (last bar 2026-10-06)") in out[DESK].message          # Q1: the stalest first
+
+
+def test_two_roots_stale_past_the_days_and_one_fresh_run(env):
+    bars = {r: SUN for r in ROOTS36}
+    bars.update(GC=dt.date(2026, 10, 2), ZN=dt.date(2026, 10, 1), CL=FRI)
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_the_two_settings_move_the_rule(env):
+    bars = {r: SUN for r in ROOTS36}
+    bars.update(GC=dt.date(2026, 10, 2), ZN=dt.date(2026, 10, 1), CL=dt.date(2026, 10, 6))
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=dict(bars),
+                           contract_data_ready_max_missing=3)
+    assert calls(env) == [("model", DESK, "2026-10-12")]          # N = 3: three stale roots run
+    s = catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "5"})
+    assert s.contract_data_ready_max_missing == 5
+    assert catchup_settings({}).contract_data_ready_max_missing == 2
+    assert catchup_settings({}).contract_data_ready_stale_days is None
+    assert catchup_settings({"QT_CONTRACT_DATA_READY_STALE_DAYS": "7"}).contract_data_ready_stale_days == 7
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_CONTRACT_DATA_READY_MAX_MISSING": "-1"})
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_CONTRACT_DATA_READY_STALE_DAYS": "four"})
+
+
+def test_the_stale_days_setting_is_x(env):
+    """X = 1: three roots with Friday's bar (two days old) are stale past X, more than N: held."""
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, contract_data_ready_stale_days=1)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "for more than 1 day(s)" in out[DESK].message
+
+
+def test_a_partial_continuous_row_within_the_tolerance_runs_with_the_alert(env):
+    """Switch off: a "partial, 33 of 36" continuous row naming three symbols, each last bar within the
+    tolerance, runs (Q1: now with the data_partial alert naming them)."""
+    weekend_done(env)
+    names = ("ES", "ZN", "GC")
+    env.days.bars = {s: FRI for s in names}
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", names, loaded=33))
+    env.clock.t = at(MON, 4, 40)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+    (_, message), = [(t, m) for t, s, m in env.sent if t == ["pres@algogators.com"]]
+    assert "ES (last bar 2026-10-09)" in message and "ZN (last bar 2026-10-09)" in message
+
+
+# -- R4B fix round 1 (audit A S1, S2, p01) --------------------------------------------------------------
+
+def _monday_failed_zero_expected(env, bars):
+    """A failed per-contract row that records expected = 0 (migration 028 allows it)."""
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), loaded=26, expected=26))
+    env.days.ready.append(DataReady(CONTRACTS, SUN, 0, 0, (), "failed", "run-1", at(MON, 4, 36).astimezone(UTC)))
+    env.days.contract_bars = bars
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,)).run_pass())
+
+
+def test_a_failed_row_with_expected_zero_counts_every_root_the_table_knows(env):
+    """S1: expected = 0 on a failed row no longer runs in silence: every root the table knows is missing;
+    nine days old, more than N past X: held."""
+    out = _monday_failed_zero_expected(env, {r: dt.date(2026, 10, 2) for r in ROOTS36})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "36 root(s) have had no contract bar for more than 4 day(s)" in out[DESK].message
+
+
+def test_a_failed_row_with_expected_zero_and_fresh_bars_runs_with_the_alert(env):
+    out = _monday_failed_zero_expected(env, {r: FRI for r in ROOTS36})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial"]
+
+
+def test_a_failed_row_with_nothing_known_holds(env):
+    out = _monday_failed_zero_expected(env, {})
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "no root can be judged" in out[DESK].message
+
+
+def test_unnamed_missing_roots_are_taken_stalest_first(env):
+    """S2: 33 of 36, no names; ZC, ZN and ZS nine days stale, 6A and 6B with Friday's bar: the three
+    unnamed roots are ZC, ZN and ZS (not 6A, 6B, ZC alphabetically), more than N past X: held."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({"6A": FRI, "6B": FRI, "ZC": dt.date(2026, 10, 2), "ZN": dt.date(2026, 10, 2), "ZS": dt.date(2026, 10, 2)})
+    out = _monday_contract(env, "partial", (), 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "ZC (last bar 2026-10-02), ZN (last bar 2026-10-02), ZS (last bar 2026-10-02)" in out[DESK].message
+    assert "6A" not in out[DESK].message
+
+
+def test_x_days_old_is_not_stale_and_one_more_is(env):
+    """p01, ruling 21's "more than X days": three roots last seen exactly 4 days before the run's last bar
+    date (10-07 against 10-11) run; 5 days (10-06) hold."""
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({r: dt.date(2026, 10, 7) for r in ("GC", "ZN", "CL")})
+    _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+
+
+def test_one_more_day_than_x_is_stale(env):
+    bars = {r: SUN for r in ROOTS36}
+    bars.update({r: dt.date(2026, 10, 6) for r in ("GC", "ZN", "CL")})
+    out = _monday_contract(env, "partial", ("GC", "ZN", "CL"), 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+
+
+# -- the continuous row's rule (Q1; HD 2026-10-24, plan 11c ruling 21: the same AND condition) ---------
+# Held only when more than N symbols (QT_DATA_READY_MAX_MISSING, 2) have EACH had no bar for more than X
+# days (the portfolio's live.data_staleness_tolerance_days, 4) as of the run's last bar date (Sunday
+# 2026-10-11 for Monday's run); otherwise the run goes and every missing symbol is alerted (data_partial).
+# Before Q1 one missing symbol past X held the run, and a failed pull always held (data_failed).
+
+def _monday_continuous(env, status, missing, loaded, bars=None, expected=36, **catchup):
+    """Switch off: Sunday's continuous row arrives at 04:35, Monday's run is looked at 04:40."""
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), status, missing, loaded, expected=expected))
+    env.days.bars = dict(bars) if bars is not None else {s: SUN for s in ROOTS36}
+    env.clock.t = at(MON, 4, 40)
+    return dict(env.make(portfolios=(DESK,), **catchup).run_pass())
+
+
+def _stale(n, fresh=()):
+    """The 36 symbols with Sunday's bar, but the first `n` of STALE nine days old and `fresh` Friday's."""
+    bars = {s: SUN for s in ROOTS36}
+    bars.update({s: dt.date(2026, 10, 2) for s in STALE[:n]})
+    bars.update({s: FRI for s in fresh})
+    return bars
+
+
+STALE = ("GC", "ZN", "CL")
+
+
+def president_messages(env):
+    return [m for t, s, m in env.sent if t == ["pres@algogators.com"]]
+
+
+@pytest.mark.parametrize("n", [0, 1, 2])
+def test_up_to_n_symbols_past_x_run_with_the_alert(env, n):
+    """0, 1 and N = 2 missing symbols past X (with ES missing but fresh): the run goes, every missing
+    symbol named in the data_partial alert. Before Q1, 1 and 2 held."""
+    missing = ("ES",) + STALE[:n]
+    out = _monday_continuous(env, "partial", missing, 36 - len(missing), bars=_stale(n, fresh=("ES",)))
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+    (message,) = president_messages(env)
+    for s in missing:
+        assert f"{s} (last bar " in message
+    assert ("The run of 2026-10-12 goes ahead with each carried at its last price, with no order; if the "
+            "book holds one past live.data_staleness_tolerance_days on today's run, the engine refuses the "
+            "run (a separate alert)") in html.unescape(message)      # Q1 audit A recheck R2
+
+
+def test_n_plus_one_symbols_past_x_hold_the_run(env):
+    out = _monday_continuous(env, "partial", ("ES",) + STALE, 32, bars=_stale(3, fresh=("ES",)))
+    assert env.engine.calls == [] and reviews(env) == []
+    assert out[DESK].action == ALERT and out[DESK].reason == "data_stale"
+    assert out[DESK].message.startswith(
+        f"{DATASET} 2026-10-11 is partial (32 of 36); 3 symbol(s) have had no bar for more than 4 day(s) as "
+        "of 2026-10-11, more than QT_DATA_READY_MAX_MISSING=2: ")
+    assert "ES" not in out[DESK].message.split(": ", 1)[1]           # ES is fresh: not named as stale
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_stale"]
+
+
+def test_n_plus_one_missing_symbols_none_past_x_run(env):
+    """Three symbols missing, each last printed Friday (two days before Sunday, within X): the run goes."""
+    out = _monday_continuous(env, "partial", STALE, 33, bars=_stale(0, fresh=STALE))
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+
+
+def test_a_one_day_failed_continuous_pull_runs_with_everything_carried(env):
+    """Ruling 21: a failed pull counts every symbol the table knows as missing; each last printed
+    Friday, none past X: the run goes, the alert naming all 36. Before Q1: held (data_failed)."""
+    out = _monday_continuous(env, "failed", (), 0, bars={s: FRI for s in ROOTS36})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+    (message,) = president_messages(env)
+    assert message.count("(last bar 2026-10-09)") == 36
+
+
+def test_a_failed_continuous_pull_with_n_plus_one_past_x_holds(env):
+    out = _monday_continuous(env, "failed", (), 0, bars=_stale(3, fresh=ROOTS36[:9]))
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert out[DESK].message.startswith(f"{DATASET} 2026-10-11 is failed (0 of 36); 3 symbol(s) have had no "
+                                        "bar for more than 4 day(s)")
+
+
+def test_a_failed_continuous_pull_with_n_past_x_runs(env):
+    _monday_continuous(env, "failed", (), 0, bars=_stale(2))
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+
+
+def test_a_failed_continuous_row_with_expected_zero_counts_every_symbol_the_table_knows(env):
+    """A failed row recording expected = 0: the symbols are the table's, then the rule."""
+    out = _monday_continuous(env, "failed", (), 0, bars={s: FRI for s in ROOTS36}, expected=0)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+    assert president_messages(env)[0].count("(last bar 2026-10-09)") == 36
+
+
+def test_a_failed_continuous_row_with_expected_zero_and_stale_bars_holds(env):
+    out = _monday_continuous(env, "failed", (), 0, bars=_stale(3), expected=0)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "3 symbol(s) have had no bar for more than 4 day(s)" in out[DESK].message
+
+
+def test_a_failed_continuous_row_with_expected_zero_and_nothing_known_holds(env):
+    out = _monday_continuous(env, "failed", (), 0, bars={}, expected=0)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert "no symbol can be judged" in out[DESK].message
+
+
+def test_exactly_x_days_is_not_stale(env):
+    """GC and ZN last seen 5 days before Sunday (10-06, past X), CL exactly 4 (10-07, not past X): two
+    past X, the run goes; with CL one day older (next test) three are, held. Before Q1 GC alone held."""
+    bars = {s: SUN for s in ROOTS36}
+    bars.update(GC=dt.date(2026, 10, 6), ZN=dt.date(2026, 10, 6), CL=dt.date(2026, 10, 7))
+    out = _monday_continuous(env, "partial", STALE, 33, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert out[DESK].action != ALERT
+
+
+def test_one_day_more_than_x_is_stale(env):
+    bars = {s: SUN for s in ROOTS36}
+    bars.update({s: dt.date(2026, 10, 6) for s in STALE})
+    out = _monday_continuous(env, "partial", STALE, 33, bars=bars)
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+
+
+def test_the_alert_names_every_missing_symbol_the_stalest_first(env):
+    """The row names them in its own order; the alert lists them with no bar first, then the oldest."""
+    bars = {s: SUN for s in ROOTS36}
+    del bars["CL"]
+    bars.update(ES=FRI, ZN=dt.date(2026, 10, 2), GC=dt.date(2026, 10, 5))
+    _monday_continuous(env, "partial", ("ES", "ZN", "GC", "CL"), 32, bars=bars, data_ready_max_missing=3)
+    (message,) = president_messages(env)
+    assert ("missing: CL (last bar none), ZN (last bar 2026-10-02), GC (last bar 2026-10-05), "
+            "ES (last bar 2026-10-09). The run of 2026-10-12 goes ahead with each carried") in message
+
+
+def test_the_hold_names_the_stale_symbols_the_stalest_first(env):
+    bars = {s: SUN for s in ROOTS36}
+    bars.update(ZN=dt.date(2026, 10, 5), GC=dt.date(2026, 10, 2), CL=dt.date(2026, 10, 3))
+    out = _monday_continuous(env, "partial", ("ZN", "GC", "CL"), 33, bars=bars)
+    assert out[DESK].message.endswith(
+        "GC (last bar 2026-10-02), CL (last bar 2026-10-03), ZN (last bar 2026-10-05). The books of "
+        "2026-10-12 are not built")
+
+
+def test_an_under_named_continuous_row_judges_the_unnamed_symbols_and_can_hold(env):
+    """Q1 fix round 1 (audit A S1, ruling 21 to the letter): a partial row that misses more than it names
+    (32 of 36, naming ES) breaks migration 028; the three it does not name are taken from the table, the
+    stalest first (GC, ZN, CL, nine days old), and judged: three past X, more than N: held. The rule before
+    ruling 21 ignored unnamed symbols and ran: the one kind of row on which Q1 adds a hold."""
+    out = _monday_continuous(env, "partial", ("ES",), 32, bars=_stale(3, fresh=("ES",)))
+    assert env.engine.calls == []
+    assert out[DESK].reason == "data_stale"
+    assert ("3 symbol(s) have had no bar for more than 4 day(s) as of 2026-10-11, more than "
+            "QT_DATA_READY_MAX_MISSING=2: CL (last bar 2026-10-02), GC (last bar 2026-10-02), "
+            "ZN (last bar 2026-10-02)") in out[DESK].message
+
+
+def test_an_under_named_continuous_row_with_fresh_unnamed_symbols_runs_naming_them(env):
+    """33 of 36, naming ES: the two unnamed are the table's stalest before the row's date (GC and ZN,
+    Friday's), within X: the run goes, the alert naming all three, the stalest first."""
+    bars = {s: SUN for s in ROOTS36}
+    bars.update(ES=dt.date(2026, 10, 10), GC=FRI, ZN=FRI)
+    _monday_continuous(env, "partial", ("ES",), 33, bars=bars)
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    (message,) = president_messages(env)
+    assert ("missing: GC (last bar 2026-10-09), ZN (last bar 2026-10-09), ES (last bar 2026-10-10)."
+            in message)
+
+
+def test_an_under_named_row_the_table_cannot_fill_counts_the_rest_as_stale(env):
+    """34 of 36 loaded, naming only ES: one more is missing, and no other symbol in the table is older than
+    the row's date, so the unnamed one counts as stale; one is not more than N: runs, the alert says so."""
+    _monday_continuous(env, "partial", ("ES",), 34, bars={s: SUN for s in ROOTS36} | {"ES": FRI})
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    (message,) = president_messages(env)
+    assert "1 symbol(s) not named, with no bar in the table" in message
+
+
+def test_the_continuous_n_setting_moves_the_rule(env):
+    out = _monday_continuous(env, "partial", STALE[:1], 35, bars=_stale(1), data_ready_max_missing=0)
+    assert env.engine.calls == []                                    # N = 0: one symbol past X holds
+    assert "more than QT_DATA_READY_MAX_MISSING=0" in out[DESK].message
+    assert catchup_settings({}).data_ready_max_missing == 2
+    assert catchup_settings({"QT_DATA_READY_MAX_MISSING": "4"}).data_ready_max_missing == 4
+    assert catchup_settings({"QT_DATA_READY_MAX_MISSING": "4"}).contract_data_ready_max_missing == 2
+    with pytest.raises(ConfigError):
+        catchup_settings({"QT_DATA_READY_MAX_MISSING": "two"})
+
+
+def test_the_continuous_x_is_the_portfolios_tolerance(env):
+    """X is live.data_staleness_tolerance_days as the engine reads it: raised to 10, nine days old runs."""
+    (env.config / "defaults.json").write_text(json.dumps({"live": {"data_staleness_tolerance_days": 10}}))
+    _monday_continuous(env, "partial", STALE, 33, bars=_stale(3))
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+
+
+def test_a_held_contract_row_sends_no_continuous_partial_alert(env):
+    """Both rows missing symbols: the continuous row would run, the per-contract row holds. Only the hold
+    is alerted (the partial alerts go out once no row holds the run)."""
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", ("ES",), 25, expected=26))
+    env.days.bars = {"ES": FRI}
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "partial", STALE, loaded=33))
+    env.days.contract_bars = {r: dt.date(2026, 10, 2) for r in STALE}
+    env.clock.t = at(MON, 4, 40)
+    out = dict(env.make(portfolios=(DESK,)).run_pass())
+    assert out[DESK].reason == "data_stale" and env.engine.calls == []
+    assert alerts(env) == [f"QT alert: {DESK_PID} 2026-10-12 data_stale"]
+
+
+def test_both_rows_partial_and_running_alert_once_each(env):
+    switch_on(env)
+    weekend_done(env)
+    env.days.ready.append(ready(SUN, at(MON, 4, 35), "partial", ("ES",), 25, expected=26))
+    env.days.bars = {"ES": FRI}
+    env.days.ready.append(contract_ready(SUN, at(MON, 4, 36), "partial", ("GC",), loaded=35))
+    env.days.contract_bars = {"GC": FRI}
+    env.clock.t = at(MON, 4, 40)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert calls(env) == [("model", DESK, "2026-10-12")]
+    assert sorted(alerts(env)) == [f"QT alert: {DESK_PID} 2026-10-12 contract_data_partial",
+                                   f"QT alert: {DESK_PID} 2026-10-12 data_partial"]
+    (_, body), = reviews(env, MON)
+    assert "ES: last bar 2026-10-09" in body and "GC: last bar 2026-10-09" in body
+
+
+def test_the_review_email_lists_a_failed_pulls_carried_symbols(env):
+    """The desk's review of a run built from a failed pull lists every symbol carried (the row names
+    none), each with its last bar, and says they are carried."""
+    published_day(env, MON)
+    env.days.ready.append(ready(MON, at(MON, 20, 10), "failed", loaded=0, expected=2))
+    env.clock.t = at(MON, 20, 30)
+    env.days.bars = {s: FRI for s in ("ES", "ZN")}
+    env.make(portfolios=(DESK,)).run_pass()
+    assert ("model", DESK, "2026-10-13") in calls(env)
+    (_, body), = reviews(env)
+    assert "2 symbol(s) are missing for 2026-10-12 (status failed)" in body
+    assert "ES: last bar 2026-10-09" in body and "ZN: last bar 2026-10-09" in body
+    assert "carried at its last price" in body
+
+
+def test_the_review_email_counts_the_symbols_nobody_names(env):
+    """Q1 fix round 1 (audit A S3): a partial row of 34 of 36 naming none, the table holding nothing older
+    than the row's date: two unnamed symbols, counted stale, not more than N, the run goes. The review
+    e-mail counts both (before: "no symbol missing" while the alert said two were)."""
+    published_day(env, MON)
+    env.days.bars = {s: MON for s in ROOTS36}
+    env.days.ready.append(ready(MON, at(MON, 20, 10), "partial", (), loaded=34))
+    env.clock.t = at(MON, 20, 30)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert ("model", DESK, "2026-10-13") in calls(env)
+    (_, body), = reviews(env)
+    assert "2 symbol(s) are missing for 2026-10-12 (status partial)" in body
+    assert "<li>2 more the data does not name, with no bar in the table</li>" in body
+    assert "no symbol missing" not in body
+    assert "2 symbol(s) not named, with no bar in the table" in president_messages(env)[0]
+
+
+def test_the_review_email_sums_the_unnamed_symbols_of_both_rows(env):
+    """Q1 audit A recheck R1: switch on, both rows under-named within N (35 of 36 each, naming none, every
+    table symbol fresh): one unnamed symbol from each row, two in all. The review e-mail counts the sum."""
+    published_day(env, MON)
+    switch_on(env)
+    env.days.bars = {s: MON for s in ROOTS36}
+    env.days.contract_bars = {r: MON for r in ROOTS36}
+    env.days.ready.append(ready(MON, at(MON, 20, 10), "partial", (), loaded=35))
+    env.days.ready.append(contract_ready(MON, at(MON, 20, 11), "partial", (), loaded=35))
+    env.clock.t = at(MON, 20, 30)
+    env.make(portfolios=(DESK,)).run_pass()
+    assert ("model", DESK, "2026-10-13") in calls(env)
+    (_, body), = reviews(env)
+    assert "<li>2 more the data does not name, with no bar in the table</li>" in body

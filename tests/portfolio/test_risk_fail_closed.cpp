@@ -2,12 +2,12 @@
 // PortfolioConfig assembled in code is invalid, and when a REFUSE has no previous book to pin to.
 //
 // Every one of these is a path the shipped configs never take (one carver module at portfolio
-// scope, no sleeves, and it does not fail), so none of them can move a stored row today. They
-// are the surface HD's "working, tested plug-and-play modules from day one" ruling opens, and
-// before this commit three of them failed OPEN: a module that errored threw away the decisions
-// its neighbours had already returned, a constructor that could not build a module logged one
-// line and ran the book UNGATED, and a REFUSE on a live manager nobody had seeded shipped a FLAT
-// book that the runner's diff against trading.positions reads as "sell everything".
+// scope, no sleeves, and it does not fail), so none of them moves a stored row of a shipped
+// book. They are the surface plug-and-play modules open, and each fails CLOSED: a module that
+// errors does not throw away the decisions its neighbours already returned, a constructor that
+// cannot build a module throws rather than run the book UNGATED, and a REFUSE on a live manager
+// nobody seeded does not ship a FLAT book that the runner's diff against trading.positions reads
+// as "sell everything".
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -234,13 +234,12 @@ protected:
     std::shared_ptr<ScriptedStrategy> strategy_;
 };
 
-// ===== A-1: combine first, then fail closed =====
+// ===== combine first, then fail closed =====
 
-// THE test the T-6a adversary asked for. [refuse, failing] on one scope: the refusal was taken
-// before the failure happened, so the book that ships is the previous one.
-// Before this commit the evaluate loop returned on the first error BEFORE combine_risk_decisions
-// ran, the REFUSE was recorded with applied_action NONE and discarded, and the optimiser's book
-// shipped -- exactly what risk_module.hpp:24 says cannot happen.
+// [refuse, failing] on one scope: the refusal was taken before the failure happened, so the book
+// that ships is the previous one. An evaluate loop that returned on the first error BEFORE
+// combine_risk_decisions ran would record the REFUSE with applied_action NONE, discard it, and
+// ship the optimiser's book -- exactly what risk_module.hpp says cannot happen.
 TEST_F(RiskFailClosedTest, ARefuseSurvivesALaterModulesFailure) {
     make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
     ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
@@ -275,8 +274,8 @@ TEST_F(RiskFailClosedTest, ARefuseSurvivesALaterModulesFailure) {
     EXPECT_EQ(failing->lap_applied_calls, 0);
 }
 
-// The same for a module that THROWS rather than returning an error Result: it used to escape to
-// the catch around the whole apply, which returned OK with every decision discarded.
+// The same for a module that THROWS rather than returning an error Result: it must not escape to
+// a catch around the whole apply that returns OK with every decision discarded.
 TEST_F(RiskFailClosedTest, ARefuseSurvivesALaterModulesThrow) {
     make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
     ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
@@ -297,10 +296,9 @@ TEST_F(RiskFailClosedTest, ARefuseSurvivesALaterModulesThrow) {
         << out;
 }
 
-// T-7a C5 (HD 2026-09-21, option b): a SCALE another module returned does NOT survive a later
-// PORTFOLIO-scope module's failure. The failed module has not measured the book, so the scope is
-// refused and held at its previous book. Before C5 the 0.5 cut was applied (4 -> 2 lots) and the
-// failure ignored.
+// A SCALE another module returned does NOT survive a later PORTFOLIO-scope module's failure. The
+// failed module has not measured the book, so the scope is refused and held at its previous book,
+// not cut by 0.5 (4 -> 2 lots) with the failure ignored.
 TEST_F(RiskFailClosedTest, AScaleDoesNotSurviveALaterPortfolioModulesFailure) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
@@ -329,15 +327,14 @@ TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheScope) {
     ASSERT_TRUE(result.is_ok());
     EXPECT_EQ(quantity("ZZA"), 2.0) << "pinned to the seeded book";
     EXPECT_NE(out.find("Risk module gate failed on portfolio"), std::string::npos) << out;
-    // T-7a C5: at portfolio scope the refusal line is the one every capability gets (an ERROR).
+    // At portfolio scope the refusal line is the one every capability gets (an ERROR).
     EXPECT_NE(out.find("a portfolio-scope module that cannot answer refuses the scope"),
               std::string::npos)
         << out;
 }
 
-// T-7a C5 (HD 2026-09-21, option b): at PORTFOLIO scope a module that cannot refuse DOES refuse
-// when it fails: its silence is not consent either. Before C5 the strategy's own target (4 lots)
-// shipped ungated.
+// At PORTFOLIO scope a module that cannot refuse DOES refuse when it fails: its silence is not
+// consent either. The strategy's own target (4 lots) does not ship ungated.
 TEST_F(RiskFailClosedTest, AFailedScaleOnlyPortfolioModuleRefusesTheScope) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
@@ -350,9 +347,8 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlyPortfolioModuleRefusesTheScope) {
     EXPECT_EQ(quantity("ZZA"), 2.0) << "held at the seeded book, not the ungated target";
 }
 
-// T-7b-2 C10b (HD 2026-09-24 ruling 18): at SLEEVE scope too, a module that cannot refuse DOES
-// refuse its sleeve when it fails, as the portfolio rule (T-7a C5) does for the book. Before C10b
-// this test pinned the opposite: the sleeve's own target (4 lots) shipped ungated.
+// At SLEEVE scope too, a module that cannot refuse DOES refuse its sleeve when it fails, as the
+// portfolio rule does for the book: the sleeve's own target (4 lots) does not ship ungated.
 TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleRefusesTheSleeve) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
@@ -383,10 +379,10 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleRefusesTheSleeve) {
     EXPECT_TRUE(found);
 }
 
-// ===== D-1 / A-3: the constructor validates, and rethrows =====
+// ===== the constructor validates, and rethrows =====
 
 // Two carver modules are two COMPOSITION terms at one scope: the scale-invariant terms would be
-// counted twice. set_risk_modules always refused this; the constructor used to accept it.
+// counted twice. set_risk_modules refuses this, and so does the constructor.
 TEST_F(RiskFailClosedTest, ConstructingWithTwoCompositionModulesThrows) {
     PortfolioConfig pc = base_config();
     pc.risk_modules = {test_carver_module(pc.risk_config, "carver_a"),
@@ -405,8 +401,8 @@ TEST_F(RiskFailClosedTest, ConstructingWithADuplicateModuleIdThrows) {
 }
 
 // A module whose CONSTRUCTOR throws (ConstantScaleRiskModule rejects a scale outside [0,1]).
-// Before this commit the PM caught it, logged one ERROR, cleared the list, and ran the book with
-// no risk layer at all and exit 0.
+// The PM must not catch it, log one ERROR, clear the list, and run the book with no risk layer at
+// all and exit 0.
 TEST_F(RiskFailClosedTest, ConstructingWithAnUnbuildableModuleThrowsInsteadOfRunningUngated) {
     PortfolioConfig pc = base_config();
     RiskModuleConfig bad;
@@ -419,8 +415,8 @@ TEST_F(RiskFailClosedTest, ConstructingWithAnUnbuildableModuleThrowsInsteadOfRun
 
 // The loader checks the sleeve key against portfolio.json's `strategies`; the runner does not
 // always register the strategy under that key (the live equity runner registers
-// LIVE_EQUITY_MEAN_REVERSION for the config key MEAN_REVERSION). A key that matches nothing used
-// to fire in the backtest and silently never fire live. It is now an error on the first call.
+// LIVE_EQUITY_MEAN_REVERSION for the config key MEAN_REVERSION). A key that matches nothing would
+// fire in the backtest and silently never fire live, so it is an error on the first call.
 TEST_F(RiskFailClosedTest, ASleeveKeyThatNamesNoRegisteredStrategyErrorsOnTheFirstCall) {
     PortfolioConfig pc = base_config();
     RiskModuleConfig warn;
@@ -450,7 +446,7 @@ TEST_F(RiskFailClosedTest, ASleeveKeyThatNamesARegisteredStrategyIsAccepted) {
     EXPECT_TRUE(pm_->process_market_data(three_days()).is_ok());
 }
 
-// ===== A-2: a REFUSE needs a previous book to pin to =====
+// ===== a REFUSE needs a previous book to pin to =====
 
 // The live manager the equity runner builds: nobody ever calls update_strategy_position, so
 // current_positions is whatever the last bar left there. Pinning to it ships a FLAT book, and
@@ -500,14 +496,12 @@ TEST_F(RiskFailClosedTest, ARefuseOnASeededLiveScopePinsAndTradesNothing) {
 // refusal pins the target to the previous book and the synthesis then reports "buy the whole
 // book from flat".
 //
-// Harmless today and deliberately left alone: get_strategy_executions() is read by the BACKTEST
-// coordinator alone (backtest_coordinator.cpp:599/643/1249/1350), where the ledger accumulates
-// across the period loop and equals the pinned book, so nothing is emitted -- and the live
-// runners size their orders by diffing trading.positions, never this. It is a trap for the first
-// live consumer of these rows, and it is the same shape as A-2: the fix is to seed the ledger
-// beside current_positions, which moves stored rows and is therefore its own measured commit.
-// T-6a's adversary stated "the execution synthesis diffs pinned == previous, so nothing is
-// emitted"; that is true of the backtest and not of a fresh manager.
+// Harmless in the shipped engines: get_strategy_executions() is read by the BACKTEST coordinator
+// alone, where the ledger accumulates across the period loop and equals the pinned book, so
+// nothing is emitted -- and the live runners size their orders by diffing trading.positions,
+// never this. It is a trap for the first live consumer of these rows; seeding the ledger beside
+// current_positions would close it, and moves stored rows. "The execution synthesis diffs pinned
+// == previous, so nothing is emitted" is true of the backtest and not of a fresh manager.
 TEST_F(RiskFailClosedTest, ARefusalOnAFreshLedgerStillSynthesisesTheWholeBook) {
     make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
     ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 2.0, 100.0)).is_ok());
@@ -538,7 +532,7 @@ TEST_F(RiskFailClosedTest, ARefuseOnAnUnseededBacktestScopePinsAsBefore) {
         << "day one's previous book is empty, and that is the honest answer";
 }
 
-// ===== 7e: the applied-scale line HD ruled on 2026-09-18 =====
+// ===== the applied-scale line =====
 
 namespace {
 
@@ -564,8 +558,8 @@ size_t count_lines(const std::string& out, const std::string& needle) {
 }  // namespace
 
 // One line per lap, naming what was ASKED for and what the book was actually multiplied by.
-// The pre-existing WARN prints only the request, and only on a cutting lap, so until now no
-// line anywhere said what the quantised factor was.
+// The WARN prints only the request, and only on a cutting lap, so this is the line that says
+// what the quantised factor was.
 TEST_F(RiskFailClosedTest, EveryLapLogsWhatWasRequestedAndWhatWasApplied) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
@@ -653,7 +647,7 @@ TEST_F(RiskFailClosedTest, AnEmptyBookLapLogsNoLine) {
     EXPECT_NE(out.find("No positions to apply risk management to"), std::string::npos);
 }
 
-// ===== T-6b-fix F6: the residues of T-6b's review =====
+// ===== sleeve-scope and post-rounding edges =====
 
 namespace {
 
@@ -688,7 +682,7 @@ private:
 
 }  // namespace
 
-// A-1 on the SLEEVE path (apply_sleeve_risk has its own call of evaluate_scope_modules). A
+// Combine first, then fail closed, on the SLEEVE path (apply_sleeve_risk has its own call of evaluate_scope_modules). A
 // refuse-capable module that cannot answer has not said yes: the sleeve is refused and pinned.
 TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheSleeve) {
     make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
@@ -701,7 +695,7 @@ TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheSleeve) {
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     const std::string out = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(quantity("ZZA"), 2.0) << "the sleeve is pinned to its previous book";
-    // T-7b-2 C10b: the refusal line is the one every capability gets at sleeve scope (an ERROR).
+    // The refusal line is the one every capability gets at sleeve scope (an ERROR).
     EXPECT_NE(out.find("Risk module sleeve_boom failed on sleeve FC_S before the loop: "),
               std::string::npos)
         << out;
@@ -726,7 +720,7 @@ TEST_F(RiskFailClosedTest, ASleeveRefuseSurvivesALaterModulesFailure) {
     EXPECT_EQ(quantity("ZZA"), 2.0);
 }
 
-// A-2 at SLEEVE scope: pinning a never-seeded live sleeve would ship it flat. The run errors.
+// A REFUSE at SLEEVE scope: pinning a never-seeded live sleeve would ship it flat. The run errors.
 TEST_F(RiskFailClosedTest, ARefuseOnANeverSeededLiveSleeveIsAnError) {
     make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
     ASSERT_TRUE(pm_->set_risk_modules(
@@ -744,8 +738,8 @@ TEST_F(RiskFailClosedTest, ARefuseOnANeverSeededLiveSleeveIsAnError) {
     EXPECT_NE(out.find("pinning would ship a FLAT book"), std::string::npos) << out;
 }
 
-// C-2 in the SHARED validator: the loader refused a carver at sleeve scope, the constructor and
-// set_risk_modules did not. A carver divides by the portfolio's capital, so on a sleeve its
+// A carver at sleeve scope is refused by the SHARED validator, on the loader's, the constructor's
+// and set_risk_modules' paths alike. A carver divides by the portfolio's capital, so on a sleeve its
 // leverage limits would be read against the whole book's money.
 TEST_F(RiskFailClosedTest, ACarverAtSleeveScopeIsRefusedOnTheConstructorPath) {
     PortfolioConfig pc = base_config();
@@ -772,7 +766,7 @@ TEST_F(RiskFailClosedTest, ACarverAtSleeveScopeIsRefusedBySetRiskModules) {
 }
 
 // =============================================================================================
-// T-7b-2 C10b (HD 2026-09-24 ruling 18): a sleeve-scope module that cannot answer refuses ITS
+// A sleeve-scope module that cannot answer refuses ITS
 // sleeve (held at the seeded sleeve book, no order) and the other sleeves go on. Driven through
 // process_market_data (the sleeve step before the loop, the loop, the post-rounding point).
 // =============================================================================================

@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 import datetime as dt
-from typing import Mapping, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 
 DEFAULT_CONFIG_DIR = "/app/config"
 DEFAULT_ENGINE_BINARY = "/app/build/bin/Release/live_portfolio_conservative"
@@ -32,9 +32,13 @@ DEFAULT_LOG_DIR = "/var/log/qt-engine"
 # D-1: the model twin (qt_conservative_model) is no longer run; the desk portfolio's own system
 # book is the model's book it is compared with (D-3).
 DEFAULT_CATCHUP_PORTFOLIOS = ("qt_conservative",)
-# The data-driven run (catchup.py; issues #191 and #192): the dataset of ops.data_ready it waits for,
+# The data-driven run (catchup.py; issues #191 and #192): the datasets of ops.data_ready it waits for,
 # who gets the desk's review e-mail and where the desk is.
 DEFAULT_DATA_READY_DATASET = "futures_ohlcv_1d"
+# Rolls step 4 (ROLLS_STEP1_PLAN section 5a): the per-contract pull's row (algogators PR #78). A
+# portfolio whose portfolio.json turns per_contract_rolls on reads the per-contract bars, so its
+# run also waits for this row (catchup.py, datasets_waited_for).
+CONTRACT_DATA_READY_DATASET = "futures_contract_ohlcv_1d"
 DEFAULT_REVIEW_RECIPIENTS = ("dominickdupuy@ufl.edu",)
 # AlgoLens has no desk route of its own: the desk is the QT portfolio's panel on the dashboard.
 DEFAULT_DESK_URL = "https://algolens.algogators.com/"
@@ -138,7 +142,28 @@ class CatchupSettings:
     # QT_CATCHUP_BUSY_WINDOW=04:30-10:30.
     # Off: the scheduler runs exactly as before (the model run of each day from 06:45).
     evening_run: bool = True
-    data_ready_dataset: str = DEFAULT_DATA_READY_DATASET
+    # Every dataset a run waits for (QT_DATA_READY_DATASET, comma-separated); a portfolio with
+    # per_contract_rolls on also waits for CONTRACT_DATA_READY_DATASET.
+    data_ready_datasets: Tuple[str, ...] = (DEFAULT_DATA_READY_DATASET,)
+    # HD 2026-10-24 (plan 11c ruling 21, an AND condition), the continuous row (every dataset of
+    # QT_DATA_READY_DATASET): the run is held with the data_stale alert only when MORE than this many
+    # symbols (QT_DATA_READY_MAX_MISSING, N, default 2) have EACH had no bar for more than X days, X being
+    # the portfolio's live.data_staleness_tolerance_days (the engine's tolerance, 4 by default), a failed
+    # pull included (every symbol the table knows is then missing). Otherwise it goes, every missing symbol
+    # alerted (data_partial) and held at its last price: a one-day failed pull runs, one or two symbols
+    # stale for weeks run. The engine's FEED_HOLE guard still refuses today's run when the book holds a
+    # symbol past the tolerance.
+    data_ready_max_missing: int = 2
+    # Rolls step 4, the same rule for the per-contract row: the run is held with the data_stale alert only
+    # when MORE than this many roots have EACH had no contract bar for more than
+    # contract_data_ready_stale_days days (QT_CONTRACT_DATA_READY_MAX_MISSING, N, default 2). Otherwise
+    # it goes, every missing root alerted
+    # (contract_data_partial) and priced by the engine's rule (the vendor's bar of the held contract, else
+    # its last close carried, with a WARN): a one-day "0 of 36" row runs, one root stale for weeks runs.
+    contract_data_ready_max_missing: int = 2
+    # X of the same rule (QT_CONTRACT_DATA_READY_STALE_DAYS): None (unset) reads the portfolio's
+    # live.data_staleness_tolerance_days, the engine's tolerance (4 by default).
+    contract_data_ready_stale_days: Optional[int] = None
     # No usable row for the previous trading day by then: today's run alerts instead of waiting,
     # and the daily data-ready check alerts the President (once a day).
     data_alert_at: dt.time = dt.time(6, 0)
@@ -195,6 +220,16 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         raise ConfigError("no database credentials: set DB_HOST/DB_USER/DB_PASSWORD/DB_NAME or "
                           "mount defaults.json under TRADING_CONFIG_DIR")
     return Settings(db=db, commands=command_settings(env), catchup=catchup_settings(env))
+
+
+def _count(env: Mapping[str, str], name: str, default: int) -> int:
+    """A whole number of at least 0."""
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit():
+        raise ConfigError(f"{name} must be a whole number of at least 0")
+    return int(raw)
 
 
 def _positive(env: Mapping[str, str], name: str, default: float) -> float:
@@ -265,7 +300,15 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
     ("06:30-10:30"), QT_CATCHUP_BUSY_EVERY_MIN (5), QT_CATCHUP_TODAY_NOT_BEFORE ("06:45"),
     QT_MODEL_RETRY_MIN (15), QT_MODEL_ALERT_AT ("08:30"), QT_CATCHUP_LOCK_WAIT_S (600).
     The data-driven run (issues #191, #192): QT_EVENING_RUN (default 1; 0 restores the 06:45-only
-    schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"), QT_DATA_READY_ALERT_AT ("06:00"),
+    schedule), QT_DATA_READY_DATASET ("futures_ohlcv_1d"; a comma-separated list, every one
+    waited for), QT_DATA_READY_MAX_MISSING (N, 2): the run is held only when more than N symbols of
+    the continuous row have each had no bar for more than the portfolio's
+    live.data_staleness_tolerance_days (X, 4) days, a failed pull included; otherwise it runs, every
+    missing symbol alerted (HD 2026-10-24, ruling 21), QT_CONTRACT_DATA_READY_MAX_MISSING (N, 2) and
+    QT_CONTRACT_DATA_READY_STALE_DAYS (X, unset: the portfolio's live.data_staleness_tolerance_days,
+    4): a per_contract_rolls portfolio's run is held only when more than N roots of the per-contract
+    row have each had no contract bar for more than X days; otherwise it runs, every missing root
+    alerted (the same ruling), QT_DATA_READY_ALERT_AT ("06:00"),
     QT_REVIEW_RECIPIENTS (comma-separated; default dominickdupuy@ufl.edu), QT_DESK_URL,
     TRADE_NGIN_HOLIDAYS_JSON (the engine's own variable).
     QT_UNPUBLISHED_REMINDER_H is no longer read (the 10:00 fallback replaced the reminder)."""
@@ -289,13 +332,35 @@ def catchup_settings(env: Optional[Mapping[str, str]] = None) -> CatchupSettings
         model_alert_at=_clock(env, "QT_MODEL_ALERT_AT", dt.time(8, 30)),
         lock_wait_s=_positive(env, "QT_CATCHUP_LOCK_WAIT_S", 600.0),
         evening_run=(env.get("QT_EVENING_RUN") or "1").strip() != "0",
-        data_ready_dataset=(env.get("QT_DATA_READY_DATASET") or "").strip()
-        or DEFAULT_DATA_READY_DATASET,
+        data_ready_datasets=_datasets(env, "QT_DATA_READY_DATASET",
+                                      (DEFAULT_DATA_READY_DATASET,)),
+        data_ready_max_missing=_count(env, "QT_DATA_READY_MAX_MISSING", 2),
+        contract_data_ready_max_missing=_count(env, "QT_CONTRACT_DATA_READY_MAX_MISSING", 2),
+        contract_data_ready_stale_days=(_count(env, "QT_CONTRACT_DATA_READY_STALE_DAYS", 0)
+                                        if (env.get("QT_CONTRACT_DATA_READY_STALE_DAYS") or "").strip()
+                                        else None),
         data_alert_at=_clock(env, "QT_DATA_READY_ALERT_AT", dt.time(6, 0)),
         review_recipients=_emails(env, "QT_REVIEW_RECIPIENTS", DEFAULT_REVIEW_RECIPIENTS),
         desk_url=(env.get("QT_DESK_URL") or "").strip() or DEFAULT_DESK_URL,
         holidays_path=(env.get("TRADE_NGIN_HOLIDAYS_JSON") or "").strip(),
     )
+
+
+def _datasets(env: Mapping[str, str], name: str, default: Tuple[str, ...]) -> Tuple[str, ...]:
+    """A comma-separated list of ops.data_ready dataset names, each once, in the order given."""
+    raw = env.get(name)
+    if raw is None or not raw.strip():
+        return default
+    out: List[str] = []
+    for p in (p.strip() for p in raw.split(",")):
+        if not p:
+            continue
+        if not all(c.isascii() and (c.isalnum() or c == "_") for c in p):
+            raise ConfigError(f"{name} must be a comma-separated list of dataset names "
+                              f"(letters, digits, _), got {p!r}")
+        if p not in out:
+            out.append(p)
+    return tuple(out) or default
 
 
 def _emails(env: Mapping[str, str], name: str, default: Tuple[str, ...]) -> Tuple[str, ...]:

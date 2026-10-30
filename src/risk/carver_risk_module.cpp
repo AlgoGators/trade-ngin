@@ -91,18 +91,15 @@ size_t CarverRiskModule::window_dates() const {
 void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {
     // (1) APPEND ONCE PER REBALANCE, not once per lap.
     //
-    // The window used to be re-filled on every lap of the optimizer/risk loop, which calls this
-    // with the SAME day's bars up to five times. With 36 futures symbols and a 252-BAR cap that
-    // is 36 fresh copies a lap evicting older dates, so the window shrank 8 -> 7 -> 5 -> 4 -> 3
-    // DATES inside one day. At two or three return rows |rho| is 1.0 by arithmetic, and
-    // correlation_mult pinned at exactly 0.850000 on 90.5 % of binding laps against an honest
-    // 252-date value of 0.872091 (T-4 M-02).
+    // The optimizer/risk loop calls this with the SAME day's bars up to five times; appending
+    // on every lap would fill the window with copies of one day and evict older dates, and at
+    // two or three return rows |rho| is 1.0 by arithmetic.
     //
     // "Is this a new rebalance?" is the EXPLICIT flag begin_rebalance resets, never something
-    // inferred from the bars. The inferred test C2 used -- "is the newest timestamp in `data`
-    // already in the window?" -- is equivalent only when every later call of a rebalance carries
-    // the same bars. The PortfolioManager's own bar subscriber delivers ONE DATE ACROSS N CALLS,
-    // so bars 2..N of a date were silently discarded and the gate measured a one-name book.
+    // inferred from the bars. An inferred test ("is the newest timestamp in `data` already in
+    // the window?") is equivalent only when every later call of a rebalance carries the same
+    // bars. The PortfolioManager's own bar subscriber delivers ONE DATE ACROSS N CALLS, so such
+    // a test would discard bars 2..N of a date and the gate would measure a one-name book.
     if (!appended_this_rebalance_) {
         appended_this_rebalance_ = true;
         for (auto const& bar : bars) {
@@ -147,7 +144,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
     // market_data_built_this_rebalance_ is set only AFTER market_data_ has been assigned below, so
     // a build that throws on lap 1 is retried on lap 2 instead of leaving laps 2..n reading the
-    // PREVIOUS rebalance's MarketData (T-6b INTERIM ADVERSARIAL E-1).
+    // PREVIOUS rebalance's MarketData.
 
     // (3) F5: DROP SPARSE DATES FROM THE GATE'S WINDOW.
     //
@@ -167,13 +164,12 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     // multi-day gap move to one date); a pairwise-overlap correlation (per-pair sample sets can
     // produce a covariance that is not positive semi-definite, and the same matrix feeds
     // w'Sigma w in the VaR gate where a negative quadratic form is swallowed by sqrt(max(0, v))).
-    // (4) THE PARTICIPANTS (T-7b-2 CGW, the E-7 mechanism in the gate). The strict rule is over
+    // (4) THE PARTICIPANTS. The strict rule is over
     // the symbols the book can hold this rebalance (RiskContext::gate_participants: signalled by
     // some strategy, or targeted or held), not over every symbol with a bar in the window: a symbol
     // nobody signals, targets or holds has zero weight in every term the gate computes, so its
-    // columns add nothing, while its missing dates removed those dates from EVERY symbol's returns
-    // (on the frozen futures backtest the roots with no Sunday bar dropped 50 to 67 dates a day
-    // while they were still warming up). The window itself keeps every bar, so a symbol that starts
+    // columns add nothing, while its missing dates would remove those dates from EVERY symbol's
+    // returns. The window itself keeps every bar, so a symbol that starts
     // to signal enters with its whole history. An empty or absent set leaves the whole window.
     std::vector<Bar> participant_bars;
     std::set<std::string> left_out;
@@ -209,10 +205,8 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
     f5_engaged_ = complete.size() >= kF5MinGateDates;
     dates_dropped_ = f5_engaged_ ? by_date.size() - complete.size() : 0;
-    // Say so when the gate falls back to the unfiltered window (T-6b INTERIM ADVERSARIAL B-5:
-    // commit 9 dropped ARM 1's per-lap WARN, and 149 backtest laps then read the zero-filled
-    // window with only f5_engaged=0 inside an INFO line). On ENTERING the fallback -- the first
-    // time in a run and again on any re-entry -- not on every lap: the bus-driven BASE runner
+    // Say so when the gate falls back to the unfiltered window. On ENTERING the fallback -- the
+    // first time in a run and again on any re-entry -- not on every lap: the bus-driven BASE runner
     // evaluates ~7,000 times a day on a window that warms from empty, and a per-lap line would be
     // most of its log.
     if (!f5_engaged_ && !in_f5_fallback_) {
@@ -224,17 +218,19 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
     in_f5_fallback_ = !f5_engaged_;
 
-    // T-ROLLX (LOOP_SPEC v6.1 section 2.3): the gate's returns are adjusted. The levels are built
+    // The gate's returns are adjusted. The levels are built
     // on the WHOLE pool (every date, F5's filter not yet applied), so a contract switch on a date
     // the filter drops is removed from the level and the return across that gap is a real move.
     const RiskManager::AdjustedLevels adjusted = RiskManager::adjusted_levels_of(pool);
+    // the divisors on the same whole pool
+    const RiskManager::AdjustedLevels resolved = RiskManager::base_closes_of(pool);
     if (f5_engaged_) {
         std::vector<Bar> filtered;
         filtered.reserve(pool.size());
         for (const auto& bar : pool) {
             if (complete.count(bar.timestamp)) filtered.push_back(bar);
         }
-        market_data_ = rm_.create_market_data(filtered, &adjusted);
+        market_data_ = rm_.create_market_data(filtered, &adjusted, &resolved);
         market_data_built_this_rebalance_ = true;
     } else {
         // Below the floor F5 does not engage and the gate reads the UNFILTERED date-capped
@@ -242,7 +238,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
         // is the failure this change set removes, and a 2-date window additionally drives
         // create_market_data into its divide-by-(n-1)==0 branch, where the gate goes blind with
         // every multiplier at 1.0.
-        market_data_ = rm_.create_market_data(pool, &adjusted);
+        market_data_ = rm_.create_market_data(pool, &adjusted, &resolved);
         market_data_built_this_rebalance_ = true;
     }
 }
@@ -289,20 +285,19 @@ Result<RiskDecision> CarverRiskModule::evaluate(
          ", correlation_mult=" + std::to_string(risk_result.correlation_multiplier) +
          ", leverage_mult=" + std::to_string(risk_result.leverage_multiplier));
 
-    // ---- THE TERM-AWARE LEVEL CUT (T-4f ARM 1) -------------------------------------
+    // ---- THE TERM-AWARE LEVEL CUT ------------------------------------------------------
     //
-    // The shipped loop multiplied the book by s_k on EVERY lap. The gate is scale-invariant --
-    // the weights are normalised by the book's own gross -- so s_k barely moves as the book
-    // shrinks, and five laps of x0.85 ship 0.4437 of a book the gate asked to cut by 15 %.
+    // The gate is scale-invariant -- the weights are normalised by the book's own gross -- so
+    // s_k barely moves as the book shrinks; multiplying the book by s_k on EVERY lap would ship
+    // five laps of x0.85, 0.4437 of a book the gate asked to cut by 15 %.
     //
     // A LEVEL is the right rule only for a multiplier that reads the book's COMPOSITION, because
     // such a reading does not change when the book is scaled. Three of the four are of that kind:
     //     portfolio_multiplier (VaR), jump_multiplier, correlation_multiplier.
     // The fourth is not. calculate_leverage_multiplier is gross = total_value / capital and
     // net = sum(position_values) / capital, a MAGNITUDE reading of the book as it now stands.
-    // Comparing that with the level treats a fresh magnitude measurement as an absolute request,
-    // which is how C2f came to discard every leverage request after lap 1 and end over the net
-    // limit on 100 of 368 days.
+    // Comparing that with the level would treat a fresh magnitude measurement as an absolute
+    // request and discard every leverage request after lap 1.
     //
     // So the level tracks the three INVARIANT terms only, and the leverage term is applied as a
     // RATE on every lap -- compared with 1.0, never with the level. Both are honoured with ONE
@@ -324,7 +319,7 @@ Result<RiskDecision> CarverRiskModule::evaluate(
     if (decision.action == RiskAction::SCALE) {
         // The head-room the invariant terms still allow, given what has already been applied.
         // A level marked PARTIAL is not a true statement about the book this module measured
-        // (a sleeve was pinned and skipped by the multiply, T-6a ADVERSARIAL A-5), so nothing
+        // (a sleeve was pinned and skipped by the multiply), so nothing
         // divides by it: that lap honours the leverage rate alone, which is measured fresh on
         // the current book and is always valid. Zero laps on every shipped book.
         //
@@ -332,10 +327,9 @@ Result<RiskDecision> CarverRiskModule::evaluate(
         // (Decimal rounds each to 1e-8), while s_inv is the raw reading. When the reading has not
         // moved since the lap that applied it, the two differ only by that rounding: a factor that
         // rounded UP leaves s_inv / level = 0.99999999x, which is not a request, and returning it
-        // as a SCALE turned whole contracts into 0.99999999 of one (T-6b INTERIM ADVERSARIAL B-1:
-        // 20 of 380 stored futures-backtest executions). So the invariant terms are satisfied
-        // whenever s_inv is within one Decimal quantum of the level already applied; a lap whose
-        // reading is genuinely deeper than that is charged exactly s_inv / level, as before.
+        // as a SCALE would turn whole contracts into 0.99999999 of one. So the invariant terms are
+        // satisfied whenever s_inv is within one Decimal quantum of the level already applied; a
+        // lap whose reading is genuinely deeper than that is charged exactly s_inv / level.
         double headroom = 1.0;
         if (!level_partial_ && applied_level_ > 0.0 && s_inv < applied_level_ - kLevelQuantum) {
             headroom = s_inv / applied_level_;
@@ -360,11 +354,9 @@ Result<RiskDecision> CarverRiskModule::evaluate(
             break;
         }
     }
-    // ... plus the two the schema names (HD, LEAD_RULINGS_C7 item 3): too few complete
-    // dates to estimate anything from, and a book with no capital to divide by. On the old
-    // 252-BAR window (about 7 futures dates) this flag was true on most futures laps, which is
-    // the finding T-4 made; on the date-keyed window it is false on every shipped futures lap.
-    // Data only: it is not logged and not stored in T-6a (T-7 item 10 stores it).
+    // ... plus the two the schema names: too few complete dates to estimate anything from, and
+    // a book with no capital to divide by. On the date-keyed window it is false on every shipped
+    // futures lap. Data only: it is not logged here.
     decision.blind = market_data_.returns.empty() || market_data_.covariance.empty() ||
                      market_data_.symbol_indices.empty() || market_data_.ordered_symbols.empty() ||
                      !mapped || complete_dates_in_window() < min_gate_dates_ ||

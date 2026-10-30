@@ -49,7 +49,7 @@ public:
      * close, i.e. exactly the `t2_close` the finalizer already uses for realized. So
      * `quantity * (t1_close - average_price) * point_value` is algebraically the realized
      * formula, and writing it into unrealized records the same settlement move in two
-     * columns -- E2-F3, measured at up to -12,586.69 in a day, and a violation of the
+     * columns, and a violation of the
      * row-sums-to-aggregate invariant since live_results correctly reports 0.
      *
      * MARK_TO_MARKET -- equities. There `average_price` is a true weighted cost basis, so
@@ -66,12 +66,9 @@ public:
      * The single rule for "what is this position worth versus what it cost", shared by
      * the live_results aggregate this manager produces and the per-row
      * trading.positions.unrealized_pnl the equity runner persists. It is a named
-     * function because those two used to disagree: the aggregate was computed from
-     * Position::average_price while the persisted row read
-     * MeanReversionInstrumentData::entry_price, a field with no writer anywhere in the
-     * tree. It was therefore always 0.0, so every persisted row said 0 while the
-     * aggregate said otherwise -- a guaranteed log-versus-DB mismatch on any day with
-     * open positions.
+     * function so those two cannot disagree: both measure from Position::average_price
+     * (MeanReversionInstrumentData::entry_price has no writer, so a row read from it
+     * would always say 0 while the aggregate said otherwise).
      *
      * Returns 0.0 when there is no basis to measure against: a zero quantity, or an
      * average_price not yet set (on_execution is its sole writer, so a fill that has not
@@ -94,13 +91,11 @@ public:
      *
      * A basis is established when a position is opened and has to survive every
      * day it is held: realized PnL on exit, unrealized PnL while held, and the
-     * mean-reversion stop-loss are all measured from it. The equity runner used to
-     * seed every day-T position's average_price with the previous session's close
-     * and then correct only the symbols the strategy knew about -- which, because
-     * positions_ was never seeded, meant only the symbols that traded that day. A
-     * held-but-untraded position therefore had its basis re-anchored to the latest
-     * close every session: it always looked flat, its unrealized PnL was always
-     * ~0, and its stop-loss measured from yesterday rather than from what it cost.
+     * mean-reversion stop-loss are all measured from it. Seeding a day-T position's
+     * average_price with the previous session's close would re-anchor a
+     * held-but-untraded position's basis to the latest close every session: it would
+     * always look flat, its unrealized PnL would always be ~0, and its stop-loss would
+     * measure from yesterday rather than from what it cost.
      *
      * @param strategy_basis The weighted average BaseStrategy::on_execution()
      *        maintains. Authoritative when set: a symbol that traded today has a
@@ -159,13 +154,13 @@ public:
 
         /**
          * @brief Sum of the finalized rows' unrealized P&L -- the Day T-1 book marked at
-         *        close(T-1). E2-F1.
+         *        close(T-1).
          *
          * This is the aggregate counterpart of the per-row unrealized written below, so
          * `live_results.total_unrealized_pnl[T-1] == SUM(positions.daily_unrealized_pnl[T-1])`
-         * holds by construction rather than by two code paths happening to agree. Before
-         * this the aggregate was a DAY-T snapshot priced at close(T-2) that finalization
-         * never revisited, so the two differed by exactly that day's P&L (E2-F13).
+         * holds by construction rather than by two code paths happening to agree. A DAY-T
+         * snapshot priced at close(T-2) that finalization never revisited would differ
+         * from the rows by exactly that day's P&L.
          *
          * Accumulated ONLY under MARK_TO_MARKET. Under SETTLED every finalized row's
          * unrealized is 0 by the settlement identity, so this is exactly 0.0 for futures --
@@ -179,12 +174,11 @@ public:
     /**
      * Finalize previous day (T-1) positions
      * This is unique to live trading and handles the settlement process
-     * Replaces the finalization logic in live_trend.cpp (lines ~600-700)
      *
-     * T-ROLLX-FIX (LOOP_SPEC v6.1 sections 2.1, 6.6): `zero_pnl_symbols` names the symbols whose T-1
+     * `zero_pnl_symbols` names the symbols whose T-1
      * bar books NO settlement move: a change bar (its contract id differs from the previous consumed
      * bar's: a roll's switch day or either bar of a flip pair; the move is the splice's price gap,
-     * not the held contract's) and a WITHHELD bar (K-01: a JUNK bar or a thin first print is never
+     * not the held contract's) and a WITHHELD bar (a JUNK bar or a thin first print is never
      * consumed). Their row is kept with realized 0; the caller passes as T-2 the close of the
      * symbol's previous CONSUMED bar, so the next consumed bar books against the last consumed close.
      */
@@ -237,13 +231,6 @@ public:
     }
 
     /**
-     * Get total cumulative PnL
-     */
-    double get_total_pnl() const {
-        return cumulative_total_pnl_;
-    }
-
-    /**
      * Clear all PnL tracking for new day
      */
     void reset_daily_tracking() {
@@ -271,7 +258,7 @@ public:
      * @brief Which asset class this manager's unregistered symbols belong to.
      *
      * Only consulted when a symbol is NOT in the InstrumentRegistry. An equity is
-     * one share per unit, point value 1.0 (E2-F38 / BA-7: a real equity ticker must
+     * one share per unit, point value 1.0 (a real equity ticker must
      * never inherit a futures multiplier). A future has no answer without its
      * metadata row: point value 0 and an ERROR (CM1).
      *

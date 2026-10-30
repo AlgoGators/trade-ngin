@@ -98,7 +98,7 @@ struct Estimate {
 double forecast_scalar(int fast, int slow);
 
 /**
- * @brief The equity slow rule (LOOP_SPEC section 2.5, D40) on one bar's combined forecast.
+ * @brief The equity slow rule on one bar's combined forecast.
  *
  * A NEGATIVE combined forecast stands only when the scaled forecast of every pair in `rule_pairs`
  * (each after its scalar, the attenuation and the cap, before the averaging) is negative; otherwise
@@ -136,9 +136,13 @@ std::vector<std::pair<int, int>> pairs_after_removal(const std::vector<std::pair
  * @param pairs the EWMAC pairs
  * @param fdm the forecast diversification multiplier for this number of pairs
  * @param attenuate whether the attenuation acts
+ * @param forecast_sigma_bars when given, receives the forecast's volatility at every window bar
+ *        (window index; 0 at the first bar, which has no return): the carry rules divide by it
+ *        (carry_estimator.hpp). Nothing else changes with it.
  */
 Estimate estimate(const Window& window, int vol_span, const std::vector<std::pair<int, int>>& pairs,
-                  double fdm, bool attenuate = true);
+                  double fdm, bool attenuate = true,
+                  std::vector<double>* forecast_sigma_bars = nullptr);
 
 }  // namespace trend_estimator
 }  // namespace trade_ngin

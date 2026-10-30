@@ -1,17 +1,17 @@
 // tests/live/test_base_bus_off_and_carried_day.cpp
 //
-// T-7a commit 3b (T-BASE B1, HD 2026-09-18 §28c item 3 and the Sunday positions CSV).
+// The BASE runner's bus-off bar load, and the positions file of a day with no session.
 //
-// 1. The BASE runner (apps/strategies/live_portfolio.cpp) loaded its 730-day bar window with the
-//    MarketDataBus ON. PostgresDatabase::get_market_data publishes every row it reads as a BAR
+// 1. The BASE runner (apps/strategies/live_portfolio.cpp) loads its 730-day bar window with the
+//    MarketDataBus OFF. PostgresDatabase::get_market_data publishes every row it reads as a BAR
 //    event and the PortfolioManager subscribes to BAR with a full process_market_data per event,
-//    so each BASE run day was ~21,000 one-bar optimise-and-risk rebalances (execution generation
-//    on, Sundays included) before the runner's own call (T-BASE §3.1). The CONSERVATIVE twin has
-//    always disabled the bus around the load and around its direct call; BASE now carries the
-//    same two guards, byte for byte. The PM then gets exactly one rebalance a day: the runner's.
-// 2. With the replay gone, a day with no session (the previous day a Saturday or a holiday) feeds
-//    the strategies nothing, so their forecasts, volatilities and EMAs are empty that day. HD
-//    (2026-09-18): the per-strategy positions file keeps the real details, held quantities, last
+//    so with the bus on each BASE run day would be ~21,000 one-bar optimise-and-risk rebalances
+//    (execution generation on, Sundays included) before the runner's own call. Both twins
+//    disable the bus around the load and around the direct call, with the same two guards,
+//    byte for byte. The PM then gets exactly one rebalance a day: the runner's.
+// 2. A day with no session (the previous day a Saturday or a holiday) feeds the strategies
+//    nothing, so their forecasts, volatilities and EMAs are empty that day. The per-strategy
+//    positions file keeps the real details, held quantities, last
 //    marks and the last computed forecasts from the previous session, with a note that no session
 //    occurred and the values are carried, not computed. Never empty rows. Both twins.
 //
@@ -134,7 +134,7 @@ TEST(BaseBusOffSource, TheBaseLoadIsBracketedByTheSameGuardAsConservative) {
     EXPECT_EQ(base_load, cons_load)
         << "the BASE bar load is not bracketed by CONSERVATIVE's guard: every loaded row is "
            "published as a BAR event and the PortfolioManager runs a full rebalance per row "
-           "(T-BASE: 21,972 rebalances on 2026-04-24)";
+           "(21,972 rebalances on 2026-04-24)";
 
     const auto off = base_load.find("MarketDataBus::instance().set_publish_enabled(false);");
     const auto load = base_load.find("db->get_market_data(");
@@ -151,7 +151,7 @@ TEST(BaseBusOffSource, TheBaseDirectCallIsBracketedByTheSameGuardAsConservative)
     if (base.empty() || cons.empty()) GTEST_SKIP() << "runner source not found";
     const std::string from =
         "            INFO(\"Processing data through portfolio manager (optimization + risk)...\");";
-    const std::string to = "            // T-RISK-ARCH Q2 (ruled yes)";
+    const std::string to = "            // PORTFOLIO RISK REFUSE";
     const std::string base_call = between(base, from, to);
     const std::string cons_call = between(cons, from, to);
     ASSERT_FALSE(cons_call.empty());
@@ -168,7 +168,7 @@ TEST(BaseBusOffSource, TheBaseDirectCallIsBracketedByTheSameGuardAsConservative)
     for (auto at = base.find("db->get_market_data("); at != npos;
          at = base.find("db->get_market_data(", at + 1))
         ++loads;
-    // Two loads since T-ROLLX-FIX commit 4 (N-2): the window, and the session classifier's history
+    // Two loads: the window, and the session classifier's history
     // before it. Each is bracketed by the bus-off guard.
     EXPECT_EQ(loads, 2u) << "every bar load in the runner must sit inside the guard";
     for (auto at = base.find("db->get_market_data("); at != npos;
@@ -287,7 +287,7 @@ TEST_F(BusFixture, WithTheGuardThePmGetsExactlyOneRebalanceTheRunnersDirectCall)
     EXPECT_EQ(s->calls_, 1u) << "the PM must rebalance exactly once: the runner's direct call";
     EXPECT_EQ(s->bars_, all_bars.size());
 
-    // The unguarded sequence (the BASE runner before this commit): one rebalance per row, then one.
+    // The unguarded sequence (the bus left on): one rebalance per row, then one.
     s->calls_ = 0;
     for (const auto& e : events) MarketDataBus::instance().publish(e);
     ASSERT_TRUE(pm_->process_market_data(all_bars).is_ok());
@@ -486,7 +486,7 @@ TEST(CarriedDaySource, BothTwinsWriteTheCarriedFileOnADayWithNoSession) {
 
 // The runner's log line for a sleeve's carried forecasts says, as the carried file does, which
 // run computed them and the last bar date that run read. The stored date is a run date: the
-// line used to end "from 2026-05-02", which read as the date of the bars.
+// line does not end with "from 2026-05-02" alone, which would read as the date of the bars.
 TEST(CarriedForecastsLogLine, NamesTheRunAndTheLastBarDateItReadAsTheCarriedFileDoes) {
     EXPECT_EQ(carried_forecasts_log_line("TREND_FOLLOWING", 36, "2026-05-02"),
               "Carried forecasts for TREND_FOLLOWING: 36 computed by the run of 2026-05-02 from "

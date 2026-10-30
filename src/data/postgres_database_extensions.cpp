@@ -1,6 +1,5 @@
 // src/data/postgres_database_extensions.cpp
-// Phase 0: Database Extensions to Replace Raw SQL
-// This file contains new methods to eliminate raw SQL from backtest and live trading
+// PostgresDatabase methods that keep raw SQL out of the backtest and live trading code
 
 #include <algorithm>
 #include <ctime>
@@ -14,7 +13,7 @@
 namespace trade_ngin {
 
 // ============================================================================
-// NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)
+// TYPED QUERY METHODS
 // ============================================================================
 
 Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::string>& order_ids,
@@ -54,13 +53,13 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
             in_list += txn.quote(order_ids[i]);
         }
 
-        // E2-F4: scoped by portfolio_id. Without it this reaches across books -- order_id
+        // Scoped by portfolio_id. Without it this reaches across books -- order_id
         // is portfolio-independent and TREND_FOLLOWING runs in both. See the header.
-        // F-C: no calendar-date predicate. order_id is deterministic and already carries
-        // the trading date (DAILY_<symbol>_<yyyymmdd>, CORPACTION_<symbol>_<ex_date>), while
+        // No calendar-date predicate. order_id is deterministic and already carries the
+        // trading date (DAILY_<symbol>_<yyyymmdd>, CORPACTION_<symbol>_<ex_date>), while
         // execution_time is a wall-clock instant: a run at 19:00 EDT stores Monday UTC and a
-        // re-run at 21:00 EDT asked for Tuesday UTC, so the first run's rows never matched
-        // and the re-run inserted duplicates. Scoping by portfolio and strategy_name stays.
+        // re-run at 21:00 EDT would ask for Tuesday UTC, so the first run's rows would never
+        // match and the re-run would insert duplicates. Scoped by portfolio and strategy_name.
         // Migration 021: and by book. Order ids are the same in every book (the system ids are
         // not changed), so without it a desk book's cleanup would take the system rows.
         (void)date;
@@ -105,7 +104,7 @@ Result<void> PostgresDatabase::delete_roll_executions(const Timestamp& date,
                                     " AND execution_type = 'ROLL' AND portfolio_type = $4",
                                 pqxx::params{strategy_name, portfolio_id, day, book});
         txn.commit();
-        (void)r;  // the sweep writes no log line: its rows are re-stored right after (section 7)
+        (void)r;  // the sweep writes no log line: its rows are re-stored right after
         return Result<void>();
     } catch (const std::exception& e) {
         ERROR("ROLL_LEG STOP: the day's ROLL executions could not be deleted: " + std::string(e.what()));
@@ -198,6 +197,55 @@ Result<std::unordered_map<std::string, std::string>> PostgresDatabase::get_store
     }
 }
 
+Result<std::unordered_map<std::string, std::vector<StoredRoll>>> PostgresDatabase::get_previous_rolls(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& from,
+    const Timestamp& date, const std::string& table_name, const std::string& book) {
+    using Rolls = std::unordered_map<std::string, std::vector<StoredRoll>>;
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rolls>(validation.error()->code(), validation.error()->what());
+    }
+    if (auto bv = validate_book(book); bv.is_error()) {
+        return make_error<Rolls>(bv.error()->code(), bv.error()->what(), "PostgresDatabase");
+    }
+    try {
+        pqxx::work txn(*connection_);
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<Rolls>(table_validation.error()->code(),
+                                     table_validation.error()->what());
+        }
+        const std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        // Each closing leg with the opening leg of the same roll (same date, sleeve and id stem);
+        // a roll stored for several sleeves once; oldest first.
+        auto result = txn.exec(
+            "SELECT DISTINCT ON (rc.symbol, rc.date, rc.exec_id) rc.symbol, "
+            "COALESCE(rc.instrument_id, ''), COALESCE(ro.instrument_id, '') FROM " + table_name +
+                " AS rc LEFT JOIN " + table_name +
+                " AS ro ON ro.strategy_id = rc.strategy_id AND ro.portfolio_id = rc.portfolio_id"
+                " AND ro.portfolio_type = rc.portfolio_type AND ro.date = rc.date"
+                " AND ro.strategy_name = rc.strategy_name AND ro.symbol = rc.symbol"
+                " AND ro.execution_type = 'ROLL'"
+                " AND ro.exec_id = left(rc.exec_id, length(rc.exec_id) - 3) || '_RO'"
+                " WHERE rc.strategy_id = $1 AND rc.portfolio_id = $2 AND rc.date >= $3::date"
+                " AND rc.date < $4::date AND rc.portfolio_type = $5"
+                " AND rc.execution_type = 'ROLL' AND rc.exec_id LIKE '%\\_RC'"
+                " ORDER BY rc.symbol, rc.date, rc.exec_id, ro.instrument_id",
+            pqxx::params{strategy_id, actual_portfolio_id, trade_ngin::core::format_utc_date(from),
+                         trade_ngin::core::format_utc_date(date), book});
+        txn.commit();
+        Rolls out;
+        for (const auto& row : result) {
+            out[row[0].as<std::string>()].push_back({row[1].as<std::string>(), row[2].as<std::string>()});
+        }
+        return Result<Rolls>(out);
+    } catch (const std::exception& e) {
+        return make_error<Rolls>(ErrorCode::DATABASE_ERROR,
+                                 "Failed to read the earlier stored ROLL legs: " + std::string(e.what()),
+                                 "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_summary(
     const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,
@@ -213,7 +261,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
 
     // A NOT NULL metric (migration 018) that is not finite refuses the row: no statement is
     // sent and the error is returned, as when the statement failed on it, so no 0 is stored in
-    // its place (T-8D R12).
+    // its place.
     if (const std::string refusal = non_finite_not_null_refusal(
             table_name + " INSERT for run_id " + run_id, metrics,
             backtest_results_not_null_metrics());
@@ -273,12 +321,11 @@ Result<void> PostgresDatabase::store_backtest_summary(
             "volatility",   "total_trades", "win_rate",      "profit_factor",      "avg_win",
             "avg_loss",     "max_win",      "max_loss",      "avg_holding_period", "var_95",
             "cvar_95",      "beta",         "correlation",   "downside_volatility",
-            "transaction_costs", "roll_costs", "total_roll_fills"};  // 018 (T-ROLLX)
+            "transaction_costs", "roll_costs", "total_roll_fills"};  // migration 018
 
         // A metric that is not handed in or is not finite has no value: its cell is written
-        // DEFAULT and the run is kept (T-8D R12, T-8D-2 R54). DEFAULT is NULL on the nullable
-        // columns; a NOT NULL column that is not handed in takes its 0, as it did before the
-        // guard (one that is not finite was refused above).
+        // DEFAULT and the run is kept. DEFAULT is NULL on the nullable columns; a NOT NULL
+        // column that is not handed in takes its 0 (one that is not finite was refused above).
         std::vector<std::string> without_value;
         query += backtest_summary_metric_values(metric_names, metrics, &without_value);
         query += cell_values + ")";
@@ -499,11 +546,11 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
         std::vector<std::string> position_values;
 
         for (const auto& pos : positions) {
-            // Skip zero positions. E2-F54: a cash book passes keep_closed_rows so that a
+            // Skip zero positions. A cash book passes keep_closed_rows so that a
             // position closed to zero keeps the row carrying that bar's realized flow --
             // dropping it strands the exit's P&L. The rule is the live one
             // (LiveDailyCycle::is_dead_row): dead means no quantity AND no realized.
-            // Futures leave the flag false and keep the original unconditional filter.
+            // Futures leave the flag false: every zero-quantity row is skipped.
             if (!backtest_position_row_is_stored(static_cast<double>(pos.quantity),
                                                  static_cast<double>(pos.realized_pnl),
                                                  keep_closed_rows)) {
@@ -646,7 +693,7 @@ Result<void> PostgresDatabase::update_live_results(
 
     // A NOT NULL column (migration 017) that is not finite refuses the update: no statement is
     // sent, the row keeps every cell it had, and the error is returned, as when the statement
-    // failed on it (T-8D R12).
+    // failed on it.
     if (const std::string refusal = non_finite_not_null_refusal(
             table_name + " UPDATE for " + strategy_id + " on " + format_timestamp(date), updates,
             live_results_not_null_columns());
@@ -686,9 +733,8 @@ Result<void> PostgresDatabase::update_live_results(
         // Build UPDATE query
         std::string query = "UPDATE " + table_name + " SET ";
 
-        // A value that is not finite is assigned NULL, never formatted into the statement
-        // (T-8D R12); every column that reaches this is nullable (a NOT NULL one was refused
-        // above).
+        // A value that is not finite is assigned NULL, never formatted into the statement;
+        // every column that reaches this is nullable (a NOT NULL one was refused above).
         std::vector<std::string> without_value;
         query += live_results_update_assignments(updates, &without_value);
         bool first = updates.empty();
@@ -918,7 +964,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
 
     // A NOT NULL column (migration 017) that is not finite refuses the row: no statement is
     // sent and the error is returned, as when the statement failed on it, so no 0 is stored in
-    // its place (T-8D R12).
+    // its place.
     if (const std::string refusal = non_finite_not_null_refusal(
             table_name + " INSERT for " + strategy_id + " on " + format_timestamp(date), metrics,
             live_results_not_null_columns());
@@ -958,8 +1004,8 @@ Result<void> PostgresDatabase::store_live_results_complete(
                              ", '" + format_timestamp(date) + "', " + txn.quote(book);
 
         // Add double metrics; a value that is not finite is written NULL, by name, so that
-        // its cell does not take a column default of 0 (T-8D R12); every column that reaches
-        // this is nullable (a NOT NULL one was refused above).
+        // its cell does not take a column default of 0; every column that reaches this is
+        // nullable (a NOT NULL one was refused above).
         std::vector<std::string> without_value;
         append_live_results_double_columns(metrics, columns, values, &without_value);
         if (!without_value.empty()) {

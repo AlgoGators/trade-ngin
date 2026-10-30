@@ -1,19 +1,19 @@
-// B-ii regression pins -- the staleness guard must be driven by the universe it was ASKED
+// The staleness guard must be driven by the universe it was ASKED
 // about, not by the rows that happened to come back.
 //
-// THE DEFECT: assess_feed_freshness() took only `last_bar_date`, the map built by walking
-// the bars that loaded (live_equity_mean_reversion.cpp:770-775). A symbol with zero rows in
+// THE HAZARD: an assess_feed_freshness() that took only `last_bar_date`, the map built by
+// walking the bars that loaded, could not see an absent symbol. A symbol with zero rows in
 // ohlcv_1d never enters that map, so it cannot be the minimum and cannot set
-// `stalest_date`. `f.symbols` was `last_bar_date.size()` -- the count of symbols WITH data.
+// `stalest_date`, and a count of `last_bar_date.size()` counts only the symbols WITH data.
 //
-// At ten configured names with one symbol absent the guard logs
+// At ten configured names with one symbol absent such a guard logs
 //     "stalest of 9 symbols (AAPL) at <yesterday>, 1 days behind"
 // for a ten-name book, and passes. The absent symbol is the one that matters: it reaches
 // day T unpriced, execute_day_t rule 3 rolls its target back to the carried quantity, and
 // the book carries an unpriceable holding -- exactly the zombie-carry the guard exists to
-// pre-empt (E2-F34).
+// pre-empt.
 //
-// This is the shape E2_RUN_PROTOCOL.md §1.5 warns about: at 852 names the failure is not
+// At 852 names the failure is not
 // "the feed is a day late", it is "eleven names silently stopped printing".
 //
 // An absent symbol has no last-bar date, so it cannot be expressed as a number of days
@@ -92,7 +92,7 @@ TEST(FeedFreshnessUniverse, AbsenceIsDeterministicallyNamed) {
 }
 
 TEST(FeedFreshnessUniverse, WithNoUniverseSuppliedTheOldBehaviourIsUnchanged) {
-    // The three-argument form is what the pre-fix callers used; it must still report the
+    // The three-argument form is what callers without a universe use; it must still report the
     // loaded count and no absence, so nothing that has not been taught about the universe
     // changes meaning.
     const auto f = assess_feed_freshness(nine_of_ten_loaded(), "2026-04-16");

@@ -13,8 +13,8 @@
  * - EQUITIES: PER-BAR-NATIVE adjustment. The loader reads RAW prices plus the
  *   per-bar corporate-action primitives (div_cash, split_factor) and computes
  *   the backward cumulative adjustment itself. The vendor's derived adj_*
- *   columns are deliberately NOT read: their refresh job can stall (it did on
- *   2026-08-06, leaving them stale), while the per-bar primitives are written
+ *   columns are deliberately NOT read: their refresh job can stall and leave
+ *   them stale, while the per-bar primitives are written
  *   once on the event date and never need restating. Computing from primitives
  *   reproduces the vendor's adjusted series exactly (validated to <1e-6
  *   relative against adjusted_close over clean windows) without depending on
@@ -106,7 +106,7 @@ inline constexpr const char* kFuturesBarKeepOrder = "volume DESC, close, open, h
  * DISTINCT ON (symbol, time) with kFuturesBarKeepOrder, wrapped so the rows come back in the
  * loader's historical order (time, symbol). A series with no repeated (symbol, time) comes
  * back exactly as the plain query returned it. Timestamps bind as $1/$2; with
- * with_symbol_filter the symbol list binds as $3. T-ROLLX: an eighth column, instrument_id,
+ * with_symbol_filter the symbol list binds as $3. An eighth column, instrument_id,
  * the kept print's vendor contract id from kFuturesRawBarTable (the exact-print join of
  * build_futures_instrument_id_query, as a LEFT JOIN: NULL for a print the raw table lacks),
  * which the Arrow conversion carries into Bar::instrument_id.
@@ -126,15 +126,15 @@ std::string build_futures_duplicate_copies_query(const std::string& full_table_n
  * @brief The vendor's raw futures table: one row per (symbol, ts_event), with instrument_id
  *
  * futures_data.ohlcv_1d (the loader's table) has no instrument_id column. The raw table holds
- * one row per (symbol, day) and is the same print as the loader's kept copy on all but three
- * rows of the stage-3 clone (6A.v.0 2025-11-05, where it holds the 196-lot copy the loader
+ * one row per (symbol, day) and is the same print as the loader's kept copy on all but a few
+ * rows (6A.v.0 2025-11-05, where it holds the 196-lot copy the loader
  * drops, and ZM.v.0 / ZR.v.0 2025-10-10, where it holds a traded bar the loader's table does
  * not); build_futures_instrument_id_query() therefore reads an id only for the same print.
  */
 inline constexpr const char* kFuturesRawBarTable = "futures_data.ohlcv_1d_raw";
 
 /**
- * @brief The instrument id of each kept futures bar (T-7b-2 C10a, the classifier's instrument-id
+ * @brief The instrument id of each kept futures bar (for the classifier's instrument-id
  *        continuity limb): rows (symbol, time, instrument_id) ORDER BY symbol, time
  *
  * The kept copy is build_futures_bar_query()'s (DISTINCT ON (symbol, time) with

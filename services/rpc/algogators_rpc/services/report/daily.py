@@ -59,11 +59,6 @@ class RealizedPosition:
     note: int = 0
 
 
-@dataclass(frozen=True)
-class Rollover:
-    symbol: str
-    current: str
-    next: str
 
 
 @dataclass(frozen=True)
@@ -82,6 +77,7 @@ class SymbolRef:
     ib_symbol: str
     name: str
     months: str
+    front_month: str = ""  # the contract held, with per_contract_rolls on
 
 
 @dataclass(frozen=True)
@@ -105,7 +101,6 @@ class DailyReport:
     net_leverage: tuple = ()  # ((date label, net leverage), ...)
     margin_history: tuple = ()  # ((date label, margin posted), ...)
     contracts_per_day: tuple = ()  # ((date label, contracts traded), ...)
-    rollovers: tuple = ()
     footnotes: tuple = ()
     margin_posted: float | None = None
     previous_day_label: str = ""
@@ -115,6 +110,8 @@ class DailyReport:
     notes: tuple = ()  # ((number, text), ...): the footnotes the rows' numbers refer to
     netting_note: str = ""  # the netting between sleeves of the day's costs, when there was any
     sleeve_summary: tuple = ()  # Metrics for the whole book under the per-sleeve positions
+    roll_lines: tuple = ()  # the engine's roll lines (per_contract_rolls on)
+    rollover: tuple = ()  # dicts: label, held, target, by, deadline, deadline_kind
 
     @property
     def total_notional(self):
@@ -300,6 +297,7 @@ def parse_daily_report(payload):
             _text(r, "ib", f"symbols.rows[{i}]", default=""),
             _text(r, "name", f"symbols.rows[{i}]", default=""),
             _text(r, "months", f"symbols.rows[{i}]", default=""),
+            _text(r, "front_month", f"symbols.rows[{i}]", default=""),
         )
         for i, r in enumerate(_rows(symbols_block, "rows"))
     )
@@ -307,14 +305,6 @@ def parse_daily_report(payload):
     if not isinstance(missing, list) or not all(isinstance(x, str) for x in missing):
         raise ReportPayloadError("symbols.missing must be a list of strings")
     margin = _object(payload, "summary").get("margin_posted")
-    rollovers = tuple(
-        Rollover(
-            _text(r, "symbol", f"rollovers[{i}]"),
-            _text(r, "current", f"rollovers[{i}]"),
-            _text(r, "next", f"rollovers[{i}]"),
-        )
-        for i, r in enumerate(_rows(payload, "rollovers"))
-    )
     footnotes = payload.get("footnotes", [])
     if not isinstance(footnotes, list) or not all(isinstance(x, str) for x in footnotes):
         raise ReportPayloadError("footnotes must be a list of strings")
@@ -340,7 +330,6 @@ def parse_daily_report(payload):
         net_leverage=_series(series, "net_leverage", "date"),
         margin_history=_series(series, "margin_posted", "date"),
         contracts_per_day=_series(series, "contracts_per_day", "date"),
-        rollovers=rollovers,
         footnotes=tuple(footnotes),
         margin_posted=float(margin) if isinstance(margin, (int, float)) else None,
         previous_day_label=str(previous_block.get("label", "")),
@@ -352,6 +341,10 @@ def parse_daily_report(payload):
             for i, n in enumerate(_rows(payload, "notes"))
         ),
         netting_note=str(payload.get("netting_note") or ""),
+        roll_lines=tuple(str(x) for x in payload.get("roll_lines") or []),
+        rollover=tuple(
+            {k: str(v) for k, v in r.items()} for r in _rows(payload, "rollover")
+        ),
         sleeve_summary=tuple(
             _metric(r, i, "sleeve_summary") for i, r in enumerate(_rows(payload, "sleeve_summary"))
         ),

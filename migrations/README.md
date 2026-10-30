@@ -45,6 +45,8 @@ qt-platform-preview) and are retired, so the numbers are never reused (see the h
 | 037 | `037_backtest_statistics.sql` | Thirteen statistics columns on `backtest.results` and six overlay columns on `backtest.equity_curve`; needs 018 and 020 | `test_037_backtest_statistics.sh` | 2026-10-12 (as 031) | |
 | 038 | `038_final_positions_row_mark.sql` | `row_mark` (`NO_BAR` or NULL) on `backtest.final_positions`; needs 016 | `test_038_final_positions_row_mark.sh` | 2026-10-12 (as 032) | |
 | 039 | `039_backtest_end_date_comment.sql` | Comments on `end_date` of `backtest.results` and `backtest.run_metadata`; no data change | `test_039_backtest_end_date_comment.sh` | 2026-10-13 (as 033) | |
+| 040 | `040_roll_split.sql` | The roll split (per-contract rolls, ruling 18): `roll_bar_move`, `roll_gap_points`, `roll_gap_value` on both executions tables, on a roll's closing leg only, with a CHECK (all three or none, ROLL rows only); `roll_bar_moves` and `roll_gap_values` on `backtest.results`. NULL with the switch off; moves no number; needs 015 and 018 | `test_040_roll_split.sh` | | |
+| 041 | `041_book_email_columns.sql` | What the book e-mail shows that only the run knew: `mark_price`, `settle_from_price`, `settle_to_price`, `settle_mark` (`NO_BAR`, `ROLL`, `WITHHELD`, with a CHECK) on `trading.positions`; `statistics_sessions_per_year` on `trading.live_results`. NULL-able, no backfill; the binary writes them only once the database has them, so it may be applied before or after the binary | applied, re-applied, CHECK and rollback run by hand on Postgres 16 | | |
 
 **Two lines, one database (D-50, D-5).** main-nonQT's migrations 028 to 033 were applied to
 new_algo_data under those numbers before main-nonQT joined main; they are 034 to 039 above (HD

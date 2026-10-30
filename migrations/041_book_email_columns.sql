@@ -1,4 +1,4 @@
--- 040_book_email_columns.sql
+-- 041_book_email_columns.sql
 --
 -- What the book e-mail shows that the run alone knew. The e-mail is rendered by the Python report
 -- module (services/rpc/algogators_rpc/services/report) from the stored day after the run, so the
@@ -34,8 +34,8 @@ DO $$
 DECLARE
     c text; found text; def text;
 BEGIN
-    IF to_regclass('trading.positions') IS NULL THEN RAISE EXCEPTION '040: trading.positions does not exist'; END IF;
-    IF to_regclass('trading.live_results') IS NULL THEN RAISE EXCEPTION '040: trading.live_results does not exist'; END IF;
+    IF to_regclass('trading.positions') IS NULL THEN RAISE EXCEPTION '041: trading.positions does not exist'; END IF;
+    IF to_regclass('trading.live_results') IS NULL THEN RAISE EXCEPTION '041: trading.live_results does not exist'; END IF;
     FOREACH c IN ARRAY ARRAY['mark_price', 'settle_from_price', 'settle_to_price'] LOOP
         SELECT data_type INTO found FROM information_schema.columns
          WHERE table_schema = 'trading' AND table_name = 'positions' AND column_name = c;
@@ -77,9 +77,9 @@ BEGIN
 END $$;
 ALTER TABLE trading.live_results ADD COLUMN IF NOT EXISTS statistics_sessions_per_year double precision;
 
-COMMENT ON COLUMN trading.positions.mark_price IS $c040$A day-T row: the mark the book e-mail values the row at (the T-1 close; a withheld print's last consumed close). NULL when the symbol printed no bar that day, the row then valued at average_price (its last known price), and on every row written before migration 040.$c040$;
-COMMENT ON COLUMN trading.positions.settle_from_price IS $c040$A settled (Day T-1) row: the price the settle's P&L was taken from (settled_table_prices). NULL on a row not settled by a binary of migration 040 or later.$c040$;
-COMMENT ON COLUMN trading.positions.settle_to_price IS $c040$A settled (Day T-1) row: the price the settle's P&L was taken to. NULL when the symbol printed no bar that day (settle_mark NO_BAR) and on a row not settled by a binary of migration 040 or later.$c040$;
-COMMENT ON COLUMN trading.positions.settle_mark IS $c040$Why a settled row booked no move: NO_BAR (no bar that day), ROLL (the contract rolled; P&L is not booked on the roll), WITHHELD (the price was rejected; P&L is booked with the next accepted price). NULL otherwise.$c040$;
-COMMENT ON COLUMN trading.live_results.statistics_sessions_per_year IS $c040$K: the sessions a year of the statistics grid the row's statistics are taken on (config statistics.sessions_per_year). While total_days < K the annualized return is an extrapolation. NULL on rows written before migration 040.$c040$;
+COMMENT ON COLUMN trading.positions.mark_price IS $c041$A day-T row: the mark the book e-mail values the row at (the T-1 close; a withheld print's last consumed close). NULL when the symbol printed no bar that day, the row then valued at average_price (its last known price), and on every row written before migration 041.$c041$;
+COMMENT ON COLUMN trading.positions.settle_from_price IS $c041$A settled (Day T-1) row: the price the settle's P&L was taken from (settled_table_prices). NULL on a row not settled by a binary of migration 041 or later.$c041$;
+COMMENT ON COLUMN trading.positions.settle_to_price IS $c041$A settled (Day T-1) row: the price the settle's P&L was taken to. NULL when the symbol printed no bar that day (settle_mark NO_BAR) and on a row not settled by a binary of migration 041 or later.$c041$;
+COMMENT ON COLUMN trading.positions.settle_mark IS $c041$Why a settled row booked no move: NO_BAR (no bar that day), ROLL (the contract rolled; P&L is not booked on the roll), WITHHELD (the price was rejected; P&L is booked with the next accepted price). NULL otherwise.$c041$;
+COMMENT ON COLUMN trading.live_results.statistics_sessions_per_year IS $c041$K: the sessions a year of the statistics grid the row's statistics are taken on (config statistics.sessions_per_year). While total_days < K the annualized return is an extrapolation. NULL on rows written before migration 041.$c041$;
 COMMIT;

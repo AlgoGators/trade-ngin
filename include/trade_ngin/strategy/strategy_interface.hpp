@@ -57,8 +57,8 @@ public:
     virtual Result<void> check_risk_limits() = 0;
 
     /**
-     * @brief The capital the strategy sizes on from the next on_data (T-7b-2 9c, HD 2026-09-25:
-     *        sizing uses current equity). The PortfolioManager passes the account's equity, marked
+     * @brief The capital the strategy sizes on from the next on_data (sizing uses current
+     *        equity). The PortfolioManager passes the account's equity, marked
      *        at the close of the newest bar the sizing reads, times this strategy's allocation
      *        (PortfolioManager::set_sizing_capital). A strategy that does not implement it refuses,
      *        so a caller that asked for compounding cannot silently keep a constant capital.
@@ -77,7 +77,7 @@ public:
     virtual Result<void> seed_history(const std::vector<Bar>& /*bars*/) { return Result<void>(); }
 
     /**
-     * @brief One symbol's inputs to the risk overlay (LOOP_SPEC section 4), from the strategy's own
+     * @brief One symbol's inputs to the risk overlay, from the strategy's own
      *        consumed series as of its last signal bar.
      *
      * `day` and `returns` are the symbol's last bars that have an adjusted percentage return (the
@@ -93,7 +93,8 @@ public:
         double close{0.0};
         double multiplier{1.0};
         double jump_sigma_daily{0.0};
-        // For the one optimisation pass (LOOP_SPEC sections 3.2 and 5.1): the position before any
+        double sizing_sigma{0.0};  ///< the annualised standard deviation the position is sized on
+        // For the one optimisation pass: the position before any
         // limit on the sleeve's own capital (N*), the sleeve's ruled forecast, whether the sleeve
         // signals the symbol, and the symbol's last 756 consumed bars for the optimiser's
         // covariance: each bar's date as a whole day number, its raw close and its adjusted level.
@@ -129,8 +130,7 @@ public:
 
     /**
      * @brief Whether the strategy signals `symbol` yet: it has the history it needs to produce a
-     *        forecast, so a target it reports for the symbol is its own (T-OPT E-7, ledger
-     *        OPT-new-symbol-collapses-min-periods).
+     *        forecast, so a target it reports for the symbol is its own.
      * @return true by default: a strategy without a warm-up signals every symbol it lists. The
      *         trend strategies return false while the symbol's price history is shorter than the
      *         longest EMA window, the same test on_data applies before it computes a forecast.

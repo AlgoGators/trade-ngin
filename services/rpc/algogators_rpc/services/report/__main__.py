@@ -32,7 +32,7 @@ from ..desk.portfolios import PortfolioConfigError, resolve_portfolio_dir
 from . import data
 from .builder import ReportFlags, build_daily_payload
 from .calc import build_strategy_detail
-from .daily import parse_daily_report
+from .daily import ReportPayloadError, parse_daily_report
 from .mailer import send_message
 from .renderer import HtmlReportRenderer
 
@@ -105,15 +105,25 @@ def main(argv=None) -> int:
                     help="the run found no session on the day before and carried its book")
     ap.add_argument("--alert", default="", help="the run's risk-module failure, in its words")
     ap.add_argument("--attach", action="append", default=[], help="a file to attach")
+    ap.add_argument("--equities", action="store_true", help="an equity book")
+    ap.add_argument("--rolls", default="", help="the engine's roll texts, JSON (report_rolls_json.hpp)")
     args = ap.parse_args(argv)
-    flags = ReportFlags(no_session=args.no_session, alert=args.alert.strip())
+    try:
+        rolls = json.loads(args.rolls) if args.rolls.strip() else None
+    except ValueError:
+        print("report: --rolls is not JSON", file=sys.stderr)
+        return 2
+    flags = ReportFlags(no_session=args.no_session, alert=args.alert.strip(),
+                        equities=args.equities, rolls=rolls or None)
 
     try:
         day = data.report_day(args.date)
         settings = load_settings()
-        with psycopg.connect(**settings.db.conninfo_kwargs(), row_factory=dict_row) as conn:
+        # A UTC session: every timestamp's date is the UTC day the engine stored it under.
+        with psycopg.connect(**settings.db.conninfo_kwargs(), row_factory=dict_row,
+                             options="-c TimeZone=UTC") as conn:
             email = build_email(conn, args.portfolio_id, day, flags, args.strategy_id)
-    except (data.ReportDataError, ConfigError, psycopg.Error) as exc:
+    except (data.ReportDataError, ConfigError, psycopg.Error, ReportPayloadError) as exc:
         print(f"report: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

@@ -1,5 +1,5 @@
-// The trade statistics on STRATEGY rows with the tracker carrying the entry price across ROLL legs
-// (LOOP_SPEC v6.2 section 6.5): a roll inside a round trip is not a trade, does not reset the holding
+// The trade statistics on STRATEGY rows with the tracker carrying the entry price across ROLL legs:
+// a roll inside a round trip is not a trade, does not reset the holding
 // clock, moves the open entry price by the leg gap (opening leg price - closing leg price) so the
 // later close scores the move of the contracts actually held, and its cost lands in the roll total,
 // never in a trade's P&L.
@@ -58,7 +58,7 @@ TEST(TradeStatisticsRollLegs, ARollInsideARoundTripIsNotATradeAndCarriesTheEntry
     // plus 3.965 -> 5.10 in the new one (1.135) = 1.211 in points, the entry carried to
     // 3.30 + (3.965 - 3.376) = 3.889; less the close's own cost of 1.0 (the tracker's trade P&L
     // charges the closing fill's cost; the opening fill's cost is charged on the symbol, below).
-    // Re-anchoring on the opening leg (the rule before) scored 1.135 and dropped the 0.076.
+    // Re-anchoring on the opening leg would score 1.135 and drop the 0.076.
     EXPECT_NEAR(s.max_win, 1.211 - 1.0, 1e-12);
     EXPECT_NEAR(s.total_profit, 1.211 - 1.0, 1e-12);
     EXPECT_NEAR(s.avg_holding_period, 8.0, 1e-9) << "the clock runs from day 0: the roll did not restart it";
@@ -67,8 +67,8 @@ TEST(TradeStatisticsRollLegs, ARollInsideARoundTripIsNotATradeAndCarriesTheEntry
     EXPECT_NEAR(pnl.at("NG.v.0"), 1.211 - 1.0 - 1.0 - 4.0, 1e-12);
 
     // The control: the same rows all STRATEGY. The two legs are then one day's SELL 1 and BUY 1
-    // of the contract, which net to no fill of the account (T-8a (7): the statistics are the
-    // book's), so nothing carries the entry and the close books the splice gap 3.965 - 3.376 as
+    // of the contract, which net to no fill of the account (the statistics are the book's), so
+    // nothing carries the entry and the close books the splice gap 3.965 - 3.376 as
     // trading profit: 5.10 - 3.30 = 1.80 less its cost, where the held contracts made 1.211.
     auto untyped = execs;
     for (auto& e : untyped) e.execution_type = ExecutionType::STRATEGY;
@@ -91,12 +91,12 @@ TEST(TradeStatisticsRollLegs, ABorrowRowIsNeitherATradeNorALeg) {
     EXPECT_EQ(s.roll_fills, 0);
 }
 
-// Code review D1 (T-ROLLX-FIX): two sleeves hold the symbol (BASE: TREND long 2, FAST long 1, one
+// Two sleeves hold the symbol (TREND long 2, FAST long 1, one
 // tracker per symbol over every sleeve's rows, 3 in all). Each sleeve's pair is stored closing,
 // opening; the summed position never passes through 0 (3 -> 1 -> 3 -> 2 -> 3), and the roll's gap is
 // carried into the entry ONCE (one tracker per symbol: the second sleeve's pair is the same roll),
 // so the later close scores the held contracts' move, 3 x 1.211. Carrying it per pair would score
-// 3 x (5.10 - 3.30 - 2 x 0.589); the untyped reading kept 3.30 and scored (5.10 - 3.30) x 3.
+// 3 x (5.10 - 3.30 - 2 x 0.589); the untyped reading would keep 3.30 and score (5.10 - 3.30) x 3.
 TEST(TradeStatisticsRollLegs, TwoSleevesHoldingTheSymbolCarryTheRollOnce) {
     BacktestMetricsCalculator calc;
     const std::vector<ExecutionReport> execs = {
@@ -117,7 +117,7 @@ TEST(TradeStatisticsRollLegs, TwoSleevesHoldingTheSymbolCarryTheRollOnce) {
     EXPECT_NEAR(pnl.at("NG.v.0"), 3 * 1.211, 1e-12);
 }
 
-// TS (T-ROLLX-FIX commit 4; LOOP_SPEC v6.2 section 6.5): ONE trade held through TWO rolls scores
+// ONE trade held through TWO rolls scores
 // exactly the held contracts' move. Long 2 XA (multiplier-free: points), costs 0:
 //   entry 100.0 in contract A1;
 //   roll 1: closing leg 104.0 (A1), opening leg 110.0 (A2): A1 moved 104 - 100 = +4;
@@ -175,11 +175,11 @@ TEST(TradeStatisticsRollLegs, ARollWhileFlatLeavesTheNextEntryAlone) {
 }
 
 // =============================================================================================
-// T-ROLLX-FIX commit 5 (finding 11): a roll's closing and opening leg are paired by the legs' own
+// A roll's closing and opening leg are paired by the legs' own
 // identity (the exec id's role and pair; without one, the side against the tracked position), never
 // by the order they arrive in, and the bar's rolls are carried on the bar's first row of any type.
-// The five fixtures of the lead's adversary (c4_lead_audit/adversary/A5): three scored the hand
-// value before, the two orderings the engine's sort does not produce scored 20.0 and 30.0.
+// The five fixtures below include two orderings the engine's sort does not produce; paired by
+// arrival order those would score 20.0 and 30.0.
 // =============================================================================================
 
 // A SHORT held through a roll by TWO sleeves, with a partial close before the roll.
@@ -188,7 +188,7 @@ TEST(TradeStatisticsRollLegs, ARollWhileFlatLeavesTheNextEntryAlone) {
 //   day 4  roll: closing legs BUY @ 97 (old), opening legs SELL @ 91 (new); A 2 lots, B 2 lots
 //   day 6  A BUY 2 @ 90, B BUY 2 @ 90
 // Hand: each remaining short lot earns (100.8 - 97) in the old contract + (91 - 90) in the new = 4.8;
-// 4 lots = 19.2. All costs 0. The statistics are the book's (T-8a (7)): day 0's two rows are the
+// 4 lots = 19.2. All costs 0. The statistics are the book's: day 0's two rows are the
 // account's one fill SELL 5 at the quantity-weighted 100.8 (the sleeves' prices differ here), and
 // day 6's two rows are its one fill BUY 4, one trade of 19.2.
 TEST(TradeStatisticsRollLegs, AShortInTwoSleevesWithAPartialCloseBeforeTheRoll) {
@@ -329,7 +329,7 @@ TEST(TradeStatisticsRollLegs, TheEnginesExecIdsCarryTheRoleAndThePairInAnyOrder)
     }
 }
 
-// The statistics are the book's (HD 2026-10-10): one tracker per contract, the roll carried once per
+// The statistics are the book's: one tracker per contract, the roll carried once per
 // contract whatever the number of sleeves that roll it, and the trade in dollars. Both sleeves hold
 // ZZ and roll it on day 4 (closing leg 104, opening leg 110: the gap is +6), at 10 dollars a point:
 //
@@ -340,7 +340,7 @@ TEST(TradeStatisticsRollLegs, TheEnginesExecIdsCarryTheRoleAndThePairInAnyOrder)
 //   | 6   | TREND SELL 1 at 115                                | +2                       | 1 x (115 - 100) x 10 = +150        |
 //   | 7   | FAST SELL 2 at 108                                 | 0                        | 2 x (108 - 100) x 10 = +160        |
 //
-// RED on the parent: the same walk in points (15 and 16).
+// RED when the walk is scored in points (15 and 16).
 TEST(TradeStatisticsRollLegs, TheBooksEntryIsCarriedOncePerContractAndScoredInDollars) {
     BacktestMetricsCalculator calc;
     const BacktestMetricsCalculator::PointValueSource ten = [](const std::string&) { return 10.0; };
@@ -392,9 +392,9 @@ TEST(TradeStatisticsRollLegs, LegsThatCannotBePairedFailLoudly) {
     EXPECT_NO_THROW(calc.calculate_trade_statistics(flat, kUnitPoints));
 }
 
-// The cost after netting (HD 2026-10-09): a trade's P&L and a symbol's P&L charge each fill's NET
-// cost, its own cost minus the signed adjustment on the row. Two sleeves' rows of one symbol, which
-// since T-8a (7) are the account's ONE fill of the day (the statistics are the book's), charged the
+// The cost after netting: a trade's P&L and a symbol's P&L charge each fill's NET cost, its own
+// cost minus the signed adjustment on the row. Two sleeves' rows of one symbol, which are the
+// account's ONE fill of the day (the statistics are the book's), charged the
 // sum of the rows' net costs:
 //
 //   | day | row              | own  | adjustment | net  |
@@ -496,7 +496,7 @@ TEST(TradeStatisticsNetCost, TwoSleevesAtDifferentPricesAreOneFillAtTheQuantityW
     EXPECT_NEAR(again.total_profit, 38.0, 1e-9);
 }
 
-// T-NETTING fix round: the trade statistics' roll total reads the leg's OWN cost through the same
+// The trade statistics' roll total reads the leg's OWN cost through the same
 // call as results.roll_costs, and a ROLL leg given a non-zero adjustment is refused there, not
 // scored on either basis.
 TEST(TradeStatisticsNetCost, ARollLegGivenAnAdjustmentIsRefused) {

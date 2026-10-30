@@ -2,6 +2,7 @@
 set(TEST_SOURCES
     core/test_decimal.cpp
     core/test_report_settled_marks.cpp
+    core/test_report_rolls.cpp
     core/test_time_utils_parse.cpp
     core/test_timed_process.cpp
     core/test_result.cpp
@@ -54,8 +55,23 @@ set(TEST_SOURCES
     strategy/test_listing_dates.cpp
     data/test_session_classifier_instrument_id.cpp
     data/test_roll_series.cpp
+    data/test_roll_split.cpp
+    data/test_roll_calendar.cpp
+    data/test_contract_bars.cpp
+    data/test_contract_bars_db.cpp
+    data/test_roll_cycle.cpp
+    data/test_roll_cycle_db.cpp
+    data/test_contract_roll_rule.cpp
+    data/test_contract_roll_rule_db.cpp
+    data/test_contract_roll_micros.cpp
+    data/test_contract_rolls_api.cpp
+    data/test_per_contract_source.cpp
+    data/test_carry_quote.cpp
+    data/test_per_contract_places.cpp
     data/test_roll_legs.cpp
     data/test_executions_execution_type_db.cpp
+    data/test_roll_split_db.cpp
+    data/test_report_roll_view_db.cpp
     data/test_strategy_config_db.cpp
     data/test_futures_bar_instrument_id_db.cpp
     data/test_positions_instrument_id_db.cpp
@@ -80,6 +96,7 @@ set(TEST_SOURCES
     backtest/test_listing_loader.cpp
     portfolio/test_loop_fixups.cpp
     portfolio/test_worked_days.cpp
+    portfolio/test_overlay_covariance_pass.cpp
     portfolio/test_portfolio_config_keys.cpp
     risk/test_overlay_wiring.cpp
     risk/test_overlay_columns.cpp
@@ -222,6 +239,8 @@ set(TEST_SOURCES
     live/test_cost_feed_adjusted_returns.cpp
     live/test_change_bar_pnl.cpp
     live/test_live_roll_legs.cpp
+    live/test_report_roll_query.cpp
+    live/test_live_rerun_repair.cpp
     live/test_live_k01_history.cpp
     live/test_live_roll_write_order.cpp
     live/test_live_listing_guard.cpp
@@ -245,6 +264,8 @@ set(TEST_SOURCES
     strategy/test_trend_following_fast.cpp
     strategy/test_fast_sleeve_configuration.cpp
     strategy/test_trend_estimator.cpp
+    strategy/test_carry_estimator.cpp
+    strategy/test_carry_strategy.cpp
     strategy/test_trend_history_seed.cpp
     strategy/test_equity_slow_rule.cpp
     strategy/test_mean_reversion_backtest.cpp

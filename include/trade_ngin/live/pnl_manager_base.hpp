@@ -83,16 +83,6 @@ public:
         double daily_pnl) const {
         return previous_value + daily_pnl;
     }
-
-    // Get initial capital
-    double get_initial_capital() const {
-        return initial_capital_;
-    }
-
-    // Set initial capital
-    void set_initial_capital(double capital) {
-        initial_capital_ = capital;
-    }
 };
 
 } // namespace trade_ngin

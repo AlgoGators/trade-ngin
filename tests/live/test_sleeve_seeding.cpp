@@ -1,18 +1,18 @@
 // tests/live/test_sleeve_seeding.cpp
 //
-// T-7a commit 3a (T-BASE, HD 2026-09-18 §28c item 3): every sleeve of a live book is seeded from
+// Every sleeve of a live book is seeded from
 // its OWN stored rows of the previous day, into its own strategy object (positions_, the Carver
 // buffer anchor) and into its own PortfolioManager slot (current_positions, the optimizer's
 // baseline and the book a REFUSE ships).
 //
-// Before this commit both futures runners seeded strategy_names[0] only. On BASE (two sleeves,
-// TREND_FOLLOWING and TREND_FOLLOWING_FAST) the second sleeve was never seeded: its PM slot held
-// whatever the bar replay left there (or nothing, once the bus is off), so the optimizer compared a
-// `current` summed over one sleeve against a `target` summed over two (T-BASE §6.2, the 6M.v.0
-// sale), and a portfolio REFUSE shipped the unseeded sleeve FLAT, which the runner's diff against
-// trading.positions turns into a liquidation of that sleeve's held book.
+// Seeding strategy_names[0] only would leave BASE's second sleeve (TREND_FOLLOWING_FAST)
+// unseeded: its PM slot would hold whatever the bar replay left there (or nothing, with the bus
+// off), so the optimizer would compare a `current` summed over one sleeve against a `target`
+// summed over two (the 6M.v.0 sale), and a portfolio REFUSE would ship the unseeded sleeve FLAT,
+// which the runner's diff against trading.positions turns into a liquidation of that sleeve's
+// held book.
 //
-// The runners are `main()`s and cannot be linked here, so the seed moved into one header both twins
+// The runners are `main()`s and cannot be linked here, so the seed lives in one header both twins
 // call (include/trade_ngin/live/sleeve_seeding.hpp) and is run here against a real
 // PortfolioManager; where the runners call it is checked in their source, as
 // tests/live/test_live_run_refusal_arms.cpp does.
@@ -314,7 +314,7 @@ TEST_F(SleeveSeedingFixture, AOneSleeveBookIsSeededExactlyAsTheOneSleeveSeedDid)
 }
 
 TEST_F(SleeveSeedingFixture, OppositeSleevesKeepTheirOwnSignsTheNetIsNotSeeded) {
-    // Recorded behaviour for ledger BASE-opposite-sleeve-anchor (T-7b designs the netting): the
+    // Recorded behaviour, the
     // stored ZT.v.0 2025-11-08 shape, TREND_FOLLOWING +1 and TREND_FOLLOWING_FAST -1. Each slot keeps
     // its own sign; nothing here nets them.
     make_pm("PM_C3A_OPPOSITE");
@@ -352,7 +352,7 @@ TEST(SleeveSeedingSource, BothTwinsSeedEverySleeveThroughTheHelperBeforeTheRebal
         EXPECT_LT(call, process) << "every sleeve must be seeded BEFORE the day's rebalance";
         const auto loader = src.find("combined_strategy_id, seed_strategy_name,", call);
         EXPECT_NE(loader, npos) << "each sleeve must be read under its own strategy_name";
-        EXPECT_NE(src.find("BASE-opposite-sleeve-anchor", gate), npos)
+        EXPECT_NE(src.find("// NOTE: two sleeves holding OPPOSITE signs", gate), npos)
             << "the opposite-sleeve NOTE belongs at the seed site";
     }
 }

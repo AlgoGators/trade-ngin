@@ -72,6 +72,17 @@
   </td></tr></table>
   {% endfor %}
 
+  <!-- rollover notice: the engine's held contracts inside their roll window -->
+  {% if report.rollover %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:22px 0 0 0;background:#FDECEA;border-left:3px solid #B42318;"><tr><td style="padding:14px 20px;">
+    <div style="font-size:14px;font-weight:700;color:#7A1A12;margin:0 0 6px 0;">Rollover notice</div>
+    <div style="font-size:13px;color:#7A1A12;margin-bottom:8px;">These contracts are approaching their roll. Each position moves to the next contract of its cycle on or before the date shown.</div>
+    {% for r in report.rollover %}
+    <div class="num" style="font-size:13px;color:#7A1A12;padding:3px 0;"><strong>{{ r.label }}:</strong> currently holding <strong>{{ r.held }}</strong> &rarr; switch to <strong>{{ r.target }}</strong> by {{ r.by }}, {{ r.deadline_kind }} {{ r.deadline }}</div>
+    {% endfor %}
+  </td></tr></table>
+  {% endif %}
+
   <!-- positions, per sleeve -->
   {% if report.positions %}
   {{ section("Today's positions") }}
@@ -143,6 +154,9 @@
   {% endif %}
   {% endif %}
   {% endfor %}
+  {% for line in report.roll_lines %}
+  <div style="font-size:12px;color:#2B2A30;margin:6px 0;">{{ line }}</div>
+  {% endfor %}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;border-top:2px solid #14141A;">
     <tr><td class="mono label" style="padding:6px 0 3px 0;">Total trades</td><td class="num r" style="font-weight:600;color:#14141A;">{{ report.executions|length }}</td></tr>
     <tr><td class="mono label" style="padding:3px 0;">Total notional traded</td><td class="num r" style="font-weight:600;color:#14141A;">{{ fmt.money(report.total_traded, 2) }}</td></tr>
@@ -200,19 +214,12 @@
   {{ section("Performance") }}
   {% for c in charts %}
   <div style="font-size:13px;font-weight:600;color:#14141A;margin:{{ '0' if loop.first else '26px' }} 0 8px 0;">{{ c.title }}</div>
+  {% if c.missing %}
+  <div class="muted" style="font-size:12px;">{{ c.title }}: {{ c.missing }}</div>
+  {% else %}
   <img src="cid:{{ c.cid }}" width="640" alt="{{ c.title }}" style="width:100%;max-width:640px;">
-  {% endfor %}
   {% endif %}
-
-  <!-- rollovers -->
-  {% if report.rollovers %}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:30px 0 0 0;background:#F6F4EF;border-left:3px solid #D94A00;"><tr><td style="padding:16px 20px;">
-    <div style="font-size:15px;font-weight:700;color:#14141A;margin:0 0 6px 0;">Rollover notice</div>
-    <div style="font-size:13px;color:#2B2A30;margin-bottom:8px;">These contracts are approaching their rollover period. Roll to the next contract month unless you intend to take delivery.</div>
-    {% for r in report.rollovers %}
-    <div class="num" style="font-size:13px;color:#14141A;padding:3px 0;"><strong>{{ r.symbol }}</strong> &nbsp;<span class="muted">{{ r.current }}</span> &nbsp;&rarr;&nbsp; <strong>{{ r.next }}</strong></div>
-    {% endfor %}
-  </td></tr></table>
+  {% endfor %}
   {% endif %}
 
   <!-- symbols reference -->
@@ -220,9 +227,10 @@
   {{ section("Symbols reference") }}
   <div class="mono muted" style="font-size:11px;margin:0 0 10px 0;"><strong>Month codes</strong> F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, Q=Aug, U=Sep, V=Oct, X=Nov, Z=Dec</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-    <tr><td class="th mono">Symbol</td><td class="th mono">IB symbol</td><td class="th mono">Name</td><td class="th mono">Contract months</td></tr>
+    {% set with_front = report.symbols|selectattr('front_month')|list|length > 0 %}
+    <tr><td class="th mono">Symbol</td><td class="th mono">IB symbol</td><td class="th mono">Name</td><td class="th mono">Contract months</td>{% if with_front %}<td class="th mono">Front month</td>{% endif %}</tr>
     {% for r in report.symbols %}
-    <tr><td class="td" style="font-weight:600;color:#14141A;">{{ r.db_symbol }}</td><td class="td">{{ r.ib_symbol }}</td><td class="td">{{ r.name }}</td><td class="td mono" style="font-size:12px;">{{ r.months }}</td></tr>
+    <tr><td class="td" style="font-weight:600;color:#14141A;">{{ r.db_symbol }}</td><td class="td">{{ r.ib_symbol }}</td><td class="td">{{ r.name }}</td><td class="td mono" style="font-size:12px;">{{ r.months }}</td>{% if with_front %}<td class="td mono" style="font-size:12px;">{{ r.front_month }}</td>{% endif %}</tr>
     {% endfor %}
   </table>
   {% if report.symbols_missing %}<div style="font-size:12px;color:#D94A00;margin-top:8px;"><strong>Note:</strong> metadata not found for: {{ report.symbols_missing|join(', ') }}.</div>{% endif %}

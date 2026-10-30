@@ -1,6 +1,6 @@
 // tests/live/test_trading_days_anchor.cpp
 //
-// E2-F32 -- the annualization anchor that contradicts the book it annualizes.
+// The annualization anchor that contradicts the book it annualizes.
 //
 // `trading.get_trading_days(strategy, target, portfolio)` reads
 // strategy_trading_days_metadata.live_start_date and only falls back to MIN(date)
@@ -8,9 +8,9 @@
 // first day is worse than no row at all, and the function cannot tell -- it stops
 // looking as soon as it finds one.
 //
-// Measured on the live database 2026-09-03:
+// A shape from the live database:
 //   EQUITY_MR_PORTFOLIO / LIVE_EQUITY_MEAN_REVERSION
-//     live_start_date  2026-07-24   (seeded by hand on 2026-09-01 for a 10-day window)
+//     live_start_date  2026-07-24   (seeded by hand for a 10-day window)
 //     live_results     2026-04-01 .. 2026-08-04, 126 rows
 //   -> every date before 07-24 gets 1 trading day, so total_annualized_return
 //      collapses onto total_cumulative_return on 115 rows; 07-27 gets 4 days and
@@ -27,14 +27,14 @@
 using namespace trade_ngin;
 
 // The live defect, stated as data. The mismatch is REPORTED; the metadata row stays
-// the anchor (HD 2026-09-10): a stray backdated result row must never be able to
+// the anchor: a stray backdated result row must never be able to
 // move the annualisation start, so the fix for a wrong row is in the data.
 TEST(TradingDaysAnchor, AMetadataRowLaterThanTheBookIsCaughtButNotOverridden) {
     const auto a = assess_trading_days_anchor("2026-07-24", "2026-04-01");
 
     ASSERT_TRUE(a.has_metadata);
     EXPECT_TRUE(a.anchor_is_late)
-        << "an anchor 114 days after the book's first day is the E2-F32 shape";
+        << "an anchor 114 days after the book's first day is the late-anchor shape";
     EXPECT_EQ(a.effective_anchor, "2026-07-24")
         << "the metadata row is authoritative; the runner warns and does not move it";
 
@@ -58,7 +58,7 @@ TEST(TradingDaysAnchor, ABackdatedResultRowCannotMoveTheAnchor) {
 
 // The sound case must stay silent, or the check is noise on every futures run.
 TEST(TradingDaysAnchor, AnAnchorOnTheBooksFirstDayIsNotFlagged) {
-    // LIVE_TREND_FOLLOWING / CONSERVATIVE_PORTFOLIO as of 2026-09-03: anchor and
+    // LIVE_TREND_FOLLOWING / CONSERVATIVE_PORTFOLIO: anchor and
     // first live_results row are both 2025-10-05.
     const auto a = assess_trading_days_anchor("2025-10-05", "2025-10-05");
     EXPECT_TRUE(a.has_metadata);

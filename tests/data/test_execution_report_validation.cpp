@@ -1,6 +1,6 @@
 // tests/data/test_execution_report_validation.cpp
 //
-// T-NETTING fix round 2 (audit A of the fix round, S3 b): the store-side refusal, WITHOUT a
+// The store-side refusal, WITHOUT a
 // database. PostgresDatabase::validate_execution_report is called by every execution writer on
 // every row before anything is stored; it reads the row only, so it runs on an object that never
 // connects. (tests/data/test_executions_netting_column_db.cpp shows, against a database, that a
