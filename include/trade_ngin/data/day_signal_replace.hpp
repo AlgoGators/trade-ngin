@@ -12,7 +12,7 @@
 namespace trade_ngin {
 
 /**
- * @brief The sweep a store of a sleeve's signals issues before its rows (OPT-N5/N6): every signal
+ * @brief The sweep a store of a sleeve's signals issues before its rows: every signal
  *        row of the portfolio, the strategy id and the sleeve on the stored day that this store
  *        will NOT write, that is a row of a symbol the run does not produce, or a row of the day
  *        at another time of day. $1 portfolio_id, $2 strategy_id, $3 strategy_name, $4 the day as
@@ -26,9 +26,9 @@ inline std::string day_signal_sweep_statement(const std::string& table_name) {
 }
 
 /**
- * @brief The replace of a sleeve's signals of a day on ONE open transaction (OPT-N5/N6; the model
- *        is replace_day_executions_in). The store was an upsert a symbol with no delete, so a
- *        symbol a re-run of the date no longer produced kept the row of the earlier run. Now:
+ * @brief The replace of a sleeve's signals of a day on ONE open transaction (the model is
+ *        replace_day_executions_in), so a symbol a re-run of the date no longer produces does not
+ *        keep the row of the earlier run:
  *
  *          1. the sweep: the sleeve's rows (portfolio, strategy id, sleeve) of `day` that this
  *             run does not write;
@@ -39,7 +39,7 @@ inline std::string day_signal_sweep_statement(const std::string& table_name) {
  *        After the commit the sleeve's rows of the day are this run's set. The transaction is
  *        committed once, and only when every row was stored. A row that fails returns its error
  *        with nothing committed, so the day's rows are the rows that were stored before the
- *        call. A first run of a day sweeps nothing and stores what it stored before.
+ *        call. A first run of a day sweeps nothing.
  *
  *        `Txn` is the transaction as three operations (PostgresDatabase adapts pqxx::work; the
  *        unit tests use an in-memory stand-in whose store can be made to fail):

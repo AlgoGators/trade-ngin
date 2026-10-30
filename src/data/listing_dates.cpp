@@ -347,8 +347,8 @@ ListingSwitch plan_listing_switch(ListingSwitchRule rule, double ratio, double h
         plan.new_to = held_to + ratio * held_from;
     } else {
         // the pass's own arithmetic (optimization/one_pass.hpp), called, not copied: the target
-        // capped as section 4 caps it, rounded half away from zero as section 5.3 rounds, and a
-        // rounded number beyond the cap clipped toward zero as section 5.3 clips. The cap is given
+        // capped (cap_target), rounded half away from zero (round_half_away), and a rounded
+        // number beyond the cap clipped toward zero (clip_to_cap). The cap is given
         // in contracts, so the weight of one contract is 1 here.
         double whole = one_pass::round_half_away(
             cap_to > 0.0 ? one_pass::cap_target({target_to}, {1.0}, cap_to).first[0] : target_to);
@@ -535,7 +535,7 @@ void ListingDates::add_predecessor_bars(const std::vector<std::string>& symbols,
     if (entries_.empty()) return;
     const auto pairs = pairs_in(symbols);
     const size_t stored = bars.size();
-    // MM fix round 1: the listed contract's own legs on its listing date's session (the bar dated on
+    // The listed contract's own legs on its listing date's session (the bar dated on
     // the listing date and a weekend stub right before it, which the cost feed merges into it) are
     // priced on its own contract's volume where its series still carries the full-size contract's
     // (the equity micros before 2026-02-22). Only where that volume is known.

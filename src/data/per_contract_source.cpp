@@ -155,7 +155,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             // contract's own bar, the field naming the target it would have rolled into.
             const TentativeRoll& t = *d.tentative;
             if (switch_bar == SwitchBar::VENDOR) {
-                // Ruling 19 "vendor": the bar of the contract the vendor switched to, the field
+                // SwitchBar VENDOR: the bar of the contract the vendor switched to, the field
                 // naming the held contract (its close and id here).
                 b.open = t.bar.open;
                 b.high = t.bar.high;
@@ -185,7 +185,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                                         "contract_rolls");
             }
             if (switch_bar == SwitchBar::VENDOR) {
-                // Ruling 19 "vendor": the target's own bar, the field naming the old contract.
+                // SwitchBar VENDOR: the target's own bar, the field naming the old contract.
                 b.open = d.open;
                 b.high = d.high;
                 b.low = d.low;
@@ -221,11 +221,11 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             b.instrument_id = held_id;
             if (d.roll) {
                 RollFrom from;
-                // R6: the micros' change is a change of price source, not a trade.
+                // The micros' change is a change of price source, not a trade.
                 from.kind = d.trigger == RollTrigger::ALIAS ? RollFromKind::SOURCE_CHANGE
                                                             : RollFromKind::KNOWN;
                 from.date = ymd(d.date);
-                // MM fix round 1: the full-size contract's own volume, for a listing
+                // The full-size contract's own volume, for a listing
                 // predecessor's legs on this bar (ListingDates::add_predecessor_bars).
                 if (from.kind == RollFromKind::SOURCE_CHANGE && d.old_bar) {
                     from.volume = static_cast<double>(d.old_bar->volume);
@@ -234,7 +234,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
                     from.close = *d.old_close;
                     from.instrument_id = d.old_id;
                 } else {
-                    // Plan 5c: the old contract printed nothing up to its last actionable bar.
+                    // The fallback: the old contract printed nothing up to its last actionable bar.
                     if (!have_previous) {
                         return make_error<Bars>(ErrorCode::INVALID_DATA,
                                                 "per_contract_rolls: " + symbol + " " +
@@ -260,7 +260,7 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
             } else if (d.left_close) {
                 // A bar after a roll, up to the next one: the old contract's close here, for a
                 // consumer that withheld the roll bar and the bars since (it books the roll on its
-                // first consumed bar, HD 10-23).
+                // first consumed bar).
                 b.roll_from = RollFrom{*d.left_close, d.left_id,
                                        d.left_by_alias ? RollFromKind::AFTER_SOURCE_CHANGE
                                                        : RollFromKind::AFTER_ROLL,
@@ -408,8 +408,8 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::Int32Builder carry_months_builder(pool);
     arrow::StringBuilder carry_held_symbol_builder(pool);
     arrow::StringBuilder carry_other_symbol_builder(pool);
-    arrow::DoubleBuilder roll_volume_builder(pool);  // MM fix round 1: RollFrom::volume
-    arrow::DoubleBuilder own_volume_builder(pool);   // MM fix round 1: Bar::own_contract_volume
+    arrow::DoubleBuilder roll_volume_builder(pool);  // RollFrom::volume
+    arrow::DoubleBuilder own_volume_builder(pool);   // Bar::own_contract_volume
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",

@@ -17,13 +17,12 @@
 namespace trade_ngin::contract_rolls {
 
 /**
- * @brief The one call a caller makes for the per-contract roll series of a root
- *        (ROLLS_STEP1_PLAN step 2; HD's rule in contract_roll_rule.hpp).
+ * @brief The one call a caller makes for the per-contract roll series of a root (the rule is in
+ *        contract_roll_rule.hpp).
  *
- * NOT WIRED: nothing in the engine calls this yet. Step 3 (the bar source) and step 4 (the email's
- * "Currently holding X, switch to Y by <date>") will, behind portfolio.json's per_contract_rolls
- * switch (AppConfig::per_contract_rolls, off by default). Today only the unit tests and the
- * contract_rolls_dump tool call it.
+ * The bar source (per_contract_source.hpp) and the email's roll view (report_roll_view.hpp) call
+ * it, behind portfolio.json's per_contract_rolls switch (AppConfig::per_contract_rolls, off by
+ * default); so do the unit tests and the contract_rolls_dump tool.
  *
  * Per grid date the series gives: the held contract (identity and the id string of the row read),
  * its bar, the roll flag, the old contract's close on a roll bar, and the trigger (start, vendor,

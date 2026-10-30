@@ -18,7 +18,7 @@ namespace {
 // Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (also accepting the 'T'
 // separator) as MICROSECONDS since the Unix epoch. UTC by construction --
 // timegm, never mktime, because a stored timestamptz is already a UTC instant
-// and mktime would re-interpret it in the host zone (E2-F22).
+// and mktime would re-interpret it in the host zone.
 //
 // Returns false on anything else, so a caller can distinguish "not a datetime"
 // from a datetime at the epoch.
@@ -107,7 +107,7 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         }
     }
 
-    // An empty result is an empty set of bars (T-ROLLX-FIX commit 5, finding 2): a table with no
+    // An empty result is an empty set of bars: a table with no
     // row need not carry a chunk in any column, and chunk(0) of such a column is past the end.
     if (table->num_rows() == 0) {
         return Result<std::vector<Bar>>(std::vector<Bar>{});
@@ -122,15 +122,15 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
         auto low_array = table->GetColumnByName("low")->chunk(0);
         auto close_array = table->GetColumnByName("close")->chunk(0);
         auto volume_array = table->GetColumnByName("volume")->chunk(0);
-        // T-ROLLX: the futures loader's eighth column, the kept print's vendor instrument id;
+        // The futures loader's eighth column, the kept print's vendor instrument id;
         // absent on an equity table, NULL where the raw table has no such print (both: empty).
         std::shared_ptr<arrow::Array> instrument_id_array;
         if (auto id_column = table->GetColumnByName("instrument_id"); id_column != nullptr) {
             instrument_id_array = id_column->chunk(0);
         }
-        // Rolls step 3: the per-contract source's roll field (Bar::roll_from), three columns that
-        // only its table carries, NULL where the field is absent; step 4 adds roll_from_date.
-        // MM fix round 1 adds roll_from_volume (RollFrom::volume, NULL where absent).
+        // The per-contract source's roll field (Bar::roll_from): roll_from_close, roll_from_id and
+        // roll_from_kind, and where present roll_from_date and roll_from_volume (RollFrom::volume),
+        // columns that only its table carries, NULL where the field is absent.
         std::shared_ptr<arrow::Array> roll_close_array, roll_id_array, roll_kind_array,
             roll_date_array, roll_volume_array;
         if (auto c = table->GetColumnByName("roll_from_close"); c != nullptr) {
@@ -152,7 +152,7 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
                 roll_volume_array = vc->chunk(0);
             }
         }
-        // Carry (trade-ngin #185): the per-contract source's carry quote (Bar::carry), five
+        // Carry: the per-contract source's carry quote (Bar::carry), five
         // columns that only its table with carry on carries, NULL where the day has no quote.
         std::shared_ptr<arrow::Array> carry_held_close_array, carry_other_close_array,
             carry_months_array, carry_held_symbol_array, carry_other_symbol_array;
@@ -175,7 +175,7 @@ Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
             carry_other_symbol_array = os->chunk(0);
         }
 
-        // MM fix round 1: the per-contract source's own_contract_volume (Bar::own_contract_volume)
+        // The per-contract source's own_contract_volume (Bar::own_contract_volume)
         std::shared_ptr<arrow::Array> own_volume_array;
         if (auto c = table->GetColumnByName("own_contract_volume"); c != nullptr) {
             own_volume_array = c->chunk(0);
@@ -403,7 +403,7 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
 }
 
 // ----------------------------------------------------------------------------
-// safe_get_* (Phase 5 §1.17a + §5d) -- type-aware chunked accessors. See the
+// safe_get_* -- type-aware chunked accessors. See the
 // header for the dispatch contract.
 // ----------------------------------------------------------------------------
 
@@ -512,9 +512,9 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                      column_name + " at row " + std::to_string(row));
                 return Result<int64_t>(static_cast<int64_t>(d));
             }
-            // E2-F37 / BA-14: temporal columns. The canonical schema stores dates as
-            // TimestampArray; without these cases such a column fell through to
-            // `default` and errored. The value is returned in the column's OWN unit
+            // Temporal columns. The canonical schema stores dates as
+            // TimestampArray; without these cases such a column would fall through to
+            // `default` and error. The value is returned in the column's OWN unit
             // (the canonical schema is microseconds, which is what
             // LiveDataLoader::load_previous_day_data reads) -- see the header.
             case arrow::Type::TIMESTAMP:
@@ -535,7 +535,7 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                     s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
                 }
                 // A FULLY integral string is an integer. `std::stoll` stops at the
-                // first non-digit, so "2026-09-02 00:00:00" used to come back as
+                // first non-digit, so "2026-09-02 00:00:00" would come back as
                 // 2026 -- a silent, plausible integer that is not a timestamp in any
                 // unit. Require the whole string to be consumed before believing it.
                 try {

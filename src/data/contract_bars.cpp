@@ -28,9 +28,9 @@ std::string contract_bars_query() {
 }
 
 std::string vendor_grid_query() {
-    // The grid is the loader's: one bar per instant, the copy the B0 loader keeps where the table
+    // The grid is the loader's: one bar per instant, the copy the loader keeps where the table
     // ever holds two (market_data_utils kFuturesBarKeepOrder). The vendor's id is the raw row of the
-    // same symbol and instant, with no condition on the print (R0 class d).
+    // same symbol and instant, with no condition on the print (class d).
     return "SELECT ((k.time AT TIME ZONE 'UTC')::date)::text, k.symbol, k.open, k.high, k.low,"
            " k.close, k.volume, r.instrument_id FROM ("
            "SELECT DISTINCT ON (time) time, symbol, open, high, low, close, volume"
@@ -230,7 +230,7 @@ const Contract* ContractBook::named_by_id(const std::string& root,
         const Contract& c = contracts_[i];
         const ContractBar* b = c.bar_on(day);
         if (b && b->instrument_id == instrument_id) return &c;
-        // rolls step 4: to the expiration, never to the last bar read (no look-ahead)
+        // to the expiration, never to the last bar read (no look-ahead)
         if (c.first_bar <= day && day <= (c.key ? c.key->expiration : c.last_bar)) {
             spanning = &c;
             ++spans;
