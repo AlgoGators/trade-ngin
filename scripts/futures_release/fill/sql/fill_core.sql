@@ -149,7 +149,7 @@ from futures_data.contract_ohlcv_1d c where c.instrument_id = f.instrument_id an
 update fill_fill set raw_instrument_id = case when branch like 'V\_%' then null else instrument_id end;
 
 -- the class (first that applies)
--- US exchange holidays 2010-2027 (include/trade_ngin/core/holidays.json at 5b85b55e); post_holiday = the previous
+-- US exchange holidays 2010-2027 (include/trade_ngin/core/holidays.json); post_holiday = the previous
 -- weekday is one of them (Good Friday included, so Easter Monday counts)
 drop table if exists pg_temp.fill_holiday;
 create temp table fill_holiday (h date);

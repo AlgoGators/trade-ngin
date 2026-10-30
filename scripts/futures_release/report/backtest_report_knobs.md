@@ -3,7 +3,7 @@
 This section follows the engine from the bars it reads to the statistics it stores, and lists every number that
 decides a result at each stage: the values in the config files (marked **config**, with the key) and the values
 compiled into the code (marked **code**, with the constant and its file). Each was checked against the engine the
-runs were made on (commit aa368233). A **code** value changes only with a code change; a **config** value changes
+runs were made on. A **code** value changes only with a code change; a **config** value changes
 with the config. The full design and the reasoning for each choice is `docs/TREND_FOLLOWING_SYSTEM.md` (section 2
 lists where we depart from Carver and why); costs `docs/COST_MODEL.md`; the overlay `docs/RISK_MODULES.md` and
 `docs/OPTIMIZER_AND_RISK_DESIGN.md`. Rolls: `docs/FUTURES_ROLLS.md` describes the vendor-series path (the switch

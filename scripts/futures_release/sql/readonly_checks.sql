@@ -6,7 +6,7 @@ select 'server' as check, current_database() || ' tz=' || current_setting('TimeZ
        || ' timescaledb ' || coalesce((select extversion from pg_extension where extname = 'timescaledb'), 'none')
        || ' size ' || pg_size_pretty(pg_database_size(current_database())) as answer;
 -- the universe: .v.0 symbols, .c.0 symbols, the full-size equity roots (a micro stored beside its full-size root with no
--- pair refuses every runner, c58dd35b), the micros
+-- pair refuses every runner), the micros
 select 'v0 symbols', count(distinct symbol) || ': ' || string_agg(distinct symbol, ' ' order by symbol) from futures_data.ohlcv_1d where symbol like '%.v.0';
 select 'c0 symbols', count(distinct symbol) || coalesce(': ' || string_agg(distinct symbol, ' ' order by symbol), '') from futures_data.ohlcv_1d where symbol like '%.c.0';
 select 'full-size equity v0 (ES NQ YM RTY)', count(*) || coalesce(' rows: ' || string_agg(distinct symbol, ' '), '') from futures_data.ohlcv_1d where symbol in ('ES.v.0', 'NQ.v.0', 'YM.v.0', 'RTY.v.0');

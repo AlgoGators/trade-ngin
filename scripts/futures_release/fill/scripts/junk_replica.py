@@ -1,4 +1,4 @@
-"""The session classifier's bar verdict (src/data/session_classifier.cpp at 5b85b55e, judge_bar + session_norm +
+"""The session classifier's bar verdict (src/data/session_classifier.cpp, judge_bar + session_norm +
 session_flags), on one symbol's series of the .v.0 rows after the fill. Replicates the locked limb, the 1 % / 1,000-lot
 limb, the 50-lot / 25 % floor, the no-norm floor, and the norm (median of the 20 trailing weekday SESSION bars, strictly
 before the date; bootstrap on all trailing weekday bars until one is SESSION; a median of 0 is no norm).

@@ -8,7 +8,7 @@
 # BACKFILL (the same folder as 06, when 06 ran) adds its continuous rows.
 # CHANGES: futures_data.ohlcv_1d and ohlcv_1d_raw gain MGC.v.0 and SIL.v.0 (the rows to 2026-10-26: 4,979 and 4,129
 #   rows in each table, plus the backfill's), one transaction. From here every futures runner's universe holds the two
-#   micros: a config without their listing pairs refuses to run (c58dd35b), so this part goes in TOGETHER with
+#   micros: a config without their listing pairs refuses to run, so this part goes in TOGETHER with
 #   AlgoGators/algogators#85, the listing pairs in every futures config, the release build and per_contract_rolls on
 #   (AlgoGators/trade-ngin#270). The check after: the contract table and the metadata unchanged, both continuous
 #   tables grown by the micros' rows only.
