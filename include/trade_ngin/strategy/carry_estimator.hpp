@@ -1,0 +1,142 @@
+// include/trade_ngin/strategy/carry_estimator.hpp
+#pragma once
+
+#include <cstddef>
+#include <optional>
+#include <vector>
+
+#include "trade_ngin/core/types.hpp"
+
+namespace trade_ngin {
+namespace carry_estimator {
+
+/**
+ * The carry rules (trade-ngin #185; Carver, Advanced Futures Trading Strategies, strategy ten) at one
+ * signal bar, as a function of the same fixed trailing window of consumed bars the trend estimators
+ * read (trend_estimator.hpp, kWindowBars) and of nothing else.
+ *
+ *   raw carry            = nearer close - held close   (the quote's months < 0)
+ *                        = held close - further close  (months > 0: the held contract is the front)
+ *   expiry difference    = |months| / 12
+ *   annualised raw carry = raw carry / expiry difference
+ *   carry forecast       = annualised raw carry / (sigma_p x 16)
+ *   smoothed(span)       = EWMA_span(carry forecast), lambda = 2 / (span + 1)
+ *   scaled(span)         = smoothed(span) x 30, capped at +/-20
+ *
+ * sigma_p x 16 is the trend forecast's own divisor at the bar: close x forecast_sigma, the raw close
+ * the trend forecast divides by and the forecast's volatility the trend estimators compute for the
+ * same bar (trend_estimator::estimate's forecast_sigma_bars). The two prices are the quote's: real
+ * contract closes of the same date (CarryQuote), never the adjusted series.
+ *
+ * The missing-price rule (HD 2026-10-26, Q4): a bar with no quote keeps the last known annualised
+ * raw carry of the window (its own pair and expiry difference) and divides it by its own bar's
+ * divisor. Before the window's first quote there is no carry forecast, and every EWMA starts at the
+ * first forecast (seeded there, as the trend EMAs are seeded at the window's first level). An
+ * instrument with no quote anywhere in its window up to the signal bar has no carry: `active` is
+ * false and the strategy trades its trend forecast alone (Q3, applied per bar). Bar 0 of the window
+ * has no volatility and gives no forecast, but its quote is known. Nothing is carried from one call
+ * to the next.
+ */
+inline constexpr double kCarryScalar = 30.0;
+inline constexpr double kCarryCap = 20.0;
+
+/// Carver's four spans (business days), fastest first.
+inline const std::vector<int>& default_spans() {
+    static const std::vector<int> spans{5, 20, 60, 120};
+    return spans;
+}
+
+/**
+ * The speed limit for the carry spans (#185; AFTS strategy ten, table 40; fix round 1, audit A S5).
+ * A rule's yearly cost on a contract is (its turnover + 2 x rolls a year) x the contract's cost per
+ * trade, so it rises with the turnover: a carry span that turns over no faster than a trend speed the
+ * contract keeps (that speed passed the 0.15 limit, trading_rule_removals' recipe) passes it too. The
+ * sleeve refuses carry when that bound does not hold on a contract (TrendFollowingStrategy).
+ */
+/// Table 40: a carry span's turnover a year (5 5.75, 20 3.12, 60 1.82, 120 1.22); 0 for any other span.
+double carry_span_turnover(int span);
+/// Table 35: an EWMAC speed's turnover a year by its fast span (2 98.5, 4 50.2, 8 25.4, 16 13.2,
+/// 32 7.6, 64 5.2), the figures scripts/trading_rule_costs.py uses; 0 for any other.
+double trend_speed_turnover(int fast);
+
+/// nearer - held (months < 0), held - further (months > 0); 0 for months 0.
+double raw_carry(const CarryQuote& quote);
+/// |months| / 12.
+double expiry_difference(const CarryQuote& quote);
+/// raw_carry / expiry_difference; 0 for months 0.
+double annualised_raw_carry(const CarryQuote& quote);
+
+/// One symbol's window, oldest first, all three vectors the same length (the trend window's bars).
+struct Window {
+    std::vector<std::optional<CarryQuote>> quote;
+    std::vector<double> close;           // raw close, the trend forecast's price
+    std::vector<double> forecast_sigma;  // the trend forecast's volatility per bar (bar 0 unused)
+};
+
+struct Estimate {
+    bool active = false;        // a raw carry is known at the signal bar (else: trend only)
+    bool quoted = false;        // the signal bar has its own quote (else the last known stands)
+    std::size_t forecast_bars = 0;  // window bars with a carry forecast, up to the signal bar
+    std::optional<CarryQuote> quote;  // the quote the signal bar's raw carry comes from
+    double raw_carry = 0.0;
+    double annualised = 0.0;
+    double divisor = 0.0;       // sigma_p x 16 at the signal bar: close x forecast_sigma
+    double forecast = 0.0;      // the signal bar's carry forecast, before any smoothing
+    std::vector<double> smoothed;  // per span, at the signal bar
+    std::vector<double> scaled;    // per span: x scalar, capped
+    double mean_scaled = 0.0;      // the equal-weight mean of the capped spans
+};
+
+/**
+ * @brief The carry rules at the window's last bar.
+ * @param window the trailing consumed bars (at most trend_estimator::kWindowBars are read: the last)
+ * @param spans the EWMA spans the contract keeps
+ * @param scalar the forecast scalar (30)
+ */
+Estimate estimate(const Window& window, const std::vector<int>& spans,
+                  double scalar = kCarryScalar);
+
+/**
+ * The blend (trade-ngin #185; Carver, strategy eleven, tables 51 and 52): one forecast from the two
+ * families of trading rules an instrument keeps.
+ *
+ *   F = cap at +/-20 of  FDM x ( w_trend x sum of the trend forecasts + w_carry x sum of the carry
+ *                                 forecasts )
+ *
+ * Within a style every rule weighs the same (table 51): each trend speed (1 - carry_weight) / its
+ * number, each carry span carry_weight / its number, so the bracket is (1 - carry_weight) x the trend
+ * average + carry_weight x the carry average (0.6 and 0.4 by default). The FDM is table 52's for the
+ * number of rules the instrument trades: the trend speeds and the carry spans it keeps, a style of
+ * weight 0 counting none (table 51's carry-only rows). The trend forecasts are the trend estimators'
+ * scaled ones, the carry forecasts this file's capped spans.
+ */
+/// Table 52: the forecast diversification multiplier for a number of trading rules (1 to 22, 25,
+/// 30, 35, and 2.0 from 40); 0 for a count the table does not print, which the caller refuses.
+double rule_count_fdm(int rules);
+
+struct Blend {
+    int trend_rules = 0;
+    int carry_rules = 0;
+    int rules = 0;              // the rules counted for the FDM
+    double trend_weight = 0.0;  // each trend speed's weight (table 51)
+    double carry_weight = 0.0;  // each carry span's weight
+    double fdm = 0.0;
+    double trend_part = 0.0;    // (1 - carry_weight) x the trend average
+    double carry_part = 0.0;    // carry_weight x the carry average
+    double forecast = 0.0;      // FDM x (trend_part + carry_part), capped at +/-20
+};
+
+/**
+ * @brief The blended forecast of one instrument.
+ * @param trend_mean the equal-weight mean of the trend speeds' scaled forecasts it keeps
+ * @param trend_rules how many it keeps (at least 1)
+ * @param carry_mean the equal-weight mean of its capped carry spans
+ * @param carry_rules how many it keeps (at least 1)
+ * @param carry_weight the carry style's weight, in (0, 1] (0.4)
+ * @return fdm 0 (and forecast 0) for a rule count table 52 does not print
+ */
+Blend blend(double trend_mean, int trend_rules, double carry_mean, int carry_rules,
+            double carry_weight);
+
+}  // namespace carry_estimator
+}  // namespace trade_ngin

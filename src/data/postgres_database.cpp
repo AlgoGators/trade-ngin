@@ -198,7 +198,8 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
                                                                  "PostgresDatabase");
             }
             txn.commit();
-            auto table_result = contract_rolls::source_bars_to_arrow(source.value());
+            auto table_result = contract_rolls::source_bars_to_arrow(
+                source.value(), contract_rolls::PerContractSource::instance().carry_quotes());
             if (table_result.is_error()) return table_result;
             for (const auto& bar : source.value()) {
                 MarketDataBus::instance().publish(contract_rolls::source_bar_event(bar));

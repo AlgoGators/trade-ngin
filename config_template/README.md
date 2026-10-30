@@ -98,3 +98,26 @@ was deleted by J3 and is no longer read`). Delete the line to silence it.
 Cut-over in stored rows: `trading.live_run_metadata.portfolio_config` and
 `backtest.run_metadata.portfolio_config` / `.hyperparameters` written before this commit carry
 `reserve_capital`; rows written after it do not. History is left as it was written.
+
+## `carry`: carry rules in the trend strategy (trade-ngin #185), off by default
+
+The templates ship without the block: carry is off and the strategy is the trend strategy to the
+last stored digit (every stored cell, the run-metadata settings snapshot included, as before the
+block existed). To switch carry on, add to `portfolio.json` at the top level:
+
+```json
+"carry": {"weight": 0.4, "spans": [5, 20, 60, 120], "scalar": 30}
+```
+
+`weight` is the carry style's share of the first sleeve's forecast weights (Carver, Advanced
+Futures Trading Strategies, strategy eleven, table 51: 0.4, trend 0.6), from 0 to 1, 0 being off;
+`spans` the EWMA smoothing spans in business days, fastest first (strategy ten); `scalar` the
+forecast scalar. `spans` and `scalar` may be left out (Carver's values). On, an instrument's
+forecast is `FDM x ((1 - weight) x the average of its trend speeds + weight x the average of its
+carry spans)`, capped at 20, the FDM table 52's for its number of rules (7 to 10); raw carry is
+read from the held contract's and its roll-cycle neighbour's closes of the same date
+(`data/carry_quote.hpp`), so carry needs `per_contract_rolls` true and a book of one
+`TrendFollowingStrategy` sleeve, and is refused otherwise. An instrument with no carry quote yet in
+its window trades its trend forecast alone; a date with no second-contract price keeps the last
+known raw carry. Each signal bar logs one `CARRY` line with the trend part and the carry part.
+The block cannot be overridden from the database.

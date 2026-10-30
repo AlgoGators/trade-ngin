@@ -383,7 +383,7 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         for (auto it = merged.begin(); it != merged.end(); ++it) {
             const std::string& key = it.key();
             for (const char* block :
-                 {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+                 {"listing_dates", "instrument_id_relabels", "trading_rule_removals", "carry"}) {
                 // "listing_date...", "instrument_id_relabel...": the block's name less its last letter
                 const std::string stem(block, std::strlen(block) - 1);
                 if (key != block && key.rfind(stem, 0) == 0) {
@@ -543,6 +543,75 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
                 return bad("applies to a book of exactly one enabled TrendFollowingStrategy "
                            "sleeve; this book enables " + std::to_string(sleeves));
             }
+        }
+
+        // Carry (trade-ngin #185): optional; parsed strictly when present. Weight 0 is carry off.
+        if (merged.contains("carry")) {
+            const auto& v = merged.at("carry");
+            auto bad = [&](const std::string& what) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id + ": portfolio.json \"carry\" " + what +
+                        " (expected {\"weight\": 0.4, \"spans\": [5, 20, 60, 120], \"scalar\": "
+                        "30}), got " + v.dump(),
+                    "ConfigLoader");
+            };
+            if (!v.is_object()) return bad("must be an object");
+            const std::string unknown = unknown_key(v, {"weight", "spans", "scalar"});
+            if (!unknown.empty()) return bad("has an unknown key \"" + unknown + "\"");
+            CarryConfig carry;
+            carry.present = true;
+            if (!v.contains("weight") || !v.at("weight").is_number() ||
+                !(v.at("weight").get<double>() >= 0.0 && v.at("weight").get<double>() <= 1.0)) {
+                return bad("needs a weight from 0 to 1");
+            }
+            carry.weight = v.at("weight").get<double>();
+            if (v.contains("spans")) {
+                const auto& spans = v.at("spans");
+                if (!spans.is_array() || spans.empty()) return bad("needs a non-empty list of spans");
+                carry.spans.clear();
+                for (const auto& span : spans) {
+                    if (!span.is_number_integer() || span.get<int64_t>() <= 0 ||
+                        span.get<int64_t>() > 10000 ||
+                        (!carry.spans.empty() && span.get<int64_t>() <= carry.spans.back())) {
+                        return bad("names spans that are not positive whole numbers, fastest first");
+                    }
+                    carry.spans.push_back(span.get<int>());
+                }
+            }
+            if (v.contains("scalar")) {
+                if (!v.at("scalar").is_number() || !(v.at("scalar").get<double>() > 0.0)) {
+                    return bad("needs a positive scalar");
+                }
+                carry.scalar = v.at("scalar").get<double>();
+            }
+            // The carry rules join ONE trend sleeve's forecast: with carry on a book of several
+            // sleeves, or of another kind of sleeve, is refused.
+            if (carry.enabled()) {
+                int sleeves = 0;
+                bool trend_only = true;
+                if (merged.contains("strategies") && merged.at("strategies").is_object()) {
+                    const nlohmann::json& strategies = merged.at("strategies");
+                    for (const auto& entry : strategies.items()) {
+                        const auto& def = entry.value();
+                        if (!def.is_object()) continue;
+                        const auto flag = [&](const char* key) {
+                            return def.contains(key) && def.at(key).is_boolean() &&
+                                   def.at(key).get<bool>();
+                        };
+                        if (!flag("enabled_backtest") && !flag("enabled_live")) continue;
+                        ++sleeves;
+                        trend_only = trend_only && def.contains("type") && def.at("type").is_string() &&
+                                     def.at("type").get<std::string>() == "TrendFollowingStrategy";
+                    }
+                }
+                if (sleeves != 1 || !trend_only) {
+                    return bad("with a weight above 0 applies to a book of exactly one enabled "
+                               "TrendFollowingStrategy sleeve; this book enables " +
+                               std::to_string(sleeves));
+                }
+            }
+            config.carry = carry;
         }
 
         // LOOP_SPEC sections 3.1 and 7.7 (D19): the sizing mode and the starting capital. Parsed
@@ -1142,12 +1211,15 @@ Result<void> ConfigLoader::check_overlay(const nlohmann::json& overlay,
     // settings check (D-17) does not run their meaning checks, so a changed block would pass it
     // and then stop every later run of the portfolio.
     for (const char* engine_data :
-         {"listing_dates", "instrument_id_relabels", "trading_rule_removals"}) {
+         {"listing_dates", "instrument_id_relabels", "trading_rule_removals", "carry"}) {
         if (overlay.contains(engine_data)) {
             return make_error<void>(ErrorCode::INVALID_DATA,
                                     std::string(engine_data) +
-                                        " (the engine's per-contract data) cannot be overridden "
-                                        "from the database: it stays in portfolio.json",
+                                        (std::string(engine_data) == "carry"
+                                             ? " (the strategy's forecast rules)"
+                                             : " (the engine's per-contract data)") +
+                                        " cannot be overridden from the database: it stays in "
+                                        "portfolio.json",
                                     "ConfigLoader");
         }
     }

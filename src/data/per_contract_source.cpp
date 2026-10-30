@@ -11,7 +11,9 @@
 
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/carry_quote.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/data/roll_cycle.hpp"
 
 namespace trade_ngin::contract_rolls {
 
@@ -32,10 +34,11 @@ std::optional<SwitchBar> switch_bar_from(const std::string& name) {
     return std::nullopt;
 }
 
-void PerContractSource::enable(FuturesCalendar calendar, SwitchBar switch_bar) {
+void PerContractSource::enable(FuturesCalendar calendar, SwitchBar switch_bar, bool carry_quotes) {
     std::lock_guard<std::mutex> lock(mutex_);
     calendar_ = std::move(calendar);
     switch_bar_ = switch_bar;
+    carry_quotes_ = carry_quotes;
     enabled_ = true;
     log_floor_ = Day{};
     logged_.clear();
@@ -45,6 +48,7 @@ void PerContractSource::disable() {
     std::lock_guard<std::mutex> lock(mutex_);
     calendar_.reset();
     switch_bar_ = SwitchBar::HELD;
+    carry_quotes_ = false;
     enabled_ = false;
     log_floor_ = Day{};
     logged_.clear();
@@ -70,6 +74,11 @@ SwitchBar PerContractSource::switch_bar() const {
     return switch_bar_;
 }
 
+bool PerContractSource::carry_quotes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return carry_quotes_;
+}
+
 bool PerContractSource::enabled() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return enabled_;
@@ -80,9 +89,16 @@ FuturesCalendar PerContractSource::calendar() const {
     return calendar_ ? *calendar_ : FuturesCalendar{};
 }
 
-Result<void> configure_per_contract_source(bool per_contract_rolls, const std::string& switch_bar) {
+Result<void> configure_per_contract_source(bool per_contract_rolls, const std::string& switch_bar,
+                                           bool carry_quotes) {
     if (!per_contract_rolls) {
         PerContractSource::instance().disable();
+        if (carry_quotes) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "carry is on and per_contract_rolls is off: carry reads two "
+                                    "contracts' own closes, which only the per-contract source has",
+                                    "contract_rolls");
+        }
         return Result<void>();
     }
     const std::optional<SwitchBar> setting = switch_bar_from(switch_bar);
@@ -101,7 +117,7 @@ Result<void> configure_per_contract_source(bool per_contract_rolls, const std::s
                                 "loaded: " + std::string(calendar.error()->what()),
                                 "contract_rolls");
     }
-    PerContractSource::instance().enable(calendar.value(), *setting);
+    PerContractSource::instance().enable(calendar.value(), *setting, carry_quotes);
     INFO(
         "PER_CONTRACT_ROLLS on: the futures bar source hands out the held contract's own bars "
         "(HD's roll rule, contract_roll_rule.hpp), roll bars carrying the old contract's close; "
@@ -110,7 +126,9 @@ Result<void> configure_per_contract_source(bool per_contract_rolls, const std::s
         " (an unconfirmed vendor switch bar is " +
         (*setting == SwitchBar::VENDOR ? "the vendor's contract's own bar"
                                        : "the held contract's own bar") +
-        ")");
+        ")" + (carry_quotes ? "; carry quotes on (the held contract's and its roll-cycle "
+                              "neighbour's closes on every bar)"
+                            : ""));
     return Result<void>();
 }
 
@@ -274,6 +292,29 @@ Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
     return out;
 }
 
+void attach_carry_quotes(const HeldSeries& series, const ContractBook& book,
+                         std::vector<SourceBar>& bars) {
+    std::map<Day, const HeldDay*> by_date;
+    for (const HeldDay& d : series.days) by_date[d.date] = &d;
+    std::map<std::string, std::string> cycles;  // the held contract's root to its roll cycle
+    for (SourceBar& b : bars) {
+        b.carry.reset();
+        const auto it = by_date.find(b.date);
+        if (it == by_date.end()) continue;
+        const HeldDay& d = *it->second;
+        // The pair moves on the bar that confirms the roll: a vendor switch awaiting the next bar
+        // still holds the old contract here.
+        const ContractKey& held = d.roll && d.awaits_next_bar && d.old ? *d.old : d.held;
+        auto cycle = cycles.find(held.root);
+        if (cycle == cycles.end()) {
+            const auto found = roll_cycle(held.root);
+            cycle = cycles.emplace(held.root, found.is_ok() ? found.value() : std::string()).first;
+        }
+        if (cycle->second.empty()) continue;
+        b.carry = carry_quote(book, held, d.date, cycle->second);
+    }
+}
+
 Result<std::vector<std::string>> source_roots(const std::vector<std::string>& symbols) {
     std::vector<std::string> roots;
     const std::string suffix = ".v.0";
@@ -337,7 +378,8 @@ MarketDataEvent source_bar_event(const SourceBar& bar) {
     return event;
 }
 
-Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars) {
+Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars,
+                                                           bool with_carry) {
     using Table = std::shared_ptr<arrow::Table>;
     arrow::MemoryPool* pool = arrow::default_memory_pool();
     arrow::TimestampBuilder timestamp_builder(arrow::timestamp(arrow::TimeUnit::SECOND), pool);
@@ -352,6 +394,11 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
     arrow::StringBuilder roll_id_builder(pool);
     arrow::Int8Builder roll_kind_builder(pool);
     arrow::StringBuilder roll_date_builder(pool);
+    arrow::DoubleBuilder carry_held_close_builder(pool);
+    arrow::DoubleBuilder carry_other_close_builder(pool);
+    arrow::Int32Builder carry_months_builder(pool);
+    arrow::StringBuilder carry_held_symbol_builder(pool);
+    arrow::StringBuilder carry_other_symbol_builder(pool);
     auto failed = [](const std::string& operation) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Arrow builder error during " + operation + " (per_contract_rolls)",
@@ -389,8 +436,25 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                        roll_date_builder.AppendNull() != arrow::Status::OK()) {
                 return failed("append");
             }
+            if (!with_carry) continue;
+            if (bar.carry) {
+                if (carry_held_close_builder.Append(bar.carry->held_close) != arrow::Status::OK() ||
+                    carry_other_close_builder.Append(bar.carry->other_close) != arrow::Status::OK() ||
+                    carry_months_builder.Append(bar.carry->months) != arrow::Status::OK() ||
+                    carry_held_symbol_builder.Append(bar.carry->held_symbol) != arrow::Status::OK() ||
+                    carry_other_symbol_builder.Append(bar.carry->other_symbol) !=
+                        arrow::Status::OK()) {
+                    return failed("append");
+                }
+            } else if (carry_held_close_builder.AppendNull() != arrow::Status::OK() ||
+                       carry_other_close_builder.AppendNull() != arrow::Status::OK() ||
+                       carry_months_builder.AppendNull() != arrow::Status::OK() ||
+                       carry_held_symbol_builder.AppendNull() != arrow::Status::OK() ||
+                       carry_other_symbol_builder.AppendNull() != arrow::Status::OK()) {
+                return failed("append");
+            }
         }
-        std::vector<std::shared_ptr<arrow::Array>> arrays(12);
+        std::vector<std::shared_ptr<arrow::Array>> arrays(with_carry ? 17 : 12);
         if (timestamp_builder.Finish(&arrays[0]) != arrow::Status::OK() ||
             symbol_builder.Finish(&arrays[1]) != arrow::Status::OK() ||
             open_builder.Finish(&arrays[2]) != arrow::Status::OK() ||
@@ -405,7 +469,14 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
             roll_date_builder.Finish(&arrays[11]) != arrow::Status::OK()) {
             return failed("finish");
         }
-        auto schema = arrow::schema({arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        if (with_carry && (carry_held_close_builder.Finish(&arrays[12]) != arrow::Status::OK() ||
+                           carry_other_close_builder.Finish(&arrays[13]) != arrow::Status::OK() ||
+                           carry_months_builder.Finish(&arrays[14]) != arrow::Status::OK() ||
+                           carry_held_symbol_builder.Finish(&arrays[15]) != arrow::Status::OK() ||
+                           carry_other_symbol_builder.Finish(&arrays[16]) != arrow::Status::OK())) {
+            return failed("finish");
+        }
+        arrow::FieldVector fields{arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
                                      arrow::field("symbol", arrow::utf8()),
                                      arrow::field("open", arrow::float64()),
                                      arrow::field("high", arrow::float64()),
@@ -416,8 +487,15 @@ Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<Sou
                                      arrow::field("roll_from_close", arrow::float64()),
                                      arrow::field("roll_from_id", arrow::utf8()),
                                      arrow::field("roll_from_kind", arrow::int8()),
-                                     arrow::field("roll_from_date", arrow::utf8())});
-        return Result<Table>(arrow::Table::Make(schema, arrays));
+                                     arrow::field("roll_from_date", arrow::utf8())};
+        if (with_carry) {
+            fields.push_back(arrow::field("carry_held_close", arrow::float64()));
+            fields.push_back(arrow::field("carry_other_close", arrow::float64()));
+            fields.push_back(arrow::field("carry_months", arrow::int32()));
+            fields.push_back(arrow::field("carry_held_symbol", arrow::utf8()));
+            fields.push_back(arrow::field("carry_other_symbol", arrow::utf8()));
+        }
+        return Result<Table>(arrow::Table::Make(arrow::schema(fields), arrays));
     } catch (const std::exception& e) {
         return make_error<Table>(ErrorCode::CONVERSION_ERROR,
                                  "Exception during Arrow table conversion (per_contract_rolls): " +
@@ -502,7 +580,11 @@ Result<std::vector<SourceBar>> per_contract_bars(
     if (series.is_error()) {
         return make_error<Bars>(series.error()->code(), series.error()->what(), "contract_rolls");
     }
-    return bars_of_series(series.value().series(), window, switch_bar, log_from, log_once);
+    auto bars = bars_of_series(series.value().series(), window, switch_bar, log_from, log_once);
+    if (bars.is_error() || !PerContractSource::instance().carry_quotes()) return bars;
+    Bars quoted = bars.value();
+    attach_carry_quotes(series.value().series(), series.value().book(), quoted);
+    return quoted;
 }
 
 }  // namespace trade_ngin::contract_rolls

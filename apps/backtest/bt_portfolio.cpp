@@ -16,6 +16,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/strategy/carry_log.hpp"
 #include "trade_ngin/strategy/short_window_log.hpp"
 #include "trade_ngin/strategy/sleeve_config.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -152,7 +153,8 @@ int main() {
         // Rolls step 3: portfolio.json's per_contract_rolls turns the futures bar source onto the
         // held contract's own bars (data/per_contract_source.hpp); off, every path is today's.
         if (auto source = contract_rolls::configure_per_contract_source(
-                app_config.per_contract_rolls, app_config.per_contract_switch_bar);
+                app_config.per_contract_rolls, app_config.per_contract_switch_bar,
+                app_config.carry.enabled());
             source.is_error()) {
             std::cerr << source.error()->what() << std::endl;
             ERROR(source.error()->what());
@@ -425,6 +427,8 @@ int main() {
                     trend_config.equity_slow_pairs = app_config.equity_slow_rule.pairs;
                     // Trading rules removed by cost (no value changes without the block).
                     trade_ngin::hand_over_trading_rule_removals(app_config, trend_config);
+                    // Carry (trade-ngin #185; weight 0 or the block absent: no value changes).
+                    trade_ngin::hand_over_carry(app_config, trend_config);
                     // The first sleeve's own series and its risk target feed the risk overlay
                     // (LOOP_SPEC section 4: the three risk limits are ratios to this tau).
                     portfolio_config.overlay_sleeve = strategy_id;
@@ -553,6 +557,9 @@ int main() {
 
         INFO("Backtest completed successfully");
         INFO(trade_ngin::estimator_short_window_line(strategies));
+        if (const std::string line = trade_ngin::carry_driven_shorts_line(strategies); !line.empty()) {
+            INFO(line);  // carry on only (trade-ngin #185, HD's Q1)
+        }
 
         // Analyze and display results
         const auto& backtest_results = result.value();
@@ -607,6 +614,10 @@ int main() {
                     relabels.push_back({{"symbol", r.symbol}, {"date", r.date}, {"from", r.from}, {"to", r.to}});
                 }
                 portfolio_config_json["instrument_id_relabels"] = relabels;
+            }
+            // trade-ngin #185: the carry the run traded, only with carry on (off: today's row)
+            if (app_config.carry.enabled()) {
+                portfolio_config_json["carry"] = trade_ngin::carry_config_json(app_config.carry);
             }
             if (!app_config.listing_dates.empty()) {
                 auto contracts = nlohmann::json::array();
