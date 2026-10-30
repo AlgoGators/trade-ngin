@@ -134,8 +134,8 @@ struct SettledPriceCells {
 /**
  * @brief The report's two cells of a row. `latest` empty is the no-bar row: the cell reads
  *        "no bar" (no "n/a", no carried price) and the footnote prints. A previous price that is
- *        not known reads "n/a". A price prints every decimal it has, with its dollar sign and thousands separators
- *        (report_price_dollars).
+ *        not known reads "n/a". A price prints at `places` decimals, with its dollar sign and
+ *        thousands separators (report_price_dollars_places).
  */
 inline SettledPriceCells settled_price_cells(std::optional<double> previous,
                                              std::optional<double> latest, int places = 4) {

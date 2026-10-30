@@ -6403,7 +6403,6 @@ int main(int argc, char* argv[]) {
                 // before the run date.
                 trade_ngin::EmailReportContext report_context;
                 report_context.settled_date = yesterday_date_for_email;
-                report_context.sessions_per_year = app_config.statistics.equity_sessions_per_year;
                 // T-8D-2 R59: an equity book (no futures text or tables), with its own start date.
                 report_context.equities = true;
                 report_context.equity_closed_today = today_is_non_trading;
@@ -6427,7 +6426,6 @@ int main(int argc, char* argv[]) {
                              trade_ngin::statistics_report_metrics(today_row_result.value())) {
                             strategy_metrics[name] = value;
                         }
-                        report_context.statistics_sessions = today_row_result.value().total_days;
                     } else {
                         WARN("Failed to load today's live_results row for email metrics: " +
                              std::string(today_row_result.error()->what()));

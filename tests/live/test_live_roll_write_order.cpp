@@ -417,7 +417,7 @@ TEST(LiveRollWriteOrder, EachRunnerHandsTheReportItsRollView) {
         const std::string src = read_source(runner);
         ASSERT_FALSE(src.empty()) << runner;
         const std::string block = between(src, "report_context.settled_zero_kinds.withheld = t1_settlement.withheld_zero_symbols;",
-                                          "if (one_pass_day.stores_detail()) {");
+                                          "if (has_today_row_metrics) {");
         ASSERT_FALSE(block.empty()) << runner;
         EXPECT_NE(block.find("if (contract_rolls::PerContractSource::instance().enabled()) {"), npos) << runner;
         EXPECT_NE(block.find("report_context.settled_zero_kinds.per_contract_roll =\n"

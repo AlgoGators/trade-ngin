@@ -44,18 +44,6 @@ inline std::string report_price_text(double price, bool thousands = false) {
 
 
 /**
- * @brief A price with its dollar sign and thousands separators, as every price of the daily report
- *        prints (T-EMAIL, HD ruling Q9): "$79,070.00", "$0.0062995", "-$1.25"; "n/a" for a value
- *        that is not finite.
- */
-inline std::string report_price_dollars(double price) {
-    if (!std::isfinite(price))
-        return "n/a";
-    const bool negative = price < 0 && report_price_text(-price) != "0.00";
-    return std::string(negative ? "-$" : "$") + report_price_text(std::fabs(price), true);
-}
-
-/**
  * @brief An amount with its dollar sign, thousands separators and `decimals` decimals, as every
  *        amount of the daily report prints: "$1,234.50", and a negative as "-$1,234.50", never
  *        "$-1,234.50". An amount that rounds to zero prints "$0.00" with no sign.

@@ -235,12 +235,10 @@ OverLimitReport over_limit_of(double sizing_capital, double gross, double net) {
     return over_limit_report(day, columns, overlay_modules(), 2.0);
 }
 
-// What a runner tells the report about the day: its settled day, and the n and K of its statistics.
-EmailReportContext context_of(const std::string& settled_date, int sessions, double per_year) {
+// What a runner tells the report about the day: its settled day.
+EmailReportContext context_of(const std::string& settled_date) {
     EmailReportContext context;
     context.settled_date = settled_date;
-    context.statistics_sessions = sessions;
-    context.sessions_per_year = per_year;
     return context;
 }
 
@@ -252,20 +250,11 @@ EmailReportContext with_book(EmailReportContext context, const std::string& live
     return context;
 }
 
-// The two capital keys of the day's risk_detail: sizing_capital and account_value.
 // The symbols whose settled bar booked no move, by kind (T-EMAIL).
 EmailReportContext with_zero_kinds(EmailReportContext context, const std::string& roll,
                                    const std::string& withheld = "") {
     if (!roll.empty()) context.settled_zero_kinds.roll.insert(roll);
     if (!withheld.empty()) context.settled_zero_kinds.withheld.insert(withheld);
-    return context;
-}
-
-EmailReportContext with_capital(EmailReportContext context, double sizing_capital,
-                                double account_value) {
-    context.has_sizing_capital = true;
-    context.sizing_capital = sizing_capital;
-    context.account_value_at_sizing = account_value;
     return context;
 }
 
@@ -409,11 +398,7 @@ protected:
             settled_prices.previous, settled_metrics, "LIVE_TREND_FOLLOWING",
             // gross 431,957.5625 and net 121,699.32 on the sizing capital 497,745.27
             over_limit_of(kConservativeCapital.sizing_capital, 0.8678286, 0.2445012),
-            with_zero_kinds(with_book(with_capital(context_of("2026-04-27", 171, 311.0574),
-                                                   kConservativeCapital.sizing_capital,
-                                                   kConservativeCapital.account_value),
-                                      "2025-10-05"),
-                            "QMBT.v.0"));
+            with_zero_kinds(with_book(context_of("2026-04-27"), "2025-10-05"), "QMBT.v.0"));
     }
 
     // BASE: two sleeves, Monday 2026-04-27, the settled day Sunday 2026-04-26. The sleeves hold
@@ -477,9 +462,7 @@ protected:
             marks, nullptr, settled, settled_prices.latest, settled_prices.previous,
             settled_metrics, "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST",
             over_limit_of(kBaseCapital.sizing_capital, 0.5035118, 0.5035118),
-            with_book(with_capital(context_of("2026-04-26", 320, 311.0574),
-                                   kBaseCapital.sizing_capital, kBaseCapital.account_value),
-                      "2025-11-11"));
+            with_book(context_of("2026-04-26"), "2025-11-11"));
     }
 
     // The equity book: Wednesday 2026-06-24; its settled day is the previous session, Tuesday
@@ -545,7 +528,7 @@ protected:
             positions, std::nullopt, metrics, executions, "2026-06-24", true, closes, nullptr,
             settled, t1_close, t2_close, settled_metrics, "LIVE_EQUITY_MEAN_REVERSION",
             "EQUITY_MR_PORTFOLIO",
-            with_book(context_of("2026-06-23", 55, 252.0), "2026-04-01", true));
+            with_book(context_of("2026-06-23"), "2026-04-01", true));
     }
 
     EmailSender sender_{EmailSenderConfig{}};
@@ -731,9 +714,6 @@ TEST(EmailSettledSplitTwinSourceGuard, BothFuturesRunnersReadTheReturnLinesFromT
                            "                            today_row.total_annualized_return;"),
                   std::string::npos)
             << runner;
-        EXPECT_NE(src.find("report_context.statistics_sessions = today_row.total_days;"),
-                  std::string::npos)
-            << runner;
         for (const char* gone :
              {"strategy_metrics[\"Daily Return\"]", "strategy_metrics[\"Daily Total PnL\"]",
               "strategy_metrics[\"Total Annualized Return\"] = "
@@ -768,9 +748,9 @@ TEST_F(EmailFixture, TheCapitalInputsOfTheFuturesFixturesSatisfyTheSizingRule) {
     EXPECT_LT(half_compounded_capital(500000.0, {5759.80, -2254.73}).capital, 501250.34);
 }
 
-// READS SOURCE: a twin guard. Both futures runners hand the two keys under the condition and
-// from the values of their set_risk_detail call.
-TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfRiskDetail) {
+// READS SOURCE: a twin guard. Both futures runners store the account value the sizing read in the
+// day's risk_detail.
+TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersStoreTheSizingReadsAccountValue) {
     for (const char* runner : {"apps/strategies/live_portfolio_conservative.cpp",
                                "apps/strategies/live_portfolio.cpp"}) {
         fs::path dir = fs::current_path();
@@ -784,14 +764,6 @@ TEST(EmailCapitalLineTwinSourceGuard, BothFuturesRunnersHandTheTwoCapitalKeysOfR
         if (src.empty())
             GTEST_SKIP() << "runner source not found from the test working directory";
         EXPECT_NE(src.find("risk_detail_json(one_pass_day, sizing_capital_read.capital.account)"),
-                  std::string::npos)
-            << runner;
-        EXPECT_NE(src.find("if (one_pass_day.stores_detail()) {\n"
-                           "                        report_context.has_sizing_capital = true;\n"
-                           "                        report_context.sizing_capital = "
-                           "one_pass_day.sizing_capital;\n"
-                           "                        report_context.account_value_at_sizing =\n"
-                           "                            sizing_capital_read.capital.account;"),
                   std::string::npos)
             << runner;
     }
@@ -1125,7 +1097,7 @@ TEST_F(EmailFixture, WithTheSwitchOnTheBodyPrintsTheRollLineTheBoxTheFootnoteAnd
          {{"QZT.v.0", row("QZT.v.0", -1.0, 103.73828125, -46.88)}, {"QKE.v.0", row("QKE.v.0", 1.0, 677.0, 425.0)}}}};
     const std::unordered_map<std::string, double> t1 = {{"QZT.v.0", 103.73828125}, {"QKE.v.0", 677.0}};
     const std::unordered_map<std::string, double> t2 = {{"QZT.v.0", 103.71484375}, {"QKE.v.0", 668.5}};
-    EmailReportContext context = with_book(context_of("2026-04-27", 171, 311.0574), "2025-10-05");
+    EmailReportContext context = with_book(context_of("2026-04-27"), "2025-10-05");
     context.settled_zero_kinds.per_contract_roll.insert("QKE.v.0");
     context.rolls.per_contract_rolls = true;
     context.rolls.names["ROLL_QMBT.v.0_RC"] = ReportRollNames{"Micro Bitcoin Futures", "April", "May", 1};

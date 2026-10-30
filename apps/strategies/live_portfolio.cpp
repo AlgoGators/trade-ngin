@@ -5671,8 +5671,6 @@ int main(int argc, char* argv[]) {
                     // What the report is told about the day beyond the metric map.
                     trade_ngin::EmailReportContext report_context;
                     report_context.settled_date = yesterday_date_for_email;
-                    report_context.sessions_per_year =
-                        app_config.statistics.futures_sessions_per_year;
                     // T-8D-2 R59: the footer's start date is the book's own, and what the
                     // report says about the day before is this run's classification of it (a
                     // carried book: no session), never the weekday's.
@@ -5690,21 +5688,11 @@ int main(int argc, char* argv[]) {
                                               all_strategy_executions, roll_status),
                             report_tick_size);
                     }
-                    // The two capital keys of the day's risk_detail, when the row carries one
-                    // (the condition and the values of the set_risk_detail call above).
-                    if (one_pass_day.stores_detail()) {
-                        report_context.has_sizing_capital = true;
-                        report_context.sizing_capital = one_pass_day.sizing_capital;
-                        report_context.account_value_at_sizing =
-                            sizing_capital_read.capital.account;
-                    }
-
                     if (has_today_row_metrics) {
                         strategy_metrics["Total Cumulative Return"] =
                             today_row.total_cumulative_return;
                         strategy_metrics["Total Annualized Return"] =
                             today_row.total_annualized_return;
-                        report_context.statistics_sessions = today_row.total_days;
                         // Risk-adjusted and distribution metrics from live_results
                         strategy_metrics["Sharpe Ratio"] = today_row.sharpe_ratio;
                         strategy_metrics["Sortino Ratio"] = today_row.sortino_ratio;

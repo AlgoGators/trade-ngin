@@ -20,20 +20,6 @@ struct EmailReportContext {
     /// the calendar day before its date.
     std::string settled_date;
 
-    /// n, the count of settled grid returns the stored statistics are taken on (the row's
-    /// total_days), and K, the sessions a year of the book's statistics grid. While n is below K
-    /// the annualised return is an extrapolation and its line says so (T-8D-2 R74). 0: not given.
-    int statistics_sessions{0};
-    double sessions_per_year{0.0};
-
-    /// A futures book's sizing capital and the portfolio value the sizing read, as the
-    /// day's row stores them (risk_detail.sizing_capital, risk_detail.account_value). False when
-    /// the day's row carries no risk_detail (no sized rebalance the overlay answered): the report
-    /// then prints no figure.
-    bool has_sizing_capital{false};
-    double sizing_capital{0.0};
-    double account_value_at_sizing{0.0};
-
     /// The book's asset class is equities (the equity runner): no futures text in the footer, no
     /// Symbols Reference and no rollover notice (tables of futures contract metadata), no
     /// holiday banner (its day before is its previous session by construction).
@@ -90,40 +76,6 @@ inline std::string report_long_date(const std::string& iso_date) {
            std::to_string(year);
 }
 
-/// The label of the annualised return line (T-8D-2 R61, R74): the stored value is printed for
-/// every n, and labelled while the book has under one year of sessions.
-inline std::string annualized_return_label(const EmailReportContext& context) {
-    const bool under_one_year =
-        context.statistics_sessions > 0 && context.sessions_per_year > 0.0 &&
-        static_cast<double>(context.statistics_sessions) < context.sessions_per_year;
-    return under_one_year ? "Total Annualized Return (extrapolated: under one year of sessions)"
-                          : "Total Annualized Return";
-}
-
-/**
- * @brief The heading of the report's book block: the day T row as the run wrote it, and what of
- *        the day is still to be settled. The two kinds of book write that row differently, so
- *        each has its own words.
- *
- * A futures row is written before the day's close exists: it carries the day's transaction costs
- * and nothing of the day's market move, which the next run settles as the row's P&L.
- *
- * An equity row is written with more than its costs (the equity runner's Day T aggregate): the
- * P&L realized by the day's own fills, which are priced at the close before, is booked on the day
- * and never restated; the day's costs are booked; and the shares held are valued at that same
- * close, the latest one the run has. What the next run settles is the value of the holdings at
- * the day's own close, that is the day's price move, and no realized P&L.
- */
-inline std::string book_heading_html(const std::string& report_date, bool equities) {
-    if (equities) {
-        return "<h2>Book as of " + report_date +
-               " (today's trades and costs booked, holdings valued at the latest close; today's "
-               "price move settles on the next run)</h2>\n";
-    }
-    return "<h2>Book as of " + report_date +
-           " (today's costs booked; P&amp;L settles tomorrow)</h2>\n";
-}
-
 /// The equity runner's metric key for the cumulative dividend income its day's row stores
 /// (total_dividend_income): the report prints it as one informational line (T-8D-2 R44 (c)).
 inline constexpr const char* kReportDividendIncome = "Dividend Income";
@@ -140,25 +92,6 @@ inline std::string dollars(double value) {
     return std::string(value < 0 && text != "0.00" ? "-$" : "$") + text;
 }
 }  // namespace report_capital_detail
-
-/**
- * @brief A futures book's capital line: the sizing capital the day was sized on, from the day's
- *        stored risk_detail (sizing_capital), under its own words. The portfolio value the
- *        sizing read (risk_detail.account_value) is not printed (HD 2026-10-13: it is the
- *        current portfolio value less the day's costs, which two figures under one name had made
- *        confusing); nothing is derived from the two. A day whose row carries no risk_detail has
- *        one line that says there is no reading, and no figure. The text a reader sees is plain
- *        words: no symbol of the specification.
- */
-inline std::string capital_lines_html(const EmailReportContext& context) {
-    if (!context.has_sizing_capital) {
-        return "<div class=\"metric\"><strong>Sizing capital:</strong> no reading (no sized "
-               "rebalance this run: no risk reading was stored for this day)</div>\n";
-    }
-    using report_capital_detail::dollars;
-    return "<div class=\"metric\"><strong>Sizing capital:</strong> <span>" +
-           dollars(context.sizing_capital) + "</span></div>\n";
-}
 
 /// The equity report's dividend line: the cumulative figure, labelled as outside the P&L totals.
 inline std::string dividend_line_html(double cumulative_dividend_income) {
