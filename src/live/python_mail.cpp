@@ -62,12 +62,23 @@ PythonMailSettings python_mail_settings_from_env() {
     return s;
 }
 
-bool python_mail_selected() { return env_or("QT_MAIL_BACKEND", "") == "python"; }
+std::string python_mail_test_to() { return env_or("QT_MAIL_TEST_TO", ""); }
 
 std::string python_mail_command(const PythonMailRequest& r, const PythonMailSettings& s) {
-    return "env PYTHONPATH=" + shell_quote(s.app_dir) +
-           " PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/mpl " + shell_quote(s.python) + " -m algogators_rpc.services.report --portfolio-id " +
-           shell_quote(r.portfolio_id) + " --date " + shell_quote(r.date) + " 2>&1";
+    std::string cmd = "env PYTHONPATH=" + shell_quote(s.app_dir) +
+                      " PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/mpl " + shell_quote(s.python) +
+                      " -m algogators_rpc.services.report --portfolio-id " +
+                      shell_quote(r.portfolio_id) + " --date " + shell_quote(r.date);
+    if (!r.strategy_id.empty()) cmd += " --strategy-id " + shell_quote(r.strategy_id);
+    if (r.no_session) cmd += " --no-session";
+    if (r.equities) cmd += " --equities";
+    if (!r.alert.empty()) cmd += " --alert " + shell_quote(r.alert);
+    if (!r.rolls_json.empty()) cmd += " --rolls " + shell_quote(r.rolls_json);
+    for (const auto& path : r.attachments) {
+        if (!path.empty()) cmd += " --attach " + shell_quote(path);
+    }
+    if (!r.test_to.empty()) cmd += " --to " + shell_quote(r.test_to);
+    return cmd + " 2>&1";
 }
 
 std::optional<std::string> send_via_python(const PythonMailRequest& r,

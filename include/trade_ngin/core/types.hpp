@@ -552,6 +552,18 @@ struct Position {
     /// nothing moved it and on every system and qt_proposal row; storing a non-empty value on
     /// another book is refused.
     std::string moved_by;
+    /// What the book e-mail shows of the row (trading.positions, migration 041), written by the
+    /// live runners and NULL when unset:
+    /// - mark_price: a day-T row's mark, the T-1 close it is valued at; unset when the symbol
+    ///   printed no bar (the row is then valued at average_price, the last known price).
+    /// - settle_from_price / settle_to_price: a settled (Day T-1) row's two prices, the ones the
+    ///   settle's own P&L used; settle_to_price unset when the symbol printed no bar that day.
+    /// - settle_mark: why a settled row booked no move: "NO_BAR" (no bar that day), "ROLL" (the
+    ///   contract rolled), "WITHHELD" (the price was rejected); empty otherwise.
+    std::optional<double> mark_price;
+    std::optional<double> settle_from_price;
+    std::optional<double> settle_to_price;
+    std::string settle_mark;
     // Note: previous_price and contract_size fields removed
 
     // Constructors

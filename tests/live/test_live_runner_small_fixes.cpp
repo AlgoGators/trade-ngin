@@ -187,7 +187,6 @@ TEST(C7bCarriedDay, AClosureCarryNamesTheFirstVerdictsReason) {
 }
 
 TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFlagTheEmail) {
-    std::vector<std::string> blocks;
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
@@ -195,17 +194,10 @@ TEST(C7bRunnerSource, BothTwinsDeriveTheCarriedReasonFromTheClassificationAndFla
         EXPECT_EQ(src.find("\" (a Saturday)\""), npos)
             << "the note still keys on the weekday, blank on a feed-hole carry";
         EXPECT_NE(src.find("carried_day_reason(t1_classification)"), npos);
-        // The email is handed the day's note and whether the day was carried.
-        const std::string email = between(src, "// Send email with CSV attachments",
-                                          "email_sender->send_email(mail_subject, mail_body,");
-        ASSERT_FALSE(email.empty());
-        EXPECT_NE(email.find("risk_module_failure, skip_strategy_processing, carried_day_note,"), npos)
-            << "the email of a carried day carries no reason";
-        blocks.push_back(between(src, "const std::string carried_day_note =", ";\n"));
+        // A carried day reaches the e-mail as the report module's --no-session.
+        EXPECT_NE(src.find("mail.no_session = skip_strategy_processing;"), npos);
     }
-    ASSERT_EQ(blocks.size(), 2u);
-    ASSERT_FALSE(blocks[0].empty());
-    EXPECT_EQ(blocks[0], blocks[1]);
+
 }
 
 // =============================================================================================
@@ -390,10 +382,10 @@ TEST(C7bRunnerSource, BothTwinsFeedTheCostManagerTheStrategyFeedWithTheJunkBarWi
 }
 
 // =============================================================================================
-// The carried combined map sums the sleeves; the email's yesterday map is per sleeve
+// S1-3: the carried combined map sums the sleeves
 // =============================================================================================
 
-TEST(C7bRunnerSource, BothTwinsSumTheSleevesOfACarriedBookAndKeyYesterdaysEmailRowsBySleeve) {
+TEST(C7bRunnerSource, BothTwinsSumTheSleevesOfACarriedBook) {
     std::vector<std::string> carry_blocks;
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
@@ -407,14 +399,6 @@ TEST(C7bRunnerSource, BothTwinsSumTheSleevesOfACarriedBookAndKeyYesterdaysEmailR
         EXPECT_NE(carry.find("rebuild_combined_positions(positions, strategy_positions_map);"), npos);
         carry_blocks.push_back(carry);
 
-        EXPECT_EQ(src.find("yesterday_positions_finalized[symbol] = pos;"), npos)
-            << "the email's yesterday map is keyed by symbol: the last sleeve wins";
-        EXPECT_NE(src.find("yesterday_positions_finalized[{strategy_name, symbol}] = pos;"), npos);
-        // The query is yesterday_positions_report_query (live/report_queries.hpp); its last
-        // argument asks for the sleeve name as the seventh column (executed in
-        // tests/live/test_report_queries.cpp).
-        EXPECT_NE(src.find("yesterday_date_for_email, true, qt_read_book);"), npos)
-            << "the query must read the sleeve";
     }
     ASSERT_EQ(carry_blocks.size(), 2u);
     EXPECT_EQ(carry_blocks[0], carry_blocks[1]);
@@ -471,7 +455,7 @@ TEST(LateBarWarningSource, BothTwinsNameALateBarAfterTheStoredBooksAreLoaded) {
 // sites still passed the raw T-1 closes.
 // =============================================================================================
 
-TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheFourExposureSites) {
+TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheThreeExposureSites) {
     std::vector<std::string> sites;
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
@@ -482,8 +466,7 @@ TEST(ExposureMarkSource, BothTwinsValueTheBookAtTheDayTMarkAtTheFourExposureSite
         const std::string exposure = between(src, "const BookExposure exposure = account_book_exposure(",
                                              "[&](const std::string& symbol, double qty, double price)");
         const std::string csv = between(src, "return csv_exporter->export_current_positions(", ");");
-        const std::string email = between(src, "email_sender->generate_trading_report_body(", ");");
-        for (const std::string* site : {&margin, &exposure, &csv, &email}) {
+        for (const std::string* site : {&margin, &exposure, &csv}) {
             ASSERT_FALSE(site->empty());
             EXPECT_NE(site->find("day_t_mark_prices"), npos)
                 << "a withheld T-1 print still values the book here: " << *site;

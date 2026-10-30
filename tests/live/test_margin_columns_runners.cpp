@@ -209,8 +209,8 @@ TEST(MarginColumnsRunners, TheEquityLeverageColumnsAreNotionalOverThePortfolioVa
     EXPECT_EQ(count_of(src, "net_leverage = r.net_leverage;"), 0u)
         << "net_leverage is still the risk report's figure";
     EXPECT_EQ(count_of(src, "gross_leverage = portfolio_leverage;"), 1u);
-    EXPECT_EQ(count_of(src, "(net_notional / current_portfolio_value) : 0.0;"), 2u)
-        << "the stored cell and the email line";
+    EXPECT_EQ(count_of(src, "(net_notional / current_portfolio_value) : 0.0;"), 1u)
+        << "the stored cell";
     // Both columns are still written: AlgoLens reads them.
     EXPECT_EQ(count_of(src, "{\"gross_leverage\", gross_leverage},"), 1u);
     EXPECT_EQ(count_of(src, "{\"net_leverage\", net_leverage},"), 1u);

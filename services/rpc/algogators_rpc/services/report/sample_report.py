@@ -166,7 +166,8 @@ def sample_payload(with_notice=True, days=30, seed=7):
                 {"label": "Ags", "value": 7},
             ],
         },
-        "rollovers": [{"symbol": "CL", "current": "CLZ6", "next": "CLF7"}],
+        "rollover": [{"label": "SI", "held": "SIZ6", "target": "SIH7", "by": "11-20", "deadline": "11-25", "deadline_kind": "first notice"}],
+        "roll_lines": ["Silver, December to March: market move booked -$1,075; contract price difference 0.670 ($3,350, not profit or loss); roll cost $45.29."],
         "footnotes": [
             "This strategy is based on daily OHLCV data. Only the front-month contract is covered.",
             "All values reflect a trading start date of October 5th, 2025.",

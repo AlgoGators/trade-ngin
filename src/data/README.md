@@ -141,9 +141,9 @@ is absent).
 
 Reads values from a JSON file by section and key. The file is the path given to the constructor
 (default `config.json`), or the path in the environment variable `TRADING_CONFIG_PATH` when that is
-set to a `.json` path. `EmailSender` has a constructor that takes a `CredentialStore`
-(`include/trade_ngin/core/email_sender.hpp:46`); the runners do not use it and build the sender from
-the book's `email.json`.
+set to a `.json` path. The live runners do not use it for e-mail: the book e-mail is sent by the
+Python report module (`services/rpc/algogators_rpc/services/report`) with the SMTP settings of the
+book's `email.json`.
 
 ```cpp
 auto credentials = std::make_shared<CredentialStore>("path/to/file.json");

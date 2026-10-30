@@ -7,6 +7,7 @@ Stdlib only.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -50,23 +51,37 @@ def contract_size(symbol: str | None, sizes: Mapping[str, float] | None) -> floa
     return float((sizes or {}).get(root) or 1.0)
 
 
+def _opt(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _marks_written(rows: Sequence[Any], *keys: str) -> bool:
+    """Whether the rows were written by a binary of migration 041: one of them carries a value in
+    one of the columns. Rows written before carry none, and their NULLs say nothing."""
+    return any(_get(r, k) is not None for r in rows for k in keys)
+
+
 def transform_positions(
     positions: Sequence[Any], current_value: float, sizes: Mapping[str, float] | None = None
 ) -> list[dict[str, Any]]:
+    """Today's book, one row per sleeve and symbol. A row is valued at its mark (mark_price, the
+    T-1 close); a row with no mark printed no bar and is valued at its last known price
+    (average_price), which the e-mail notes (note 4). Rows written before migration 041 have no
+    mark: they are valued at average_price, with no note."""
+    marked = _marks_written(positions, "mark_price")
     out = []
     for pos in positions:
         quantity = float(_get(pos, "quantity"))
-        average_price = float(_get(pos, "average_price"))
-        notional = abs(quantity * average_price * contract_size(_get(pos, "symbol"), sizes))
+        mark = _opt(_get(pos, "mark_price"))
+        price = mark if mark is not None else float(_get(pos, "average_price"))
+        notional = abs(quantity * price * contract_size(_get(pos, "symbol"), sizes))
         out.append(
             {
                 "symbol": _get(pos, "symbol"),
-                "name": _get(pos, "symbol").replace(".v.0", ""),
-                "shares": quantity,
+                "sleeve": _get(pos, "strategy_name") or "",
                 "quantity": quantity,
-                "costBasis": average_price,
-                "currentValue": notional,
-                "marketPrice": average_price,
+                "marketPrice": price,
+                "noBar": marked and mark is None,
                 "notional": notional,
                 "percentOfTotal": (notional / current_value * 100) if current_value > 0 else 0,
             }
@@ -77,20 +92,30 @@ def transform_positions(
 def transform_executions(
     executions: Sequence[Any], sizes: Mapping[str, float] | None = None
 ) -> list[dict[str, Any]]:
+    """The day's fills, one row per sleeve and fill. `commission` is the row's own cost (the
+    total transaction cost of its fill); `netCost` is what the account paid after netting
+    between sleeves (013): the own cost less the netting adjustment."""
     out = []
     for execution in executions:
         exec_time = _get(execution, "execution_time")
         quantity = float(_get(execution, "quantity"))
         price = float(_get(execution, "price"))
         size = contract_size(_get(execution, "symbol"), sizes)
+        own = _get(execution, "total_transaction_costs")
+        own = float(own if own is not None else (_get(execution, "commissions_fees") or 0))
+        adjustment = float(_get(execution, "netting_adjustment") or 0)
         out.append(
             {
                 "symbol": _get(execution, "symbol"),
+                "sleeve": _get(execution, "strategy_name") or "",
                 "side": _get(execution, "side"),
                 "quantity": quantity,
                 "price": price,
                 "notional": quantity * price * size,
-                "commission": float(_get(execution, "commissions_fees")),
+                "commission": own,
+                "netCost": own - adjustment,
+                "nettingAdjustment": adjustment,
+                "type": str(_get(execution, "execution_type") or "STRATEGY").upper(),
                 "date": exec_time.isoformat() if exec_time else None,
             }
         )
@@ -100,94 +125,88 @@ def transform_executions(
 def transform_finalized(
     yesterday_positions: Sequence[Any], positions: Sequence[Any]
 ) -> list[dict[str, Any]]:
-    """Yesterday's positions against today's: the lots that closed or changed."""
+    """The settled day's book, every held row of every sleeve, with the settle's P&L as stored on
+    the row (daily_realized_pnl, written when the next run settles the day).
+
+    The two prices are the ones the settle used (settle_from_price, settle_to_price) and the mark
+    says why a row booked no move (settle_mark: NO_BAR, ROLL, WITHHELD). On rows settled before
+    migration 041 they are the row's mark on the settled day and today's mark of the same row."""
+    settled = _marks_written(yesterday_positions, "settle_from_price", "settle_to_price",
+                             "settle_mark")
+    today = {(_get(p, "strategy_name") or "", _get(p, "symbol")): p for p in positions}
     out = []
     for yesterday in yesterday_positions:
+        quantity = float(_get(yesterday, "quantity"))
+        if quantity == 0:
+            continue
         symbol = _get(yesterday, "symbol")
-        yesterday_qty = float(_get(yesterday, "quantity"))
-        yesterday_price = float(_get(yesterday, "average_price"))
-
-        today_pos = next((p for p in positions if _get(p, "symbol") == symbol), None)
-        today_qty = float(_get(today_pos, "quantity")) if today_pos else 0
-        today_price = float(_get(today_pos, "average_price")) if today_pos else yesterday_price
-
-        if today_qty - yesterday_qty != 0:
-            out.append(
-                {
-                    "symbol": symbol.replace(".v.0", ""),
-                    "quantity": yesterday_qty,
-                    "entryPrice": yesterday_price,
-                    "exitPrice": today_price,
-                    "realizedPnL": float(_get(yesterday, "daily_realized_pnl") or 0),
-                }
-            )
-    return out
-
-
-def compute_return_stats(historical_data: Sequence[Mapping[str, Any]]) -> dict[str, float]:
-    """Best/worst day, drawdown, win rate, and win/loss aggregates."""
-    daily_returns = []
-    daily_pnl = []
-    for i in range(1, len(historical_data)):
-        prev_val = historical_data[i - 1]["value"]
-        curr_val = historical_data[i]["value"]
-        if prev_val > 0:
-            daily_returns.append(((curr_val - prev_val) / prev_val) * 100)
-            daily_pnl.append(curr_val - prev_val)
-
-    best_day = max(daily_returns) if daily_returns else 0
-    worst_day = min(daily_returns) if daily_returns else 0
-
-    max_drawdown = 0
-    peak = historical_data[0]["value"] if historical_data else 0
-    for point in historical_data:
-        if point["value"] > peak:
-            peak = point["value"]
-        drawdown = ((peak - point["value"]) / peak) * 100 if peak > 0 else 0
-        if drawdown > max_drawdown:
-            max_drawdown = drawdown
-
-    winning = [p for p in daily_pnl if p > 0]
-    losing = [p for p in daily_pnl if p < 0]
-    total_days = len(daily_pnl)
-    gross_profit = sum(winning) if winning else 0
-    gross_loss = abs(sum(losing)) if losing else 0
-    return {
-        "best_day": best_day,
-        "worst_day": worst_day,
-        "max_drawdown": max_drawdown,
-        "win_rate": (len(winning) / total_days * 100) if total_days > 0 else 0,
-        "avg_win": sum(winning) / len(winning) if winning else 0,
-        "avg_loss": abs(sum(losing) / len(losing)) if losing else 0,
-        "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else 0,
-    }
+        sleeve = _get(yesterday, "strategy_name") or ""
+        if settled:
+            entry = _opt(_get(yesterday, "settle_from_price"))
+            exit_ = _opt(_get(yesterday, "settle_to_price"))
+            mark = _get(yesterday, "settle_mark") or ""
+        else:
+            entry = float(_get(yesterday, "average_price"))
+            today_pos = today.get((sleeve, symbol))
+            exit_ = float(_get(today_pos, "average_price")) if today_pos else entry
+            mark = ""
+        out.append(
+            {
+                "symbol": symbol.replace(".v.0", ""),
+                "sleeve": sleeve,
+                "quantity": quantity,
+                "entryPrice": entry,
+                "exitPrice": exit_,
+                "mark": mark,
+                "realizedPnL": float(_get(yesterday, "daily_realized_pnl") or 0),
+            }
+        )
+    return sorted(out, key=lambda r: (r["sleeve"], r["symbol"]))
 
 
-def compute_sharpe(annualized_return: float, volatility: float) -> float:
-    return annualized_return / volatility if volatility > 0 else 0
+def _sizing_capital(row: Mapping[str, Any] | None) -> float | None:
+    """risk_detail.sizing_capital of the row: stored only on a day with a sized rebalance."""
+    detail = (row.get("risk_detail") if isinstance(row, Mapping) else None) or {}
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except ValueError:
+            return None
+    value = detail.get("sizing_capital") if isinstance(detail, Mapping) else None
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stored(row: Mapping[str, Any] | None, key: str) -> float | None:
+    """A stored figure of a live_results row, or None when the row or the column has none."""
+    if not row:
+        return None
+    value = row.get(key) if isinstance(row, Mapping) else getattr(row, key, None)
+    return None if value is None else float(value)
 
 
 def build_strategy_detail(cfg: Mapping[str, Any], rows: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The report's view of one portfolio. `rows` holds latest (a live_results row), equity_curve,
-    positions, executions, yesterday_positions, contract_sizes and book. None: no results yet."""
+    """The report's view of one portfolio's day. `rows` holds latest (the day's live_results row),
+    previous (the settled day's row), equity_curve, positions, executions, yesterday_positions,
+    contract_sizes, book and start. Every figure is the stored one; None: no row for the day."""
     latest = rows.get("latest")
     if not latest:
         return None
 
     equity_curve = rows.get("equity_curve") or []
     initial_equity = resolve_initial_equity(equity_curve, float(cfg["initial_equity"]))
+    if latest.get("current_portfolio_value") is None:
+        return None  # a row with no account value is not a day the report can show
     current_value = float(latest["current_portfolio_value"])
-    total_return = current_value - initial_equity
-    return_percent = (total_return / initial_equity * 100) if initial_equity > 0 else 0
+    previous = rows.get("previous")
 
     historical_data = build_historical_data(equity_curve)
     sizes = rows.get("contract_sizes")
     positions = rows.get("positions") or []
     transformed_executions = transform_executions(rows.get("executions") or [], sizes)
-    stats = compute_return_stats(historical_data)
-
-    volatility = float(latest["volatility"])
-    annualized_return = float(latest["total_annualized_return"])
+    start = rows.get("start")
 
     return {
         "id": cfg["id"],
@@ -195,47 +214,60 @@ def build_strategy_detail(cfg: Mapping[str, Any], rows: Mapping[str, Any]) -> di
         "description": cfg.get("description"),
         "invested": initial_equity,
         "currentValue": current_value,
-        "return": total_return,
-        "returnPercent": return_percent,
+        "return": _stored(latest, "total_pnl"),
+        "returnPercent": _stored(latest, "total_cumulative_return"),
         "positions": transform_positions(positions, current_value, sizes),
         "historicalData": historical_data,
-        "bestDay": stats["best_day"],
-        "worstDay": stats["worst_day"],
         "executions": transformed_executions,
         "finalizedPositions": transform_finalized(rows.get("yesterday_positions") or [], positions),
         "lastUpdate": latest["date"].isoformat(),
         "book": rows.get("book"),
+        "startDate": start.isoformat() if hasattr(start, "isoformat") else (start or None),
+        # the settled day's stored figures (the previous row, settled by today's run)
+        "previousDay": None
+        if not previous
+        else {
+            "date": previous["date"].isoformat(),
+            "dailyReturn": _stored(previous, "daily_return"),
+            "dailyUnrealizedPnL": _stored(previous, "daily_unrealized_pnl"),
+            "dailyRealizedPnL": _stored(previous, "daily_realized_pnl"),
+            "dailyTransactionCosts": _stored(previous, "daily_transaction_costs"),
+            "dailyRollCosts": _stored(previous, "daily_roll_costs"),
+            "dailyPnL": _stored(previous, "daily_pnl"),
+        },
         "metrics": {
-            "volatility": volatility,
-            "sharpeRatio": compute_sharpe(annualized_return, volatility),
-            "maxDrawdown": stats["max_drawdown"],
-            "winRate": stats["win_rate"],
-            "totalTrades": len(transformed_executions),
-            "avgWin": stats["avg_win"],
-            "avgLoss": stats["avg_loss"],
-            "profitFactor": stats["profit_factor"],
-            "dailyReturn": float_or_default(latest["daily_return"]),
-            "cumulativeReturn": return_percent,
-            "annualizedReturn": annualized_return,
+            "volatility": _stored(latest, "volatility"),
+            "sharpeRatio": _stored(latest, "sharpe_ratio"),
+            "sortinoRatio": _stored(latest, "sortino_ratio"),
+            "maxDrawdown": _stored(latest, "max_drawdown"),
+                        "totalTrades": sum(1 for e in transformed_executions if e["type"] == "STRATEGY"),
+            "cumulativeReturn": _stored(latest, "total_cumulative_return"),
+            "annualizedReturn": _stored(latest, "total_annualized_return"),
+            "totalRollCosts": _stored(latest, "total_roll_costs"),
+            # K of the statistics grid and n, the sessions the statistics are taken on (041)
+            "sessionsPerYear": _stored(latest, "statistics_sessions_per_year"),
+            "statisticsSessions": _stored(latest, "total_days"),
+            # the sizing capital the day was sized on (risk_detail, 020); None: no reading
+            "sizingCapital": _sizing_capital(latest),
             # the futures runners write gross leverage to portfolio_leverage and leave
             # gross_leverage NULL
-            "grossLeverage": float_or_default(
-                latest["gross_leverage"]
-                if latest["gross_leverage"] is not None
-                else latest["portfolio_leverage"]
-            ),
-            "netLeverage": float_or_default(latest["net_leverage"]),
-            "portfolioLeverage": float_or_default(latest["portfolio_leverage"]),
-            "marginPosted": float_or_default(latest["margin_posted"]),
-            "equityToMarginRatio": float_or_default(latest["equity_to_margin_ratio"]),
+            "grossLeverage": _stored(latest, "gross_leverage")
+            if _get(latest, "gross_leverage") is not None
+            else _stored(latest, "portfolio_leverage"),
+            "netLeverage": _stored(latest, "net_leverage"),
+            "portfolioLeverage": _stored(latest, "portfolio_leverage"),
+            "marginPosted": _stored(latest, "margin_posted"),
+            "equityToMarginRatio": _stored(latest, "equity_to_margin_ratio"),
             # stored as a fraction of equity ((equity - margin) / equity); the report prints percent
-            "marginCushion": float_or_default(latest["margin_cushion"]) * 100,
-            "totalNotional": float_or_default(latest["gross_notional"]),
-            "unrealizedPnL": float_or_default(latest["total_unrealized_pnl"]),
-            "realizedPnL": float_or_default(latest["total_realized_pnl"]),
-            "totalCommissions": float_or_default(latest["total_transaction_costs"]),
-            "netPnL": total_return,
-            "cashAvailable": float_or_default(latest["cash_available"]),
+            "marginCushion": None
+            if _get(latest, "margin_cushion") is None
+            else float(latest["margin_cushion"]) * 100,
+            "totalNotional": _stored(latest, "gross_notional"),
+            "unrealizedPnL": _stored(latest, "total_unrealized_pnl"),
+            "realizedPnL": _stored(latest, "total_realized_pnl"),
+            "totalCommissions": _stored(latest, "total_transaction_costs"),
+            "netPnL": _stored(latest, "total_pnl"),
+            "cashAvailable": _stored(latest, "cash_available"),
             "currentPortfolioValue": current_value,
         },
     }

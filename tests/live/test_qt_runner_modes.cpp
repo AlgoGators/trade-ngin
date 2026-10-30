@@ -330,7 +330,7 @@ TEST(QtCutoff, TheFallbackResetsQtToTheModelsBook) {
 }
 
 // --send e-mails only a published day, once: an unpublished day is refused, a day with sent_at is
-// left alone, and sent_at is recorded right after the send.
+// left alone (a QT_MAIL_TEST_TO preview aside), and sent_at is recorded right after the send.
 TEST(QtCutoff, TheSendIsForAPublishedDayAndOnce) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
@@ -341,7 +341,8 @@ TEST(QtCutoff, TheSendIsForAPublishedDayAndOnce) {
         ASSERT_NE(approval, npos) << runner;
         ASSERT_NE(block, npos) << runner;
         const auto unpublished = at(src, "if (state.value().published_at.empty()) {", block);
-        const auto sent = at(src, "if (!state.value().sent_at.empty()) {", block);
+        const auto sent =
+            at(src, "if (!state.value().sent_at.empty() && qt_mail_test_to.empty()) {", block);
         ASSERT_NE(unpublished, npos) << runner;
         ASSERT_NE(sent, npos) << runner;
         EXPECT_LT(at(src, "return 0;", sent), at(src, "auto book = qt::load_book(", block)) << runner;
@@ -357,8 +358,8 @@ TEST(QtHardening, ThePublishEmailIsSentOnce) {
     for (const char* runner : kRunners) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found";
-        // Inside the send callback handed to deliver_email_report (live/email_delivery.hpp).
-        const auto sent = at(src, "qt_emailed = true;\n                            if (qt_sends) {");
+        // Right after the report module's send (live/python_mail.hpp) succeeded.
+        const auto sent = at(src, "INFO(\"The book e-mail was sent\");\n                    if (qt_sends) {");
         ASSERT_NE(sent, npos) << runner;
         EXPECT_LT(at(src, "auto marked = qt::record_sent(*db, qt_audit ? qt_audit_id : 0,", sent) - sent,
                   300u)

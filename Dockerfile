@@ -53,7 +53,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libeigen3-dev \
         libnlopt-dev \
         libnlopt-cxx-dev \
-        libcurl4-openssl-dev \
         cron \
     && rm -rf /var/lib/apt/lists/*
 
@@ -121,9 +120,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libarrow-dataset-dev \
         libpq5 \
         libnlopt0 \
-        libcurl4t64 \
         cron \
-        gnuplot-nox \
         procps \
         tzdata \
     && apt-get purge -y --auto-remove gnupg lsb-release \

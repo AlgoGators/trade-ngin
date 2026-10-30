@@ -362,9 +362,10 @@ Every total below is after netting: each fill's own cost minus its adjustment.
 | `backtest.results` | `roll_costs`, `total_roll_fills` | the ROLL rows' own cost, and their count | `backtest_coordinator.cpp` |
 | `backtest.equity_curve` | `equity` | each day's value has that day's charge taken off: `value += P&L - costs` | `backtest_coordinator.cpp` |
 
-The trade statistics, each strategy's running P&L and the email's cost lines read the same figure
-(`src/backtest/backtest_metrics_calculator.cpp`, `src/strategy/base_strategy.cpp`,
-`src/core/email_sender.cpp`).
+The trade statistics and each strategy's running P&L read the same figure
+(`src/backtest/backtest_metrics_calculator.cpp`, `src/strategy/base_strategy.cpp`). The book
+e-mail's cost lines are the stored `trading.live_results` columns above, read by the report module
+(`services/rpc/algogators_rpc/services/report/calc.py`).
 
 ---
 

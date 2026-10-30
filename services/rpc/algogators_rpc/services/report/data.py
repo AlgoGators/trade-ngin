@@ -1,8 +1,9 @@
 """Read one portfolio's report inputs from the trading database (psycopg 3).
 
-The queries are AlgoLens's (research-api PostgresPortfolioRepository, PostgresReportHistory,
-PostgresContractSymbols), keyed by portfolio id. A QT portfolio keeps its own 'qt' rows next to the
-engine's 'system' rows; the book served is 'qt' when it has any position rows, else 'system'.
+Every read is of one day (the --date the engine sends) and one book: a QT portfolio keeps its own
+'qt' rows next to the engine's 'system' rows, and the book served is 'qt' when the desk's book has
+rows on that day, else 'system'. The stored figures are read as the engine wrote them; the report
+recomputes none of them.
 """
 
 from __future__ import annotations
@@ -20,70 +21,86 @@ class ReportDataError(RuntimeError):
     """The inputs for the report could not be read (the message is safe to log)."""
 
 
+# The portfolio's strategy: the one the engine names (--strategy-id, the id it stored the day
+# under), else the portfolio's first. A portfolio can register several (BASE_PORTFOLIO has two).
 REGISTRY_SQL = """
 SELECT id, strategy_type, portfolio_id, name, description, initial_equity
   FROM trading.strategy_registry
- WHERE portfolio_id = %s
+ WHERE portfolio_id = %(p)s AND (%(s)s::text IS NULL OR strategy_type = %(s)s::text)
  ORDER BY sort_order ASC, id ASC
  LIMIT 1
 """
 
-LATEST_RESULTS_SQL = """
-SELECT * FROM trading.live_results
- WHERE config::jsonb->>'strategy_type' = %s AND portfolio_id = %s
-   AND portfolio_type IN (%s, 'system')
- ORDER BY date DESC, (portfolio_type = %s) DESC
+# The served book: 'qt' when the desk's book has rows on the day, else the engine's 'system' book.
+BOOK_HAS_DAY_SQL = """
+SELECT 1 FROM trading.positions
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = 'qt' AND date = %(d)s
  LIMIT 1
 """
 
-BOOK_HAS_POSITIONS_SQL = """
-SELECT 1 FROM trading.positions
- WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
+# The day's stored row and the settled day's (the last row before it), of the served book.
+RESULTS_SQL = """
+SELECT * FROM trading.live_results
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s AND date = %(d)s
+ ORDER BY created_at DESC
  LIMIT 1
+"""
+PREVIOUS_RESULTS_SQL = """
+SELECT * FROM trading.live_results
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s AND date < %(d)s
+ ORDER BY date DESC, created_at DESC
+ LIMIT 1
+"""
+
+START_SQL = """
+SELECT MIN(live_start_date) AS start FROM trading.strategy_trading_days_metadata
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s
 """
 
 EQUITY_SQL = """
 SELECT timestamp, equity FROM trading.equity_curve
- WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s
+   AND timestamp::date <= %(d)s
  ORDER BY timestamp ASC
 """
 
-# The zero-quantity filter runs in the OUTER query, after the latest row per symbol is chosen, so
-# a flatten (a quantity-0 row on the latest date) hides the symbol instead of resurrecting an
-# older non-zero row.
-POSITIONS_SQL = """
+# The book of one date, one row per sleeve and symbol (the latest written); a flatten (quantity 0)
+# hides the row. Migration 041's columns are read through to_jsonb, so a database without them
+# still answers (NULL).
+_POSITIONS_OF = """
 SELECT * FROM (
-    SELECT DISTINCT ON (symbol)
-           symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl
-      FROM trading.positions
-     WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
-       AND date = (SELECT max(date) FROM trading.positions
-                    WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s)
-     ORDER BY symbol, updated_at DESC
-) AS latest_positions
-WHERE quantity <> 0
-ORDER BY ABS(quantity * average_price) DESC
+    SELECT DISTINCT ON (strategy_name, symbol)
+           strategy_name, symbol, quantity, average_price, daily_unrealized_pnl,
+           daily_realized_pnl,
+           (to_jsonb(p) ->> 'mark_price')::double precision AS mark_price,
+           (to_jsonb(p) ->> 'settle_from_price')::double precision AS settle_from_price,
+           (to_jsonb(p) ->> 'settle_to_price')::double precision AS settle_to_price,
+           to_jsonb(p) ->> 'settle_mark' AS settle_mark
+      FROM trading.positions p
+     WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s
+       AND date = {date}
+     ORDER BY strategy_name, symbol, updated_at DESC
+) AS day_positions
 """
-
-YESTERDAY_POSITIONS_SQL = """
-SELECT DISTINCT ON (symbol)
-       symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl
-  FROM trading.positions
- WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
-   AND date = (
-        SELECT max(date) FROM trading.positions
-         WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
-           AND date < (SELECT max(date) FROM trading.positions
-                        WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s))
- ORDER BY symbol, updated_at DESC
+POSITIONS_SQL = _POSITIONS_OF.format(date="%(d)s") + """WHERE quantity <> 0
+ORDER BY strategy_name, ABS(quantity * average_price) DESC
 """
+# The settled day's book: the last stored date before the day, its rows as stored.
+YESTERDAY_POSITIONS_SQL = _POSITIONS_OF.format(
+    date="""(SELECT max(date) FROM trading.positions
+                    WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s
+                      AND date < %(d)s)"""
+)
 
+# The day's fills, strategy fills and roll legs, with the cost the account paid after netting.
 EXECUTIONS_SQL = """
-SELECT symbol, side, quantity, price, execution_time, commissions_fees
-  FROM trading.executions
- WHERE strategy_id = %s AND portfolio_id = %s AND portfolio_type = %s
- ORDER BY execution_time DESC
- LIMIT 100
+SELECT strategy_name, symbol, side, quantity, price, execution_time, commissions_fees,
+       (to_jsonb(e) ->> 'total_transaction_costs')::double precision AS total_transaction_costs,
+       COALESCE(to_jsonb(e) ->> 'execution_type', 'STRATEGY') AS execution_type,
+       COALESCE((to_jsonb(e) ->> 'netting_adjustment')::numeric, 0) AS netting_adjustment
+  FROM trading.executions e
+ WHERE strategy_id = %(s)s AND portfolio_id = %(p)s AND portfolio_type = %(b)s AND date = %(d)s
+ ORDER BY strategy_name, execution_time, symbol
 """
 
 CONTRACT_SIZES_SQL = """
@@ -95,24 +112,18 @@ SELECT DISTINCT ON (cm."Databento Symbol")
 """
 
 # The futures runners leave gross_leverage NULL and write portfolio_leverage, so gross falls back.
-_BOOK_OF_RESULTS = """
-(SELECT CASE WHEN EXISTS (
-          SELECT 1 FROM trading.live_results
-           WHERE portfolio_id = %(p)s AND strategy_id = %(s)s AND portfolio_type = 'qt')
-        THEN 'qt' ELSE 'system' END)
-"""
 HISTORY_SQL = f"""
 SELECT date, COALESCE(gross_leverage, portfolio_leverage), net_leverage, margin_posted
   FROM trading.live_results
- WHERE portfolio_id = %(p)s AND strategy_id = %(s)s AND portfolio_type = {_BOOK_OF_RESULTS}
+ WHERE portfolio_id = %(p)s AND strategy_id = %(s)s AND portfolio_type = %(b)s AND date <= %(d)s
  ORDER BY date DESC
  LIMIT {DAYS}
 """
-CONTRACTS_SQL = f"""
-SELECT date, SUM(quantity)
+CONTRACTS_SQL = """
+SELECT date, SUM(ABS(quantity))
   FROM trading.executions
- WHERE portfolio_id = %(p)s AND strategy_id = %(s)s AND portfolio_type = {_BOOK_OF_RESULTS}
-   AND date >= %(since)s
+ WHERE portfolio_id = %(p)s AND strategy_id = %(s)s AND portfolio_type = %(b)s
+   AND date >= %(since)s AND date <= %(d)s
  GROUP BY date
  ORDER BY date
 """
@@ -137,41 +148,58 @@ def _points(rows, index):
     ]
 
 
-def fetch_registry(cur, portfolio_id: str) -> dict[str, Any]:
-    cur.execute(REGISTRY_SQL, (portfolio_id,))
+def fetch_registry(cur, portfolio_id: str, strategy_id: str | None = None) -> dict[str, Any]:
+    cur.execute(REGISTRY_SQL, {"p": portfolio_id, "s": strategy_id or None})
     row = cur.fetchone()
+    if row is None and strategy_id:
+        # The engine's strategy is not registered under that id: the portfolio's row gives the
+        # name and the capital, and the day is still read under the id it was stored under.
+        cur.execute(REGISTRY_SQL, {"p": portfolio_id, "s": None})
+        row = cur.fetchone()
+        if row is not None:
+            return {**dict(row), "strategy_type": strategy_id}
     if row is None:
         raise ReportDataError(f"portfolio {portfolio_id} is not in trading.strategy_registry")
     return dict(row)
 
 
-def fetch_detail_rows(cur, strategy_type: str, portfolio_id: str) -> dict[str, Any]:
-    """latest, equity_curve, positions, executions, yesterday_positions, contract_sizes, book."""
-    cur.execute(LATEST_RESULTS_SQL, (strategy_type, portfolio_id, QT, QT))
+def fetch_detail_rows(cur, strategy_id: str, portfolio_id: str, day: dt.date) -> dict[str, Any]:
+    """The day's inputs, all of the served book: latest (the day's live_results row), previous
+    (the settled day's row), equity_curve, positions, executions, yesterday_positions,
+    contract_sizes, book and start (the book's live start date, or None)."""
+    params = {"s": strategy_id, "p": portfolio_id, "d": day}
+    cur.execute(BOOK_HAS_DAY_SQL, params)
+    book = QT if cur.fetchone() is not None else SYSTEM
+    params["b"] = book
+
+    cur.execute(RESULTS_SQL, params)
     latest = cur.fetchone()
     if not latest:
-        return {"latest": None}
+        return {"latest": None, "book": book}
+    cur.execute(PREVIOUS_RESULTS_SQL, params)
+    previous = cur.fetchone()
+    cur.execute(START_SQL, params)
+    start_row = cur.fetchone()
 
-    cur.execute(BOOK_HAS_POSITIONS_SQL, (strategy_type, portfolio_id, QT))
-    book = QT if cur.fetchone() is not None else SYSTEM
-
-    cur.execute(EQUITY_SQL, (strategy_type, portfolio_id, book))
+    cur.execute(EQUITY_SQL, params)
     equity_curve = cur.fetchall()
-    cur.execute(POSITIONS_SQL, (strategy_type, portfolio_id, book) * 2)
+    cur.execute(POSITIONS_SQL, params)
     positions = cur.fetchall()
-    cur.execute(EXECUTIONS_SQL, (strategy_type, portfolio_id, book))
+    cur.execute(EXECUTIONS_SQL, params)
     executions = cur.fetchall()
-    cur.execute(YESTERDAY_POSITIONS_SQL, (strategy_type, portfolio_id, book) * 3)
+    cur.execute(YESTERDAY_POSITIONS_SQL, params)
     yesterday = cur.fetchall()
 
     return {
         "latest": latest,
+        "previous": previous,
         "equity_curve": equity_curve,
         "positions": positions,
         "executions": executions,
         "yesterday_positions": yesterday,
         "contract_sizes": _contract_sizes(cur, positions, executions),
         "book": book,
+        "start": start_row["start"] if start_row else None,
     }
 
 
@@ -194,9 +222,9 @@ def _contract_sizes(cur, *row_lists) -> dict[str, float]:
     return sizes
 
 
-def fetch_history(cur, portfolio_id: str, strategy_type: str) -> dict[str, list]:
-    """Leverage, margin and contracts per day for the last DAYS days (tuple cursor)."""
-    params = {"p": portfolio_id, "s": strategy_type}
+def fetch_history(cur, portfolio_id: str, strategy_id: str, book: str, day: dt.date) -> dict:
+    """Leverage, margin and contracts per day for the DAYS days through `day` (tuple cursor)."""
+    params = {"p": portfolio_id, "s": strategy_id, "b": book, "d": day}
     cur.execute(HISTORY_SQL, params)
     rows = list(reversed(cur.fetchall()))
     contracts: list = []

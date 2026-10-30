@@ -4,6 +4,9 @@
 #include "trade_ngin/data/roll_split_sql.hpp"
 #include "trade_ngin/data/day_execution_replace.hpp"
 #include <algorithm>
+#include <cmath>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <cctype>
 #include <iomanip>
@@ -647,6 +650,39 @@ Result<void> PostgresDatabase::store_positions(DbTransaction& txn,
                               table_name, book);
 }
 
+bool PostgresDatabase::positions_have_report_columns(pqxx::work& txn,
+                                                     const std::string& table_name) {
+    static std::mutex mu;
+    static std::map<std::string, bool> known;
+    std::lock_guard<std::mutex> lock(mu);
+    const auto it = known.find(table_name);
+    if (it != known.end()) return it->second;
+    const auto dot = table_name.find('.');
+    const std::string schema = dot == std::string::npos ? "public" : table_name.substr(0, dot);
+    const std::string table = dot == std::string::npos ? table_name : table_name.substr(dot + 1);
+    bool present = false;
+    try {
+        // In a subtransaction: a failed check rolls back to the savepoint, never the caller's work.
+        pqxx::subtransaction sub(txn, "report_columns_check");
+        const auto r = sub.exec(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = " +
+            txn.quote(schema) + " AND table_name = " + txn.quote(table) +
+            " AND column_name IN ('mark_price', 'settle_from_price', 'settle_to_price', "
+            "'settle_mark')");
+        present = !r.empty() && r[0][0].as<int>() == 4;
+        sub.commit();
+    } catch (const std::exception& e) {
+        WARN("Could not check " + table_name + " for migration 041's columns: " + e.what());
+        return false;
+    }
+    if (!present) {
+        WARN(table_name + " has no mark_price / settle_* columns (migration 041 not applied): "
+             "positions are stored without them and the book e-mail shows no settle notes");
+    }
+    known[table_name] = present;
+    return present;
+}
+
 Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                                   const std::vector<Position>& positions,
                                                   const std::string& strategy_id,
@@ -665,6 +701,13 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
         // desk's request and what the engine gave back), is refused before anything is deleted.
         if (auto bv = validate_book(book); bv.is_error()) return bv;
         for (const auto& pos : positions) {
+            if (!pos.settle_mark.empty() && pos.settle_mark != "NO_BAR" &&
+                pos.settle_mark != "ROLL" && pos.settle_mark != "WITHHELD") {
+                return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                        "settle_mark '" + pos.settle_mark + "' on " + pos.symbol +
+                                            " is not NO_BAR, ROLL or WITHHELD",
+                                        "PostgresDatabase");
+            }
             if (!pos.moved_by.empty() && book != "qt") {
                 return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                         "moved_by is set on " + pos.symbol + " in the " + book +
@@ -672,6 +715,10 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                         "PostgresDatabase");
             }
         }
+        // Migration 041's columns are written once the database has them. Before the migration is
+        // applied the rows are stored without them (one WARN), never refused: the e-mail's notes
+        // are worth less than the day's book.
+        const bool with_report_columns = positions_have_report_columns(txn, table_name);
         // Defense-in-depth -- validate ALL string identifiers
         // that flow into SQL via concatenation (positions VALUES tuple is
         // built with single-quoted concat below; we rely on the allowlist
@@ -773,8 +820,20 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                              : txn.quote(pos.instrument_id))
                << ", "  // instrument_id (016; NULL when unknown or not a futures row)
                << txn.quote(book) << ", "  // portfolio_type (021; validated above)
-               << (pos.moved_by.empty() ? std::string("NULL") : txn.quote(pos.moved_by))
-               << ")";  // moved_by (021; qt only, NULL when nothing moved the symbol)
+               << (pos.moved_by.empty() ? std::string("NULL") : txn.quote(pos.moved_by));
+            // moved_by (021; qt only, NULL when nothing moved the symbol)
+            if (with_report_columns) {  // migration 041: what the book e-mail shows of the row
+                const auto number = [](const std::optional<double>& v) {
+                    std::ostringstream n;
+                    n << std::setprecision(17);
+                    if (v && std::isfinite(*v)) n << *v; else n << "NULL";
+                    return n.str();
+                };
+                ss << ", " << number(pos.mark_price) << ", " << number(pos.settle_from_price)
+                   << ", " << number(pos.settle_to_price) << ", "
+                   << (pos.settle_mark.empty() ? std::string("NULL") : txn.quote(pos.settle_mark));
+            }
+            ss << ")";
 
             position_values.push_back(ss.str());
         }
@@ -786,8 +845,13 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                                     " (symbol, quantity, average_price, daily_unrealized_pnl, "
                                     "daily_realized_pnl, last_update, updated_at, strategy_id, "
                                     "strategy_name, date, portfolio_id, instrument_id, "
-                                    "portfolio_type, moved_by) VALUES " +
-                                    join(position_values, ", ");
+                                    "portfolio_type, moved_by" +
+                                    (with_report_columns ? std::string(", mark_price, "
+                                                                       "settle_from_price, "
+                                                                       "settle_to_price, "
+                                                                       "settle_mark")
+                                                         : std::string()) +
+                                    ") VALUES " + join(position_values, ", ");
 
                 DEBUG("Executing position insert query: " + query);
                 txn.exec(query);
@@ -3005,6 +3069,28 @@ PostgresDatabase::get_corporate_actions(
             ErrorCode::DATABASE_ERROR,
             "Failed to fetch corporate actions: " + std::string(e.what()),
             "PostgresDatabase");
+    }
+}
+
+Result<bool> PostgresDatabase::has_column(const std::string& schema, const std::string& table,
+                                          const std::string& column) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<bool>(validation.error()->code(), validation.error()->what());
+    }
+    try {
+        pqxx::work txn(*connection_);
+        const pqxx::result r = txn.exec_params(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 "
+            "AND column_name = $3",
+            schema, table, column);
+        txn.commit();
+        return Result<bool>(!r.empty());
+    } catch (const std::exception& e) {
+        return make_error<bool>(ErrorCode::DATABASE_ERROR,
+                                "Failed to check " + schema + "." + table + "." + column + ": " +
+                                    std::string(e.what()),
+                                "PostgresDatabase");
     }
 }
 

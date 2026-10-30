@@ -174,15 +174,12 @@ const std::vector<Site> kFuturesSites = {
      "the processing-time print: a console line"},
     {"std::chrono::system_clock::now() - now)",
      "the processing-time print"},
-    {"live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));",
-     "the report plan (send, or write the body to a file, or neither): "
-     "EmailReportPlan.* (tests/live/test_email_body_file.cpp)"},
-    {"if (email_plan.send) {",
-     "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
-     "arm itself is never run by a test, by rule (it mails)"},
-    {"auto send_result = email_sender->send_email(mail_subject, mail_body,",
-     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
-     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
+    {"if (send_email && !day_store_failures.empty()) {",
+     "DECISION: a day whose stores failed is not mailed (the e-mail reads the stored day); "
+     "exit 4"},
+    {"} else if (send_email) {",
+     "DECISION: mail, on --send-email only: the book e-mail through the report module "
+     "(live/python_mail.hpp); the send arm itself is never run by a test, by rule (it mails)"},
 };
 
 // --- the equity runner ------------------------------------------------------------------------
@@ -231,15 +228,12 @@ const std::vector<Site> kEquitySites = {
      "the processing-time print: a console line"},
     {"std::chrono::system_clock::now() - now).count() << \"ms\" << std::endl;",
      "the processing-time print"},
-    {"live::plan_email_report(send_email, std::getenv(live::kEmailBodyDirEnv));",
-     "the report plan (send, or write the body to a file, or neither): "
-     "EmailReportPlan.* (tests/live/test_email_body_file.cpp)"},
-    {"if (email_plan.send) {",
-     "DECISION: mail, on --send-email only. The plan: EmailReportPlan.*; the send "
-     "arm itself is never run by a test, by rule (it mails)"},
-    {"email_sender->send_email(mail_subject, mail_body, true, attachments);",
-     "the send itself, handed to deliver_email_report as its sender; the file-or-send "
-     "choice is made there: EmailDelivery.* (tests/live/test_email_delivery.cpp)"},
+    {"if (send_email && persist_failed) {",
+     "DECISION: a day whose results were not stored is not mailed (the e-mail reads the stored "
+     "day); exit 4"},
+    {"} else if (send_email) {",
+     "DECISION: mail, on --send-email only: the book e-mail through the report module "
+     "(live/python_mail.hpp); the send arm itself is never run by a test, by rule (it mails)"},
 };
 
 // --- every other file under apps/ (none is a live runner) --------------------------------------
@@ -329,11 +323,6 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
     {"src/core/config_loader.cpp",
      {"the backtest window; no live runner calls it",
       {"std::tm* local_tm = std::localtime(&now_time_t);"}}},
-    {"src/core/email_sender.cpp",
-     {"the MIME boundary of a sent mail; a chart query's column stamp",
-      {"std::string outer_boundary = \"----=_Outer_\" + std::to_string(std::time(nullptr));",
-       "std::string inner_boundary = \"----=_Inner_\" + std::to_string(std::time(nullptr));",
-       "\"  CURRENT_TIMESTAMP AS \\\"time\\\",\""}}},
     {"src/core/logger.cpp",
      {"log file names and line stamps",
       {"auto now = std::chrono::system_clock::now();",
@@ -397,6 +386,10 @@ const std::map<std::string, std::pair<const char*, std::vector<std::string>>> kL
        "db, \"WITH m AS (UPDATE trading.live_run_metadata SET sent_at = now()\" +",
        "\"now()::text) WHERE id = \" + std::to_string(row_id) +",
        "const char* flag = std::getenv(\"QT_EMAIL_DISABLED\");"}}},
+    {"src/live/python_mail.cpp",
+     {"the report module's settings (QT_MAIL_PYTHON, QT_MAIL_APP, QT_MAIL_TIMEOUT, "
+      "QT_MAIL_TEST_TO); none is a mode",
+      {"const char* v = std::getenv(name);"}}},
     {"src/live/live_pnl_manager.cpp",
      {"a snapshot stamp nothing stores",
       {"snapshot.timestamp = std::chrono::system_clock::now();"}}},

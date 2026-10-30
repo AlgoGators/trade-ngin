@@ -82,7 +82,8 @@ def test_render_has_every_section_and_inline_images():
         "Symbols reference",
         "metadata not found for: 6E",
         "Rollover notice",
-        "CLZ6",
+        "SIZ6",
+        "Silver, December to March: market move booked",
     ):
         assert needle in out.html
     assert set(out.images) == {

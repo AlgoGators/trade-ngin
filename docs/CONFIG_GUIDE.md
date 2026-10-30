@@ -560,27 +560,29 @@ decision a `none` module records: `config_template/README.md` gives the hand ste
 
 ### email.json
 
-Configures email notifications.
+Configures the book e-mail. It is read by the Python report module
+(`services/rpc/algogators_rpc/services/report`; the SMTP keys through `load_smtp` in
+`services/rpc/algogators_rpc/services/desk/override_mail.py`), not by the C++ runners.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `smtp_host` | string | SMTP server hostname |
-| `smtp_port` | number | SMTP port (typically 587 for TLS) |
+| `smtp_port` | number | SMTP port; 587 when absent. Port 465 is implicit TLS |
 | `username` | string | SMTP authentication username |
 | `password` | string | SMTP authentication password |
-| `from_email` | string | The sender address of every report, on all three runners |
-| `use_tls` | boolean | Present and not read: it is copied into the sender's config and nothing consults it. The sender always asks for TLS (`src/core/email_sender.cpp`) |
-| `to_emails` | array | The recipients of every report the runners mail, the scheduled run's included (`apps/strategies/live_portfolio_conservative.cpp`) |
+| `from_email` | string | The sender address of every report; the `username` when empty or a `YOUR_` placeholder |
+| `use_tls` | boolean | On a port other than 465, `true` asks for STARTTLS and `false` sends in the clear. Absent means `true` |
+| `to_emails` | array | The To recipients of the book e-mail. The QT approvers (`QT_APPROVERS`) and `QT_MAIL_CC` go in Cc. An address listed twice is mailed once. |
+| `enabled` | boolean | Optional. `false` turns the e-mail off: the module sends nothing and fails |
 
 A live run mails only with `--send-email`; a run with no date is refused with the usage, exit 2
 (`kDatelessRunExitCode`, `include/trade_ngin/live/run_args.hpp`).
 
-`TRADE_NGIN_EMAIL_BODY_DIR` applies to a live run that does not send, on all three runners: with
-the variable set to a directory, the run builds the report body exactly as for a send, writes it
-there as `email_body_<portfolio>_<date>.html` and mails nothing. With `--send-email` the variable
-is ignored with one warning line in the log, and the report is mailed as usual
-(`plan_email_report`, `include/trade_ngin/live/email_body_file.hpp`). The running instructions
-are in `src/live/README.md` ("Environment").
+With `--send-email` the runner, after storing the day, runs
+`python -m algogators_rpc.services.report --portfolio-id <id> --date <date>`
+(`include/trade_ngin/live/python_mail.hpp`); a send that fails exits 4. To look at a day's report
+without mailing it, run the module with `--preview-dir DIR`. The running instructions are in
+`src/live/README.md` ("Environment").
 
 ---
 
@@ -803,7 +805,6 @@ mean "may be deleted": the third column says where deleting or changing one stop
 | `risk_reporting.lookback_period` (`risk.json`) | Validated and compared with the module's value. The report's risk reading does not use it. | Yes: required (`src/risk/risk_module_config.cpp`). |
 | `risk_reporting.type`, `risk_reporting.window` (`risk.json`) | One value each is accepted, `carver` and `all_bars`. They select nothing. | Yes: required (`src/risk/risk_module_config.cpp`). |
 | `max_drawdown` (`risk.json`) | Copied to every sleeve. Its one use is a warning line when a sleeve's cumulative P&L over its allocated capital is below minus the value; the sleeve keeps running and nothing is cut (`src/strategy/base_strategy.cpp`; `apps/strategies/live_portfolio_conservative.cpp`). | Yes: required, in (0, 1] (`src/risk/risk_module_config.cpp`). |
-| `use_tls` (`email.json`) | Copied into the sender's config and read by nothing. The sender always asks for TLS (`src/core/email_sender.cpp`; `apps/strategies/live_portfolio_conservative.cpp`). | No. |
 
 Any other key that begins with an underscore is a note and is not read as a value. The
 exceptions are the underscore keys `risk.json` requires where the rules under

@@ -27,6 +27,7 @@
 #include <unordered_set>
 
 #include "trade_ngin/core/report_price_text.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -143,6 +144,31 @@ inline SettledPriceCells settled_price_cells(std::optional<double> previous,
     cells.no_bar = !latest.has_value();
     cells.latest = latest ? report_price_dollars_places(*latest, places) : std::string(kSettledNoBar);
     return cells;
+}
+
+/**
+ * @brief Migration 041: a settled (Day T-1) row stamped with what the book e-mail shows of it:
+ *        the two prices the settle used (settled_table_prices) and why it booked no move.
+ *
+ * NO_BAR: the symbol printed no bar that day (it is not in the "settled at" prices); ROLL /
+ * WITHHELD: a $0.00 row on a roll bar or a rejected price (settled_zero_note, the C++ e-mail's
+ * footnotes 2 and 3). A flat row carries no mark.
+ */
+inline void stamp_settled_row(Position& row, const SettledTablePrices& prices,
+                              const SettledZeroKinds& kinds) {
+    row.settle_from_price = settled_price_of(prices.previous, row.symbol);
+    row.settle_to_price = settled_price_of(prices.latest, row.symbol);
+    row.settle_mark.clear();
+    const double quantity = row.quantity.as_double();
+    if (quantity == 0.0) return;
+    if (!row.settle_to_price) {
+        row.settle_mark = "NO_BAR";
+        return;
+    }
+    const int note = settled_zero_note(false, row.symbol, quantity, row.settle_from_price,
+                                       row.settle_to_price, row.realized_pnl.as_double(), kinds);
+    if (note == kSettledNoteRoll) row.settle_mark = "ROLL";
+    if (note == kSettledNoteNotAccepted) row.settle_mark = "WITHHELD";
 }
 
 }  // namespace trade_ngin

@@ -321,7 +321,7 @@ inline std::string sizing_capital_unsettled_log_line(const std::string& run_date
 }
 
 /// The mark and flag of a sizing hold: today's live_run_metadata row's risk_refusal (through
-/// mark_risk_refusal), the email flag (flag_email_body_for_risk_module_failure names it by its
+/// mark_risk_refusal), the book e-mail's alert (risk_module_failure_text names it by its
 /// scope) and the exit code (live_run_exit_code: kRiskModuleFailureExitCode). The keys are
 /// sleeve_risk_module_failure's, so the watchdog and the email read it as they read a held
 /// sleeve; scope "sizing" and module "SIZING_CAPITAL" say what refused.

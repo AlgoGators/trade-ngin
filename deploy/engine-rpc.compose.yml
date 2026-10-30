@@ -65,7 +65,7 @@ services:
       # portfolios/<dir>/portfolio.json (portfolio_id -> --portfolio-config <dir>), email.json
       # (override e-mail and alert SMTP) and defaults.json, read-only.
       - ./config:/app/config:ro
-      # Credential store read by EmailSender for the publish e-mail ({"database", "email"}, mode 600).
+      # Credential store file for CredentialStore ({"database", "email"}, mode 600); the book e-mail does not read it.
       - ./config.json:/app/config.json:ro
       # flock(1) locks: desk jobs, the catch-up model runs and the watchdog all take them here.
       - qt-locks:/tmp/qt-locks

@@ -29,7 +29,6 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
-#include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
@@ -310,14 +309,8 @@ TEST_F(SleeveRiskModuleFailureTest, TheEmailFlagNamesTheSleeveAndSaysTheOthersTr
     run_two_days();
     const auto failure = sleeve_risk_module_failure(pm_->last_risk_decisions());
     ASSERT_TRUE(failure.has_value());
-    EmailSender sender{EmailSenderConfig{}};
-    const std::string body = sender.generate_trading_report_body(
-        StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, {},
-        StrategyExecutionsMap{}, "2026-05-01", "BASE_PORTFOLIO");
-    const std::string flagged = flag_email_body_for_risk_module_failure(body, *failure);
-    EXPECT_EQ(risk_module_failure_email_subject("Daily Trading Report - 2026-05-01"),
-              "[RISK MODULE FAILED - BOOK HELD] Daily Trading Report - 2026-05-01");
-    EXPECT_NE(flagged.find(std::string("the sleeve risk module sleeve_cutter could not evaluate "
+    const std::string flagged = risk_module_failure_text(*failure);
+    EXPECT_NE(flagged.find(std::string("The sleeve risk module sleeve_cutter could not evaluate "
                                        "sleeve TF's book (") +
                            kInjected +
                            "). That sleeve is held at the previous day's positions and sent no "
@@ -359,8 +352,8 @@ TEST(SleeveRiskModuleFailureSource, BothTwinsFlagMarkAndExitOnASleeveFailure) {
         // The exit code and the email flag are the portfolio rule's, driven by the same variable.
         EXPECT_NE(src.find("return live::futures_run_exit_code(risk_module_failure, email_failed);"),
                   npos);
-        EXPECT_NE(src.find("risk_module_failure, skip_strategy_processing, carried_day_note,"), npos)
-            << "the email flag is put on by deliver_email_report (EmailDelivery.*)";
+        EXPECT_NE(src.find("mail.alert = risk_module_failure_text(*risk_module_failure);"), npos)
+            << "the failure is handed to the report module as its alert";
         blocks[i++] = block;
     }
     EXPECT_EQ(blocks[0], blocks[1]) << "the twins' blocks differ";

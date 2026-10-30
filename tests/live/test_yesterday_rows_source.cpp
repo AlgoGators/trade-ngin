@@ -53,11 +53,9 @@ TEST(YesterdayRowsSource, BothFuturesRunnersPrintYesterdayFromTheRowsReadBackAft
         const auto finalize_write = src.find("Day T-1 positions with finalized PnL for strategy: ");
         const auto read_back = src.find("read_back_finalized_books(");
         const auto csv = src.find("csv_exporter->export_finalized_positions(");
-        const auto email = src.find("email_sender->generate_trading_report_body(");
         ASSERT_NE(early_load, std::string::npos) << runner;
         ASSERT_NE(finalize_write, std::string::npos) << runner;
         ASSERT_NE(csv, std::string::npos) << runner;
-        ASSERT_NE(email, std::string::npos) << runner;
         ASSERT_NE(read_back, std::string::npos)
             << runner << ": yesterday's rows are not read back after the finalize write";
 
@@ -66,10 +64,8 @@ TEST(YesterdayRowsSource, BothFuturesRunnersPrintYesterdayFromTheRowsReadBackAft
         EXPECT_GT(read_back, finalize_write)
             << runner << ": the read-back runs before the finalize write, so it reads the placeholder";
         EXPECT_LT(read_back, csv) << runner;
-        EXPECT_LT(read_back, email) << runner;
 
-        for (const char* call : {"csv_exporter->export_finalized_positions(",
-                                 "email_sender->generate_trading_report_body("}) {
+        for (const char* call : {"csv_exporter->export_finalized_positions("}) {
             const std::string text = call_text(src, call);
             EXPECT_NE(text.find("finalized_strategy_positions"), std::string::npos)
                 << runner << ": " << call << " is not handed the rows read back after the finalize";

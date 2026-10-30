@@ -259,7 +259,9 @@ what the STRATEGY fills cost (plus the BORROW rows on an equity book, which has 
   (`live_portfolio_conservative.cpp`); the day's `live_run_metadata` row and its signals are
   already stored by then and none of the day's executions is.
 
-The email shows the roll figures as its own lines (`src/core/email_sender.cpp`).
+The book e-mail shows the roll figures as their own lines: the day's roll legs in a table of their
+own (costs only, not trades) and the stored `daily_roll_costs` and `total_roll_costs`
+(`services/rpc/algogators_rpc/services/report/builder.py`).
 
 ## 8. Trade statistics across a roll
 

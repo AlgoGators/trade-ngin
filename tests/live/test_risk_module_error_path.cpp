@@ -37,7 +37,6 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "../risk/risk_module_test_helpers.hpp"
-#include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
@@ -448,7 +447,7 @@ TEST(RiskModuleErrorPathSource, BothTwinsExitNonZeroAfterStoringTheDay) {
         // After everything a REFUSE day stores: positions, live_results, the email.
         const auto positions = src.find("store_positions");
         const auto results_insert = src.find("INSERT INTO trading.live_results");
-        const auto send = src.find("email_sender->send_email(mail_subject, mail_body,");
+        const auto send = src.find("live::send_via_python(mail, live::python_mail_settings_from_env())");
         ASSERT_NE(send, npos);
         EXPECT_LT(send, ret);
         if (positions != npos) EXPECT_LT(positions, ret);
@@ -470,62 +469,33 @@ TEST_F(RiskModuleErrorPathTest, TheEmailIsFlaggedOnAHeldDay) {
     const auto failure = portfolio_risk_module_failure(pm_->last_risk_decisions());
     ASSERT_TRUE(failure.has_value());
 
-    // The body the runners send, from the real builder (the overload both futures runners call;
-    // no positions, since the test symbol has no instrument in the registry the builder reads).
-    EmailSender sender{EmailSenderConfig{}};
-    const std::string body = sender.generate_trading_report_body(
-        StrategyPositionsMap{}, std::unordered_map<std::string, Position>{}, std::nullopt, {},
-        StrategyExecutionsMap{}, "2026-05-01", "CONSERVATIVE_PORTFOLIO");
-    ASSERT_NE(body.find("<div class=\"container\">\n"), npos) << "the builder's layout moved";
-
-    const std::string flagged = flag_email_body_for_risk_module_failure(body, *failure);
-    const std::string subject = risk_module_failure_email_subject("Daily Trading Report - 2026-05-01");
-
-    EXPECT_EQ(subject, "[RISK MODULE FAILED - BOOK HELD] Daily Trading Report - 2026-05-01");
-    const auto flag = flagged.find("<strong>RISK MODULE FAILED - BOOK HELD:</strong>");
-    ASSERT_NE(flag, npos) << "no visible flag in the body";
-    EXPECT_NE(flagged.find("the portfolio risk module carver could not evaluate today's book (" +
-                           std::string(kInjectedError) + ")"),
-              npos);
-    EXPECT_NE(flagged.find("Every strategy is held at the previous day's positions and no orders "
-                           "were generated. The run exited with code 3."),
-              npos);
-    EXPECT_LT(flag, flagged.find("Daily Trading Report</h1>"))
-        << "the flag opens the report, above the header";
-    EXPECT_GT(flag, flagged.find("<div class=\"container\">")) << "inside the report container";
-    // Nothing else of the body is touched.
-    EXPECT_EQ(flagged.size(),
-              body.size() + risk_module_failure_email_banner(*failure).size());
+    // What the runners hand the report module as --alert: it opens the e-mail and flags its
+    // subject ([RISK MODULE FAILED - BOOK HELD], services/rpc/.../report/__main__.py).
+    const std::string text = risk_module_failure_text(*failure);
+    EXPECT_NE(text.find("The portfolio risk module carver could not evaluate today's book (" +
+                        std::string(kInjectedError) + ")"),
+              npos)
+        << text;
+    EXPECT_NE(text.find("Every strategy is held at the previous day's positions and no orders "
+                        "were generated. The run exited with code 3."),
+              npos)
+        << text;
 }
 
-TEST(RiskModuleErrorPathEmail, TheFlagEscapesTheErrorText) {
-    nlohmann::json failure = {{"module", "carver"}, {"error", "x < y & \"z\""}};
-    const std::string banner = risk_module_failure_email_banner(failure);
-    EXPECT_NE(banner.find("(x &lt; y &amp; &quot;z&quot;)"), npos) << banner;
-    EXPECT_EQ(banner.find("x < y"), npos);
-    // A body without the builder's container still carries the flag, first.
-    EXPECT_EQ(flag_email_body_for_risk_module_failure("<p>plain</p>", failure).find(banner), 0u);
-}
-
-// The flags are put on the subject and the body inside deliver_email_report, which both twins call
-// with the day's risk_module_failure, after the body is built and before the one send; the flags
-// themselves are executed by EmailDelivery.* (tests/live/test_email_delivery.cpp).
+// Both twins hand the day's failure and carry to the report module, before the one send.
 TEST(RiskModuleErrorPathSource, BothTwinsFlagTheEmailBeforeSendingIt) {
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
-        const auto body = src.find("std::string email_body = email_sender->generate_trading_report_body(");
-        const auto deliver = src.find("live::deliver_email_report(");
-        const auto send = src.find("email_sender->send_email(mail_subject, mail_body,");
-        ASSERT_NE(body, npos);
-        ASSERT_NE(deliver, npos);
+        const auto alert = src.find("mail.alert = risk_module_failure_text(*risk_module_failure);");
+        const auto carried = src.find("mail.no_session = skip_strategy_processing;");
+        const auto send = src.find("live::send_via_python(mail, live::python_mail_settings_from_env())");
+        ASSERT_NE(alert, npos) << "the day's failure is not handed to the report module";
+        ASSERT_NE(carried, npos) << "a carried day is not handed to the report module";
         ASSERT_NE(send, npos);
-        EXPECT_LT(body, deliver);
-        EXPECT_LT(deliver, send) << "the send is the sender handed to deliver_email_report";
-        EXPECT_NE(src.find("risk_module_failure, skip_strategy_processing, carried_day_note,", deliver),
-                  npos)
-            << "the day's flags are not handed to the delivery";
+        EXPECT_LT(alert, send);
+        EXPECT_LT(carried, send);
     }
 }
 
@@ -539,8 +509,8 @@ TEST(RiskModuleErrorPathSource, TheTwinsCarryTheSameErrorPathBlocks) {
          "        // NORMAL TRADING DAY PROCESSING"},
         {"            // PORTFOLIO RISK MODULE FAILURE",
          "            if (port_process_result.is_error())"},
-        {"                    // The day's flags, then the body file or the one send",
-         "                    if (!delivery.ok) {"},
+        {"        // The book e-mail (live/python_mail.hpp)",
+         "        } else {\n            INFO(\"Email reporting disabled\");"},
         {"        if (risk_module_failure) {\n            ERROR(\"RISK_MODULE_FAILURE the day",
          "    } catch (const std::exception& e) {"},
     };

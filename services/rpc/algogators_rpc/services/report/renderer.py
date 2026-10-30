@@ -85,8 +85,13 @@ class HtmlReportRenderer:
             ("composition", "Portfolio composition", report.composition, charts.composition),
         ):
             if data:
-                images[cid] = draw(data)
-                chart_rows.append({"cid": cid, "title": title})
+                try:
+                    images[cid] = draw(data)
+                except Exception as exc:  # noqa: BLE001 - a chart's failure is its own line
+                    chart_rows.append({"cid": "", "title": title,
+                                       "missing": f"not shown ({type(exc).__name__})"})
+                    continue
+                chart_rows.append({"cid": cid, "title": title, "missing": ""})
 
         subject = daily.subject(report)
         pnl = (

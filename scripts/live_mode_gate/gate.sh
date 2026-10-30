@@ -47,15 +47,7 @@
 # NEVER: a run without a date, --send-email, a host other than 127.0.0.1, a database whose name does
 # not hold "scratch". The gate writes to the three live books of the database it is given.
 #
-# THE CHART RULE. A chart process that does not finish in time is killed and that one chart block is left
-# out of the report (the run's log says so). Two runs that did the same thing can therefore differ by a
-# chart block, so the bodies are compared by compare_bodies.py: byte for byte when neither run's log holds
-# a chart timeout line; otherwise with the chart blocks taken out, each side allowed to lack no more charts
-# than its own log has timeout lines. Any other difference fails. The verdict of every pair is kept in
-# $GATE_OUT/proofs/bodies.txt.
-#
-#   usage: [GATE_SWITCH=on] GATE_WORKTREE=<built linked worktree> GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... \
-#          GATE_RUN_LOCK=... GATE_PG_ENV=... \
+#   usage: [GATE_SWITCH=on] GATE_WORKTREE=<built linked worktree> GATE_OUT=<empty dir> GATE_S0_DIR=... GATE_CONFIG_SRC=... \n#          GATE_RUN_LOCK=... GATE_PG_ENV=... \
 #          scripts/live_mode_gate/gate.sh <scratch database> [conservative-arm base-arm equity-arm]
 #   GATE_WORKTREE is required and may not be the main checkout: the gate writes its run config into that
 #   tree and deletes the logs its runs leave there.
@@ -84,16 +76,6 @@ tag="${DB#new_algo_data_scratch_stage3_}"
 dir() { echo "$R/live_${1}gate_${tag}_${2}_${3}_${4}${5:+_$5}" }   # <pf prefix> <arm> <unit> <mode> [label]
 same() { python3 "$HERE/compare_csv_dirs.py" --tol 0 "$1" "$2" > "$OUT/proofs/$3.txt" 2>&1 }
 rcs() { grep -a " rc=" "$1/progress.txt" | sed -E 's/.*run-date ([0-9-]+) host-date ([0-9-]+) rc=([0-9]+).*/\1@\2=\3/' | tr '\n' ' ' }
-bodies_same() {   # <run A> <run B> <date ...>: the report bodies of the dates, under the chart rule
-  local a="$1" b="$2" d v rc fa fb; shift 2
-  for d in "$@"; do
-    fa=("$a"/email/$d/*.html(N)); fb=("$b"/email/$d/*.html(N))
-    [ ${#fa} -eq 1 ] && [ ${#fb} -eq 1 ] || { echo "   body of $d is missing" >> "$G"; return 1 }
-    v=$(python3 "$HERE/compare_bodies.py" "$fa[1]" "$a/logs/$d.log.gz" "$fb[1]" "$b/logs/$d.log.gz"); rc=$?
-    echo "${a:t} against ${b:t} $d: $v" >> "$OUT/proofs/bodies.txt"
-    [ $rc -eq 0 ] || { echo "   body of $d: $v" >> "$G"; return 1 }
-  done
-}
 log() { gzip -dc "$1"/logs/"$2".log.gz }
 
 clang -dynamiclib -O1 -o "$OUT/hostclock_shim.dylib" "$HERE/hostclock_shim.c" || { say "FAIL  the clock shim did not build"; exit 1 }
@@ -138,7 +120,6 @@ import csv,sys
 print(max(r[\"date\"][:10] for r in csv.DictReader(open(sys.argv[1]))))" "$C2/snap_before_restart/trading_live_results.csv")" = 2026-04-25 ] && [ "$(python3 -c "
 import csv,sys
 print(max(r[\"date\"][:10] for r in csv.DictReader(open(sys.argv[1]))))" "$C2/snap_before_restart/trading_positions.csv")" = 2026-04-25 ]'
-check "CONSERVATIVE the report bodies of the two complete days are identical in both modes" 'bodies_same "$C3" "$C2" 2026-04-24 2026-04-25'
 check "CONSERVATIVE the restart: eight missed dates run in order on a later day, every exit 0" '[ "$(grep -a "host-date 2026-05-04 rc=0" "$C2/progress.txt" | wc -l | tr -d " ")" = 8 ]'
 check "CONSERVATIVE after the restart every stored table is identical to the past-date chain" 'same "$C3/snap" "$C2/snap" conservative_restart_vs_past_date'
 
@@ -153,7 +134,6 @@ export RANGE_START=2026-04-24 RANGE_END=2026-04-26
 MODE=M3 PF=base run $ARM_B chain;        B3=$(dir base_ $ARM_B chain M3)
 MODE=M2 PF=base run $ARM_B prodrestart;  B2=$(dir base_ $ARM_B prodrestart M2)
 check "BASE production mode: two complete days, then 2026-04-26 REFUSED" '[[ "$(rcs "$B2")" == "2026-04-24@2026-04-24=0 2026-04-25@2026-04-25=0 2026-04-26@2026-04-26=1 "* ]] && log "$B2" 2026-04-26 | grep -aq "FEED_HOLE_REFUSAL held symbol .* Refusing to run live"'
-check "BASE the report bodies of the two complete days are identical in both modes" 'bodies_same "$B3" "$B2" 2026-04-24 2026-04-25'
 check "BASE after the restart every stored table is identical to the past-date chain" 'same "$B3/snap" "$B2/snap" base_restart_vs_past_date'
 
 # ---- 3. EQUITY -------------------------------------------------------------------------------------
@@ -162,7 +142,6 @@ MODE=M3 PF=equity_mr run $ARM_E chain;      E3=$(dir equity_ $ARM_E chain M3)
 MODE=M2 PF=equity_mr run $ARM_E chain;      E2=$(dir equity_ $ARM_E chain M2)
 check "EQUITY five dates, every exit 0 in both modes" '[ "$(grep -ac " rc=0 " "$E3/progress.txt")$(grep -ac " rc=0 " "$E2/progress.txt")" = 55 ]'
 check "EQUITY every stored table identical in both modes" 'same "$E3/snap" "$E2/snap" equity_production_vs_past_date'
-check "EQUITY the report bodies of the five dates are identical in both modes" 'bodies_same "$E3" "$E2" 2026-06-15 2026-06-16 2026-06-17 2026-06-18 2026-06-19'
 REFUSED_DATE=2026-06-24 MODE=M3 PF=equity_mr run $ARM_E refused;  ER=$(dir equity_ $ARM_E refused M3)
 check "EQUITY a run whose previous day never ran is refused (exit 1)" 'grep -aq ": 1$" "$ER/exit_code.txt" && log "$ER" 2026-06-24 | grep -aq "A run was missed"'
 check "EQUITY the refused run stored nothing, the run-metadata row included" 'same "$ER/snap_before" "$ER/snap" equity_refused_run_stored_nothing'

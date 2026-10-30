@@ -142,8 +142,6 @@ else()
     pkg_check_modules(PQXX REQUIRED libpqxx)
 endif()
 
-# Find curl for email functionality
-find_package(CURL REQUIRED)
 
 if(NOT WIN32)
 add_library(libpqxx::pqxx UNKNOWN IMPORTED)
@@ -168,8 +166,6 @@ set(TRADE_NGIN_SOURCES
     src/core/config_base.cpp
     src/core/config_loader.cpp
     src/core/logger.cpp
-    src/core/email_sender.cpp
-    src/core/chart_generator.cpp
     src/core/run_id_generator.cpp
     src/data/postgres_database.cpp
     src/data/postgres_database_extensions.cpp
@@ -301,7 +297,6 @@ target_link_libraries(trade_ngin
         nlohmann_json::nlohmann_json
         libpqxx::pqxx
         Arrow::arrow_shared
-        CURL::libcurl
         Eigen3::Eigen
         NLopt::nlopt
 )
