@@ -274,12 +274,12 @@ TEST_F(ChangeBarPnlTest, APerContractRollBarBooksTheOldContractsMove) {
     std::vector<Bar> consumed;
     for (int d = 1; d <= 4; ++d) {
         Bar ng = bar("NG.v.0", d, d == 4 ? 3.965 : 3.3 + 0.01 * d, d == 4 ? "863" : "864");
-        if (d == 4) ng.roll_from = RollFrom{3.41, "864", RollFromKind::KNOWN};
+        if (d == 4) ng.roll_from = RollFrom{3.41, "864", RollFromKind::KNOWN, ""};
         consumed.push_back(ng);
         // ES day 3: a vendor switch the next bar does not confirm: the held contract's own bar
         // (5030), the field naming the target (5100)
         Bar es = bar("ES.v.0", d, 5000.0 + 10 * d, "1");
-        if (d == 3) es.roll_from = RollFrom{5100.0, "2", RollFromKind::AWAITS_NEXT};
+        if (d == 3) es.roll_from = RollFrom{5100.0, "2", RollFromKind::AWAITS_NEXT, ""};
         consumed.push_back(es);
     }
     const auto status = roll_series::roll_status_of(consumed);

@@ -78,18 +78,18 @@ Series per_contract(const std::string& symbol, bool rolls, int unconfirmed = 8) 
             // a vendor switch to the next contract that the next day does not confirm: the held
             // contract's own bar, the field naming the target
             const char target = static_cast<char>(held + 1);
-            b.roll_from = RollFrom{own(target, d), std::string(1, target), RollFromKind::AWAITS_NEXT};
+            b.roll_from = RollFrom{own(target, d), std::string(1, target), RollFromKind::AWAITS_NEXT, ""};
         } else if (rolls && d == 15) {
             // a crossover: known on its bar
             shown = held = 'B';
-            b.roll_from = RollFrom{own('A', d), "A", RollFromKind::KNOWN};
+            b.roll_from = RollFrom{own('A', d), "A", RollFromKind::KNOWN, ""};
         } else if (rolls && d == 16) {
-            b.roll_from = RollFrom{own('A', d), "A", RollFromKind::AFTER_ROLL};
+            b.roll_from = RollFrom{own('A', d), "A", RollFromKind::AFTER_ROLL, ""};
         } else if (rolls && d == 27) {
             // a vendor switch to C that day 28 confirms: B's own bar, the field naming C
-            b.roll_from = RollFrom{own('C', d), "C", RollFromKind::AWAITS_NEXT};
+            b.roll_from = RollFrom{own('C', d), "C", RollFromKind::AWAITS_NEXT, ""};
         } else if (rolls && d == 28) {
-            b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AFTER_ROLL};
+            b.roll_from = RollFrom{own('B', d), "B", RollFromKind::AFTER_ROLL, ""};
         }
         const double c = own(shown, d);
         b.open = b.high = b.low = b.close = Decimal(c);

@@ -14,8 +14,20 @@
 #                             first, on the host day after RANGE_END (each is then a past-date run)
 #               latebars      the bars of LATE_DATE are moved aside for the two runs after it, put back, and those
 #                             dates and every later one are re-run in date order (the re-run repair). The two runs
-#                             made without the bars keep their own log and body, named <date>_without_late_bars
+#                             made without the bars keep their own log and body, named <date>_without_late_bars;
+#                             LATE_TABLES=contract moves the per-contract rows of LATE_DATE instead (the vendor's
+#                             bars stay): the per-contract pull landing after the vendor's
 #               refused       S0 restored, ONE run dated REFUSED_DATE that must be refused; snapshots before and after
+#               interrupt     S0 restored, the chain to the day before INTERRUPT_DATE, then the run of INTERRUPT_DATE
+#                             is interrupted (INTERRUPT_KIND): "kill", the runner is parked by a trigger on its
+#                             first write of a Day T-1 positions row and killed (SIGKILL, the runner this script
+#                             started) while parked; "failwrite", a trigger makes the store of the day's ROLL legs
+#                             fail. The trigger is dropped, then INTERRUPT_DATE is run again and the chain goes on
+#                             to RANGE_END (rolls step 4, plan section 7: a kill and a failed-write replay)
+#     PREP_SQL / UNDO_SQL (unit chain, optional): one statement applied to the database's bar tables before the S0
+#               restore and one after the last run, with before/after values in prep_proof.txt (PREP_SHOW)
+#     GATE_SWITCH on|off (default off; rolls step 4): "on" sets per_contract_rolls true in the futures books'
+#               portfolio.json (the per-contract bar source)
 # Every run carries a date. --send-email is never passed. Only 127.0.0.1, only a database whose name holds "scratch".
 # One runner at a time under GATE_RUN_LOCK; the run config is written under the lock and the runner's own database
 # line is asserted. The report body is built on every run (TRADE_NGIN_EMAIL_BODY_DIR) and nothing is mailed.
@@ -59,9 +71,9 @@ unlock_run() { local cur=$(cat "$RL" 2>/dev/null); if [[ "$cur" == "live_mode_ga
 setcfg() {
   mkdir -p "$W/config/portfolios/$PF"
   cp "$SRC/portfolios/$PF/risk.json" "$SRC/portfolios/$PF/email.json" "$W/config/portfolios/$PF/"
-  python3 - "$SRC/defaults.json.entry" "$W/config/defaults.json" "$DB" "$SRC/portfolios/$PF/portfolio.json" "$W/config/portfolios/$PF/portfolio.json" "$ARM" <<'PY'
+  python3 - "$SRC/defaults.json.entry" "$W/config/defaults.json" "$DB" "$SRC/portfolios/$PF/portfolio.json" "$W/config/portfolios/$PF/portfolio.json" "$ARM" "${GATE_SWITCH:-off}" "$PF" <<'PY'
 import json, sys
-entry, out, dbn, pentry, pout, arm = sys.argv[1:7]
+entry, out, dbn, pentry, pout, arm, switch, pf = sys.argv[1:9]
 d = json.load(open(entry)); db = d["database"]
 assert db["host"] == "127.0.0.1" and db["port"] == "5433" and isinstance(db["port"], str)
 db["name"] = dbn
@@ -90,6 +102,9 @@ else:
                                              for m, b in (("MES", "ES"), ("MNQ", "NQ"), ("MYM", "YM"), ("M2K", "RTY"))]}
         note += " + listing_dates (the four pairs, no switch_rule key)"
     open(pout, "w").write(json.dumps(pj, indent=2) + "\n")
+if switch == "on" and pf in ("conservative", "base"):
+    pj2 = json.load(open(pout)); pj2["per_contract_rolls"] = True
+    open(pout, "w").write(json.dumps(pj2, indent=2) + "\n"); note += " + per_contract_rolls true (GATE_SWITCH on)"
 c = json.load(open(out))
 print("config: database name=%s port=%r live=%s; %s" % (c["database"]["name"], c["database"]["port"], c.get("live"), note))
 PY
@@ -181,8 +196,64 @@ trap 'unlock_run; exit 130' INT TERM
   echo "worktree HEAD: $(git -C "$W" rev-parse HEAD) dirty files: $(git -C "$W" status --porcelain --untracked-files=no | wc -l | tr -d ' ') database: $line arm: $ARM unit: $UNIT" > "$OUT/head.txt"
   case "$UNIT" in
     chain)
+      if [ -n "${PREP_SQL:-}" ]; then
+        { echo "PREP_SQL: $PREP_SQL"; echo "before: $(q "${PREP_SHOW:?set PREP_SHOW with PREP_SQL}")"; q "$PREP_SQL"; echo "after:  $(q "$PREP_SHOW")"; } > "$OUT/prep_proof.txt" 2>&1
+      fi
       restore_s0 ch
       chain "${RANGE_START:?}" "${RANGE_END:?}"
+      snap_live "$OUT/snap" > "$OUT/snap.txt"
+      if [ -n "${PREP_SQL:-}" ]; then
+        { echo "UNDO_SQL: ${UNDO_SQL:?set UNDO_SQL with PREP_SQL}"; q "$UNDO_SQL"; echo "undone: $(q "$PREP_SHOW")"; } >> "$OUT/prep_proof.txt" 2>&1
+      fi ;;
+    interrupt)
+      R="${INTERRUPT_DATE:?}"; KIND="${INTERRUPT_KIND:?}"
+      PRE=$(python3 -c "import datetime as t,sys;print((t.date.fromisoformat(sys.argv[1])-t.timedelta(1)).isoformat())" "$R")
+      restore_s0 it
+      chain "${RANGE_START:?}" "$PRE"
+      snap_live "$OUT/snap_before_interrupt" > /dev/null
+      case "$KIND" in
+        kill)
+          # The runner's first write of a Day T-1 positions row (dated $PRE) sleeps in the database, so the kill
+          # lands at one point of the run whatever the machine's speed.
+          q "CREATE OR REPLACE FUNCTION public.gate_interrupt() RETURNS trigger LANGUAGE plpgsql AS \$f\$ BEGIN PERFORM pg_sleep(20); RETURN NEW; END \$f\$; CREATE TRIGGER gate_interrupt BEFORE INSERT OR UPDATE ON trading.positions FOR EACH ROW WHEN (NEW.portfolio_id = '$PID' AND NEW.date::date = '$PRE') EXECUTE FUNCTION public.gate_interrupt()" ;;
+        failwrite)
+          q "CREATE OR REPLACE FUNCTION public.gate_interrupt() RETURNS trigger LANGUAGE plpgsql AS \$f\$ BEGIN RAISE EXCEPTION 'live mode gate: a failed write of a ROLL leg'; END \$f\$; CREATE TRIGGER gate_interrupt BEFORE INSERT ON trading.executions FOR EACH ROW WHEN (NEW.portfolio_id = '$PID' AND NEW.execution_type = 'ROLL') EXECUTE FUNCTION public.gate_interrupt()" ;;
+        *) echo "REFUSING interrupt kind $KIND"; exit 2 ;;
+      esac
+      echo "trigger installed ($KIND): $(q "select tgname||' on '||tgrelid::regclass from pg_trigger where tgname='gate_interrupt'")" > "$OUT/interrupt_proof.txt"
+      if [ "$KIND" = kill ]; then
+        dfline "before live $SIDE $ARM $UNIT $R (kill)" || exit 6
+        lock_run "$UNIT-$R-kill"; setcfg > "$OUT/config.txt"
+        mkdir -p "$OUT/email/${R}_killed"
+        ( cd "$W" && export TRADE_NGIN_EMAIL_BODY_DIR="$OUT/email/${R}_killed" && exec "$W/build/bin/Release/$BIN" "$R" ) > "$OUT/logs/${R}_killed.log" 2>&1 &
+        rpid=$!
+        parked=0
+        for i in {1..600}; do
+          [ "$(q "select count(*) from pg_stat_activity where datname = current_database() and wait_event = 'PgSleep'")" -ge 1 ] && { parked=1; break }
+          kill -0 $rpid 2>/dev/null || break
+          sleep 0.5
+        done
+        if [ $parked = 1 ]; then kill -KILL $rpid; fi
+        wait $rpid && krc=0 || krc=$?
+        unlock_run
+        echo "the run dated $R: parked=$parked, killed (SIGKILL) with exit $krc; its log's last lines:" >> "$OUT/interrupt_proof.txt"
+        grep -av password "$OUT/logs/${R}_killed.log" | tail -3 >> "$OUT/interrupt_proof.txt"
+        grep -av password "$OUT/logs/${R}_killed.log" | gzip -nc > "$OUT/logs/${R}_killed.log.gz"; /bin/rm -f "$OUT/logs/${R}_killed.log"
+        /bin/rm -rf "$W/logs/$R"; for f in "$W"/logs/*.log(N); do /bin/rm -f "$f"; done
+        # the parked backend wakes, finds its client gone and ends its transaction (rolled back)
+        for i in {1..120}; do [ "$(q "select count(*) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()")" = 0 ] && break; sleep 1; done
+        echo "sessions left on the database: $(q "select count(*) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()")" >> "$OUT/interrupt_proof.txt"
+        [ $parked = 1 ] || { echo "the run was never parked: nothing was killed" | tee -a "$OUT/progress.txt"; exit 1 }
+      else
+        rc=0; run_day "$R" "$R" _failed_write || rc=$?
+        echo "the run dated $R with its ROLL legs' store failing: exit $rc" >> "$OUT/interrupt_proof.txt"
+        echo "exit code of the failed-write run dated $R: $rc" > "$OUT/exit_code.txt"
+      fi
+      q "DROP TRIGGER gate_interrupt ON $(q "select tgrelid::regclass from pg_trigger where tgname='gate_interrupt'"); DROP FUNCTION public.gate_interrupt()"
+      echo "trigger dropped: $(q "select count(*) from pg_trigger where tgname='gate_interrupt'") left" >> "$OUT/interrupt_proof.txt"
+      snap_live "$OUT/snap_after_interrupt" > /dev/null
+      echo "--- the replay: $R .. $RANGE_END in date order" >> "$OUT/progress.txt"
+      chain "$R" "${RANGE_END:?}"
       snap_live "$OUT/snap" > "$OUT/snap.txt" ;;
     prodrestart)
       [ "$MODE" = M2 ] || { echo "REFUSING prodrestart without MODE=M2"; exit 2 }
@@ -205,17 +276,32 @@ trap 'unlock_run; exit 130' INT TERM
       LATE="${LATE_DATE:?}"; L1=$(python3 -c "import datetime as t,sys;print((t.date.fromisoformat(sys.argv[1])+t.timedelta(1)).isoformat())" "$LATE"); L2=$(python3 -c "import datetime as t,sys;print((t.date.fromisoformat(sys.argv[1])+t.timedelta(2)).isoformat())" "$LATE")
       restore_s0 lb
       chain "${RANGE_START:?}" "$LATE"
+      if [ "${LATE_TABLES:-vendor}" = contract ]; then
+        # rolls step 4 (R4A fix round 1, audit B B-1): the per-contract pull lands late, the vendor's bars are in
+        { q "CREATE SCHEMA IF NOT EXISTS tdated_late; DROP TABLE IF EXISTS tdated_late.c"
+          q "CREATE TABLE tdated_late.c AS SELECT * FROM futures_data.contract_ohlcv_1d WHERE date='$LATE'"
+          echo "moved aside: contract_ohlcv_1d $(q "select count(*) from tdated_late.c") rows (the vendor's bars stay: ohlcv_1d $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") rows)"
+          q "DELETE FROM futures_data.contract_ohlcv_1d WHERE date='$LATE'"
+          echo "left dated $LATE: $(q "select count(*) from futures_data.contract_ohlcv_1d where date='$LATE'")"; } > "$OUT/bars_proof.txt" 2>&1
+      else
       { q "CREATE SCHEMA IF NOT EXISTS tdated_late; DROP TABLE IF EXISTS tdated_late.b, tdated_late.r"
         q "CREATE TABLE tdated_late.b AS SELECT * FROM futures_data.ohlcv_1d WHERE time::date='$LATE'"
         q "CREATE TABLE tdated_late.r AS SELECT * FROM futures_data.ohlcv_1d_raw WHERE ts_event::date='$LATE'"
         echo "moved aside: ohlcv_1d $(q "select count(*) from tdated_late.b") rows, ohlcv_1d_raw $(q "select count(*) from tdated_late.r") rows"
         q "DELETE FROM futures_data.ohlcv_1d WHERE time::date='$LATE'"; q "DELETE FROM futures_data.ohlcv_1d_raw WHERE ts_event::date='$LATE'"
         echo "left dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"; } > "$OUT/bars_proof.txt" 2>&1
+      fi
       chain "$L1" "$L2" _without_late_bars
       snap_live "$OUT/snap_late_before_repair" > /dev/null
+      if [ "${LATE_TABLES:-vendor}" = contract ]; then
+        { q "INSERT INTO futures_data.contract_ohlcv_1d SELECT * FROM tdated_late.c"
+          echo "put back: now dated $LATE: $(q "select count(*) from futures_data.contract_ohlcv_1d where date='$LATE'") contract rows"
+          q "DROP SCHEMA tdated_late CASCADE"; } >> "$OUT/bars_proof.txt" 2>&1
+      else
       { q "INSERT INTO futures_data.ohlcv_1d SELECT * FROM tdated_late.b"; q "INSERT INTO futures_data.ohlcv_1d_raw SELECT * FROM tdated_late.r"
         echo "put back: now dated $LATE: $(q "select count(*) from futures_data.ohlcv_1d where time::date='$LATE'") / $(q "select count(*) from futures_data.ohlcv_1d_raw where ts_event::date='$LATE'")"
         q "DROP SCHEMA tdated_late CASCADE"; } >> "$OUT/bars_proof.txt" 2>&1
+      fi
       echo "--- re-run of ONE date alone ($L1)" >> "$OUT/progress.txt"
       chain "$L1" "$L1"
       snap_live "$OUT/snap_after_rerun_of_one_date" > /dev/null

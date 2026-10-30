@@ -294,8 +294,9 @@ namespace {
 using trade_ngin::RollFrom;
 using trade_ngin::RollFromKind;
 
-std::optional<RollFrom> from(double close, const char* id, RollFromKind kind = RollFromKind::KNOWN) {
-    return RollFrom{close, id, kind};
+std::optional<RollFrom> from(double close, const char* id, RollFromKind kind = RollFromKind::KNOWN,
+                             const char* date = "") {
+    return RollFrom{close, id, kind, date};
 }
 
 }  // namespace
@@ -464,6 +465,7 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
         int held = 0;  // contract index; ids "c0", "c1", ...
         bool after = false;
         int left = 0;
+        std::string left_on;
         const int n = 2 + static_cast<int>(rng() % 40);
         for (int t = 0; t < n; ++t) {
             const unsigned r = rng() % 12;
@@ -472,22 +474,33 @@ TEST(RollSeriesPerContract, TheTrackerReproducesTheBatchClassifierOnPerContractS
             std::optional<RollFrom> f;
             std::string id = h;
             double close = base;
+            const std::string day = "d" + std::to_string(100 + t);  // the roll's date (step 4)
             if (r == 0 && t > 0) {  // a known roll
-                f = RollFrom{base - 3.0, h, RollFromKind::KNOWN};
+                f = RollFrom{base - 3.0, h, RollFromKind::KNOWN, day};
                 left = held++;
+                left_on = day;
                 id = "c" + std::to_string(held);
                 close = base + 10.0;
                 after = true;
             } else if (r == 1 && t > 0) {  // a vendor switch, kept by the next bar or not: the
                 // held contract's own bar, the field naming the next contract
-                f = RollFrom{base + 10.0, "c" + std::to_string(held + 1), RollFromKind::AWAITS_NEXT};
+                f = RollFrom{base + 10.0, "c" + std::to_string(held + 1), RollFromKind::AWAITS_NEXT,
+                             day};
+                if (trial % 2) {
+                    // ruling 19 "vendor" (every other trial): the target's own bar, the field naming
+                    // the held contract
+                    f = RollFrom{base, h, RollFromKind::AWAITS_NEXT_VENDOR, day};
+                    id = "c" + std::to_string(held + 1);
+                    close = base + 10.0;
+                }
                 if (rng() % 2) {
                     left = held++;
+                    left_on = day;
                     after = true;
                 }
             } else if (after) {
-                f = RollFrom{base - 4.0, "c" + std::to_string(left), RollFromKind::AFTER_ROLL};
-                after = false;
+                f = RollFrom{base - 4.0, "c" + std::to_string(left), RollFromKind::AFTER_ROLL, left_on};
+                after = rng() % 3 == 0;  // the field rides the bars after a roll (step 3 B-2)
             }
             // a bar the consumer withheld: an ordinary bar, or a known roll bar (its AFTER_ROLL
             // field then books it on the next consumed bar)
@@ -537,4 +550,97 @@ TEST(RollSeriesPerContract, ARollBarAndTheBarAfterItBothWithheldAreBookedOnTheFi
     EXPECT_EQ(s.flags.confirm, bits({0, 0, 1, 0}));
     EXPECT_DOUBLE_EQ(s.returns[1], (105.0 - 101.0) / 101.0) << "not 0: the old contract moved";
     EXPECT_DOUBLE_EQ(s.returns[2], (113.0 - 112.0) / 112.0) << "the second field is not read";
+}
+
+// Rolls step 4 (R3 audit A, the 6L 2013-09-11 case). The consumer consumed an unconfirmed vendor switch
+// into B on 09-06 (A's own bar, the field naming B), withheld every bar after it, the real roll into B on
+// 09-11 included, and consumes 09-18, B's bar with A's close of 09-18 in an AFTER_ROLL field dated 09-11.
+// That field follows a later roll, not the switch it awaits: the roll is booked on 09-18 at its two
+// closes and the bar's move is A's own up to it, 104 - 101 (before: confirmed at 09-06's closes, the move
+// from B's 110).
+TEST(RollSeriesPerContract, AnAwaitedSwitchIsNotConfirmedByALaterRollIntoTheSameTarget) {
+    const std::vector<double> raw{100, 101, 115};
+    const RollFields rf{std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT, "2013-09-06"),
+                        from(104, "A", RollFromKind::AFTER_ROLL, "2013-09-11")};
+    const auto s = build_series(raw, ids({"A", "A", "B"}), rf);
+    EXPECT_EQ(s.flags.confirm, bits({0, 0, 1}));
+    EXPECT_EQ(s.flags.rolled, bits({0, 0, 1})) << "the roll is 09-18's, not the switch bar's";
+    EXPECT_FALSE(s.flags.base_close[1].has_value());
+    EXPECT_EQ(*s.flags.old_close[2], 104.0);
+    EXPECT_EQ(s.flags.leg_to[2], 2);
+    EXPECT_DOUBLE_EQ(s.returns[1], (104.0 - 101.0) / 101.0) << "A's own move up to 09-18";
+    RollTracker t;
+    t.add("A", 100);
+    EXPECT_TRUE(t.add("A", 101, rf[1]).holds());
+    const auto st = t.add("B", 115, rf[2]);
+    EXPECT_TRUE(st.confirm);
+    EXPECT_FALSE(st.holds());
+    EXPECT_EQ(st.previous_held_id, "A");
+    EXPECT_EQ(*st.mark_close, 104.0);
+    EXPECT_FALSE(st.previous_close.has_value());
+    EXPECT_EQ(st.last_close_before_change, 104.0) << "the closing leg: A's close on 09-18";
+    EXPECT_EQ(st.change_bar_close, 115.0) << "the opening leg: B's close on 09-18";
+    EXPECT_EQ(st.move(115, 101), 3.0);
+    EXPECT_EQ(st.held_id, "B");
+}
+
+// The same bars with the field dated the switch bar's date: the awaited switch itself, confirmed at the
+// switch bar's closes (step 3's rule, unchanged).
+TEST(RollSeriesPerContract, AnAwaitedSwitchIsConfirmedByAFieldDatedItsOwnBar) {
+    const std::vector<double> raw{100, 101, 115};
+    const RollFields rf{std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT, "2013-09-06"),
+                        from(104, "A", RollFromKind::AFTER_ROLL, "2013-09-06")};
+    const auto s = build_series(raw, ids({"A", "A", "B"}), rf);
+    EXPECT_EQ(s.flags.confirm, bits({0, 0, 1}));
+    EXPECT_EQ(s.flags.rolled, bits({0, 1, 0}));
+    EXPECT_EQ(*s.flags.base_close[1], 110.0);
+    EXPECT_DOUBLE_EQ(s.returns[1], (115.0 - 110.0) / 110.0);
+    RollTracker t;
+    t.add("A", 100);
+    t.add("A", 101, rf[1]);
+    const auto st = t.add("B", 115, rf[2]);
+    EXPECT_TRUE(st.confirm);
+    EXPECT_EQ(*st.previous_close, 110.0);
+    EXPECT_EQ(st.last_close_before_change, 101.0);
+    EXPECT_EQ(st.change_bar_close, 110.0);
+}
+
+// Rolls step 4, ruling 19 ("vendor"): the switch bar is the target's own (B 110), the field naming the
+// held contract (A 102). Confirmed by the next bar: legs at the switch bar's closes, the next move from
+// B's 110. Not confirmed: the next move from A's 102. Both exactly as the "held" representation books.
+TEST(RollSeriesPerContract, AVendorSettingSwitchBarBooksWhatTheHeldSettingBooks) {
+    for (const bool confirmed : {true, false}) {
+        SCOPED_TRACE(confirmed ? "confirmed" : "not confirmed");
+        const double next = confirmed ? 111.0 : 103.0;
+        const std::vector<double> raw_h{100, 101, 102, next}, raw_v{100, 101, 110, next};
+        const auto ids_h = ids({"A", "A", "A", confirmed ? "B" : "A"});
+        const auto ids_v = ids({"A", "A", "B", confirmed ? "B" : "A"});
+        const std::optional<RollFrom> after =
+            confirmed ? from(104, "A", RollFromKind::AFTER_ROLL, "d2") : std::nullopt;
+        const RollFields rf_h{std::nullopt, std::nullopt, from(110, "B", RollFromKind::AWAITS_NEXT, "d2"), after};
+        const RollFields rf_v{std::nullopt, std::nullopt,
+                              from(102, "A", RollFromKind::AWAITS_NEXT_VENDOR, "d2"), after};
+        const auto h = build_series(raw_h, ids_h, rf_h);
+        const auto v = build_series(raw_v, ids_v, rf_v);
+        EXPECT_EQ(h.returns, v.returns);
+        EXPECT_EQ(h.adjusted, v.adjusted);
+        EXPECT_EQ(h.flags.held_id, v.flags.held_id);
+        EXPECT_EQ(h.flags.confirm, v.flags.confirm);
+        EXPECT_EQ(h.flags.pending, v.flags.pending);
+        EXPECT_EQ(h.flags.rolled, v.flags.rolled);
+        EXPECT_DOUBLE_EQ(v.returns[1], (102.0 - 101.0) / 101.0) << "the switch bar: A's own move";
+        RollTracker th, tv;
+        for (size_t t = 0; t < raw_h.size(); ++t) {
+            const auto a = th.add(ids_h[t], raw_h[t], rf_h[t]);
+            const auto b = tv.add(ids_v[t], raw_v[t], rf_v[t]);
+            if (t > 0) EXPECT_EQ(a.move(raw_h[t], raw_h[t - 1]), b.move(raw_v[t], raw_v[t - 1])) << t;
+            EXPECT_EQ(a.holds(), b.holds()) << t;
+            EXPECT_EQ(a.held_id, b.held_id) << t;
+            EXPECT_EQ(a.confirm, b.confirm) << t;
+            if (a.confirm) {
+                EXPECT_EQ(a.last_close_before_change, b.last_close_before_change);
+                EXPECT_EQ(a.change_bar_close, b.change_bar_close);
+            }
+        }
+    }
 }

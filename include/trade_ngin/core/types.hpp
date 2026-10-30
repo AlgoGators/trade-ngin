@@ -308,7 +308,8 @@ enum class RollFromKind {
     KNOWN,
     /// A vendor-triggered roll (rule (a)) whose switch is on this bar: only the next bar confirms
     /// it. The bar is the HELD (old) contract's own bar, and this field names the TARGET: its close
-    /// and id on this date. When the next consumed bar is in the target, the roll happened here: both
+    /// and id on this date. When the next consumed bar is in the target, the roll happened here:
+    /// both
     /// legs at this bar's two closes, the next bar's move measured from the target's close. When it
     /// is not, nothing rolled. Every level reader reads the held contract's close either way.
     AWAITS_NEXT,
@@ -317,6 +318,16 @@ enum class RollFromKind {
     /// consumed-bar rule): it books the roll on this bar, the old contract's move up to it and both
     /// legs at this bar's closes (HD 2026-10-23).
     AFTER_ROLL,
+    /// Rolls step 4, ruling 19 (portfolio.json per_contract_switch_bar "vendor"): AWAITS_NEXT with
+    /// the bar the other way round. The bar is the TARGET's own bar (the contract the vendor
+    /// switched to, a one-bar stray included: no run can tell them apart on the bar) and this field
+    /// names the HELD contract, its close and id on this date. The bar's move is the held
+    /// contract's, to this close; the next consumed bar decides as for AWAITS_NEXT: in the target,
+    /// the roll happened here (both legs at this bar's two closes, the next move from this bar's
+    /// close); otherwise nothing rolled and the next move is measured from the held contract's
+    /// close. So the booked moves and the legs are AWAITS_NEXT's; only the levels read on the bar
+    /// (sizing, marks, notional, the overlay) and the session classifier's reading of it differ.
+    AWAITS_NEXT_VENDOR,
 };
 
 /**
@@ -336,9 +347,16 @@ struct RollFrom {
     double close{0.0};          ///< the old contract's close on this bar (AWAITS_NEXT: the target's)
     std::string instrument_id;  ///< the old contract's id string (AWAITS_NEXT: the target's)
     RollFromKind kind{RollFromKind::KNOWN};
+    /// Rolls step 4 (R3 audit A, the 6L 2013-09-11 case): the roll's date, YYYY-MM-DD. KNOWN: this
+    /// bar's; AFTER_ROLL: the roll bar this bar follows; AWAITS_NEXT and AWAITS_NEXT_VENDOR: the
+    /// switch bar's (this bar's). A bar after a withheld roll then tells the vendor switch a
+    /// consumer awaits (its own date) from a later roll into the same target (another date). Empty
+    /// when unknown.
+    std::string date;
 
     bool operator==(const RollFrom& o) const {
-        return close == o.close && instrument_id == o.instrument_id && kind == o.kind;
+        return close == o.close && instrument_id == o.instrument_id && kind == o.kind &&
+               date == o.date;
     }
 };
 

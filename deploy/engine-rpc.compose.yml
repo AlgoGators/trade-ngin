@@ -39,7 +39,10 @@ services:
     # Data-driven run (issues #191, #192; needs migration 028): data-ngin pulls at 04:30 ET once
     # the vendor's ~8 h delayed historical data has bar D and writes ops.data_ready; today's model
     # run waits for it. QT_EVENING_RUN (1; 0 = the 06:45-only schedule), QT_DATA_READY_DATASET
-    # (futures_ohlcv_1d), QT_DATA_READY_ALERT_AT (06:00), QT_REVIEW_RECIPIENTS
+    # (futures_ohlcv_1d; a comma-separated list; with per_contract_rolls on the run also waits for
+    # futures_contract_ohlcv_1d), QT_CONTRACT_DATA_READY_MAX_MISSING (2; the per-contract row only:
+    # more roots missing hold the run with the data_stale alert, one or two run with an alert),
+    # QT_DATA_READY_ALERT_AT (06:00), QT_REVIEW_RECIPIENTS
     # (dominickdupuy@ufl.edu; comma-separated), QT_DESK_URL, TRADE_NGIN_HOLIDAYS_JSON (the
     # engine's calendar; default under QT_ENGINE_CWD). Recommended in the host .env with it:
     # QT_CATCHUP_TODAY_NOT_BEFORE=04:30, QT_CATCHUP_WINDOW=04:00-22:00,

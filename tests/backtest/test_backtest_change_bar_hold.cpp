@@ -188,7 +188,7 @@ TEST_F(BacktestChangeBarHoldTest, AWithheldPrintNeverStartsAHold) {
 // cycle consuming it, like today's change bar, kept or not by the next bar.
 namespace {
 Bar with_roll(Bar b, double old_close, const char* old_id, RollFromKind kind) {
-    b.roll_from = RollFrom{old_close, old_id, kind};
+    b.roll_from = RollFrom{old_close, old_id, kind, ""};
     return b;
 }
 }  // namespace

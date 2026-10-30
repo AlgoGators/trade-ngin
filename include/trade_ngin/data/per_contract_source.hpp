@@ -69,12 +69,24 @@ namespace trade_ngin::contract_rolls {
  * 2026-02-22 change until ES, NQ, YM and RTY contract bars are loaded (waiting on data), with one
  * WARN per run (reads_vendor_series).
  */
+/// Rolls step 4, ruling 19 (HD 2026-10-23): the bar the source hands out on an unconfirmed vendor
+/// switch bar (portfolio.json per_contract_switch_bar).
+enum class SwitchBar {
+    HELD,    ///< "held": the held contract's own bar, the field naming the target (AWAITS_NEXT)
+    VENDOR,  ///< "vendor": the target's own bar, the field naming the held contract
+             ///< (AWAITS_NEXT_VENDOR)
+};
+/// "held" or "vendor".
+const char* to_string(SwitchBar switch_bar);
+/// The setting's value from its name; nullopt for any other text.
+std::optional<SwitchBar> switch_bar_from(const std::string& name);
+
 class PerContractSource {
 public:
     static PerContractSource& instance();
 
     /// Turns the source on with the futures calendar the rule counts trading days on.
-    void enable(FuturesCalendar calendar);
+    void enable(FuturesCalendar calendar, SwitchBar switch_bar = SwitchBar::HELD);
     /// Back to the vendor's series (the default).
     void disable();
     bool enabled() const;
@@ -82,6 +94,8 @@ public:
     FuturesCalendar calendar() const;
     /// True on the first call after enable(): the micros' WARN is logged once per run.
     bool first_micros_warning();
+    /// Ruling 19's setting given to enable(); HELD when off.
+    SwitchBar switch_bar() const;
 
 private:
     PerContractSource() = default;
@@ -89,14 +103,17 @@ private:
     bool enabled_{false};
     bool micros_warned_{false};
     std::optional<FuturesCalendar> calendar_;
+    SwitchBar switch_bar_{SwitchBar::HELD};
 };
 
 /**
  * @brief The runners' one call: the source on when `per_contract_rolls` is true (loading the
- *        futures calendar, FuturesCalendar::resolve_path), off otherwise. An error when the
- *        calendar cannot be loaded; the runner refuses to run.
+ *        futures calendar, FuturesCalendar::resolve_path), off otherwise; `switch_bar` is
+ *        per_contract_switch_bar ("held" or "vendor", ruling 19). An error when the calendar cannot
+ *        be loaded or the setting is neither; the runner refuses to run.
  */
-Result<void> configure_per_contract_source(bool per_contract_rolls);
+Result<void> configure_per_contract_source(bool per_contract_rolls,
+                                           const std::string& switch_bar = "held");
 
 /// The roots the source leaves on the vendor's series with the switch on: the four micros, whose
 /// history before 2026-02-22 is the full-size contracts', not loaded yet (waiting on data).
@@ -126,17 +143,19 @@ struct SourceBar {
  * `series` runs from the root's series start to the window's last date at least; `window` maps
  * each grid date the caller asks for to its instant's text. Per day: a roll bar is the new
  * contract's bar with RollFrom (the old contract's close and id, KNOWN); a vendor roll awaiting the
- * next bar (HeldDay::awaits_next_bar) and a TentativeRoll are the held (old) contract's own bar with
- * RollFrom naming the target (AWAITS_NEXT); any other day the held contract's bar (a carried close
- * keeps the carried row's id), with an AFTER_ROLL RollFrom on every day after a roll, up to the
- * next, when the contract left printed that day. A fallback
- * roll (the old contract with no bar up to its last actionable bar, plan 5c) reads as the roll it
- * stands for: RollFrom::close is the previous day's close times the new contract's move (or that
- * close, for a zero fallback), with a WARN. Errors: a window date the series lacks, a day with no
- * close.
+ * next bar (HeldDay::awaits_next_bar) and a TentativeRoll are the held (old) contract's own bar
+ * with RollFrom naming the target (AWAITS_NEXT); any other day the held contract's bar (a carried
+ * close keeps the carried row's id), with an AFTER_ROLL RollFrom on every day after a roll, up to
+ * the next, when the contract left printed that day. A fallback roll (the old contract with no bar
+ * up to its last actionable bar, plan 5c) reads as the roll it stands for: RollFrom::close is the
+ * previous day's close times the new contract's move (or that close, for a zero fallback), with a
+ * WARN. Errors: a window date the series lacks, a day with no close. With `switch_bar` VENDOR
+ * (ruling 19) a switch bar is the target's own bar instead, the field naming the held contract
+ * (AWAITS_NEXT_VENDOR); every other bar is the same.
  */
 Result<std::vector<SourceBar>> bars_of_series(const HeldSeries& series,
-                                              const std::map<Day, std::string>& window);
+                                              const std::map<Day, std::string>& window,
+                                              SwitchBar switch_bar = SwitchBar::HELD);
 
 /// The loader's split of the symbols asked for: the roots the rule serves and the micros' `.v.0`
 /// symbols, left on the vendor's series (reads_vendor_series), both in the order asked.
@@ -161,8 +180,8 @@ Timestamp source_bar_time(const std::string& time_text);
 /// The bus event the loader publishes for a bar (BAR, its OHLCV), as for the vendor's bars.
 MarketDataEvent source_bar_event(const SourceBar& bar);
 
-/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's three
-/// (roll_from_close, roll_from_id, roll_from_kind; NULL where it is absent).
+/// The loader's table of `bars`: the futures query's eight columns plus Bar::roll_from's four
+/// (roll_from_close, roll_from_id, roll_from_kind, roll_from_date; NULL where it is absent).
 Result<std::shared_ptr<arrow::Table>> source_bars_to_arrow(const std::vector<SourceBar>& bars);
 
 /// A root's grid window from its instants' rows (the instant's text, its UTC date's text), oldest
@@ -185,6 +204,7 @@ Result<std::vector<SourceBar>> per_contract_bars(pqxx::transaction_base& txn,
                                                  const std::string& root,
                                                  const std::string& start_ts,
                                                  const std::string& end_ts,
-                                                 const FuturesCalendar& calendars);
+                                                 const FuturesCalendar& calendars,
+                                                 SwitchBar switch_bar = SwitchBar::HELD);
 
 }  // namespace trade_ngin::contract_rolls

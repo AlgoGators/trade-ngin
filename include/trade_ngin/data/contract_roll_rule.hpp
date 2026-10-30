@@ -180,6 +180,8 @@ struct HeldDay {
     /// bars after it (RollFromKind::AFTER_ROLL): it books the roll on its first consumed bar.
     std::optional<double> left_close;
     std::string left_id;
+    /// Rolls step 4: the date of the roll the contract left was left on (with left_close).
+    Day left_roll_date{};
 };
 
 /// Counts and messages of one series, for the report and the measures.
