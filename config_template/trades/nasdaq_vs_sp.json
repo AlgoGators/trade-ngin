@@ -1,0 +1,67 @@
+{
+  "id": "nasdaq_vs_sp",
+  "description": "Micro Nasdaq vs micro S&P, beta-neutral against MES",
+  "legs": [
+    {
+      "symbol": "MNQ.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "MES.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "derived",
+    "scale": 5
+  },
+  "inputs": [
+    {
+      "name": "mnq",
+      "source": "leg",
+      "symbol": "MNQ.v.0"
+    },
+    {
+      "name": "mes",
+      "source": "leg",
+      "symbol": "MES.v.0"
+    }
+  ],
+  "series": {
+    "rule": "neutral",
+    "risk": "beta",
+    "shape": [
+      1,
+      -1
+    ],
+    "risk_inputs": {
+      "benchmark": "mes"
+    },
+    "beta_window": 250
+  },
+  "signals": [
+    {
+      "name": "trend_16_64",
+      "type": "ewmac",
+      "fast": 16,
+      "slow": 64
+    },
+    {
+      "name": "z60",
+      "type": "zscore",
+      "window": 60
+    }
+  ],
+  "diagnostics": [
+    "adf_250"
+  ],
+  "trade": {
+    "blend": {
+      "trend_16_64": 0.5,
+      "z60": 0.5
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2019-06-01"
+}

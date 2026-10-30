@@ -1,0 +1,37 @@
+{
+  "id": "yield_spread_10y_2y",
+  "description": "10-year minus 2-year Treasury yield (analysis only); the 2s10s trade reads it as an input",
+  "legs": [],
+  "inputs": [
+    {
+      "name": "y10",
+      "source": "series",
+      "table": "macro_data.yield_curve",
+      "key": "treasury_10y"
+    },
+    {
+      "name": "y2",
+      "source": "series",
+      "table": "macro_data.yield_curve",
+      "key": "treasury_2y"
+    }
+  ],
+  "series": {
+    "rule": "fixed",
+    "terms": [
+      {
+        "input": "y10",
+        "coef": 1.0
+      },
+      {
+        "input": "y2",
+        "coef": -1.0
+      }
+    ],
+    "units": "percent"
+  },
+  "diagnostics": [
+    "adf_250",
+    "half_life_120"
+  ]
+}

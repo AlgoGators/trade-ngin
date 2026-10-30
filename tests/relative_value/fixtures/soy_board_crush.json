@@ -1,0 +1,107 @@
+{
+  "id": "soy_board_crush",
+  "description": "Board crush margin in $/bu, long = long meal and oil, short beans",
+  "legs": [
+    {
+      "symbol": "ZS.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "ZM.v.0",
+      "asset_class": "futures"
+    },
+    {
+      "symbol": "ZL.v.0",
+      "asset_class": "futures"
+    }
+  ],
+  "package": {
+    "mode": "fixed",
+    "contracts": {
+      "ZS.v.0": -10,
+      "ZM.v.0": 11,
+      "ZL.v.0": 9
+    }
+  },
+  "inputs": [
+    {
+      "name": "zs",
+      "source": "leg",
+      "symbol": "ZS.v.0"
+    },
+    {
+      "name": "zm",
+      "source": "leg",
+      "symbol": "ZM.v.0"
+    },
+    {
+      "name": "zl",
+      "source": "leg",
+      "symbol": "ZL.v.0"
+    }
+  ],
+  "series": {
+    "rule": "fixed",
+    "terms": [
+      {
+        "input": "zm",
+        "coef": 0.022
+      },
+      {
+        "input": "zl",
+        "coef": 0.11
+      },
+      {
+        "input": "zs",
+        "coef": -0.01
+      }
+    ],
+    "units": "usd_per_bushel"
+  },
+  "signals": [
+    {
+      "name": "z60",
+      "type": "zscore",
+      "window": 60,
+      "direction": "revert",
+      "z_at_10": 1.5
+    },
+    {
+      "name": "trend_16_64",
+      "type": "ewmac",
+      "fast": 16,
+      "slow": 64
+    },
+    {
+      "name": "value_cost",
+      "type": "value_vs_anchor",
+      "anchor": {
+        "constant": 1.2
+      },
+      "scale": 0.5
+    },
+    {
+      "name": "seas",
+      "type": "seasonal",
+      "window_days": 20,
+      "years": 5
+    }
+  ],
+  "diagnostics": [
+    "adf_250",
+    "half_life_120",
+    "hurst_250",
+    "factors_120"
+  ],
+  "trade": {
+    "blend": {
+      "z60": 0.4,
+      "value_cost": 0.4,
+      "seas": 0.2
+    },
+    "risk_target": 0.2,
+    "capital": 500000
+  },
+  "history_start": "2015-01-02",
+  "strategy": null
+}
