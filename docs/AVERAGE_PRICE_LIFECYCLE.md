@@ -16,6 +16,17 @@ value written under another. This document maps the meanings and the rules that 
 A basis is *what it cost*. A mark is *what it is worth*. Substituting one for the other
 is the root defect; every rule below exists to enforce the distinction.
 
+**The stored backtest column is a MARK.** `backtest.final_positions.average_price` carries
+what the target position carried, never the strategy's fill-maintained cost basis: the
+coordinator computes unrealized P&L from the basis but deliberately does not write it back
+into the stored row ("DELIBERATELY NOT WRITTEN BACK", `src/backtest/backtest_coordinator.cpp`),
+because the position goes on to `PortfolioManager` and `RiskManager` reads `average_price` as a
+mark to size notional and leverage — a basis there would understate leverage on a winning book.
+For mean reversion the value is the close the strategy last saw, which in the backtest is also
+the price the day's fill was struck at (on the run checked on 2026-09-04, 752 of 790 open rows
+held the day's last fill price). No consumer reads the stored column. If a stored cost basis is
+ever wanted it needs its own column, not this one (open question Q7 on issue #118).
+
 ---
 
 ## 2. One live day, in order
