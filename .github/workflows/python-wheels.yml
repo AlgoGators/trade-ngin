@@ -103,7 +103,7 @@ jobs:
         with:
           submodules: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Restore the vcpkg binary cache
@@ -183,7 +183,7 @@ jobs:
         with:
           name: examples
           path: examples
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@v4
